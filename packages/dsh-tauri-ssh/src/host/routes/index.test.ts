@@ -37,6 +37,8 @@ function fakeHost(overrides: Partial<SshApiHost> = {}): SshApiHost {
     events: (machineId, sinceSeq) => log.since(machineId, sinceSeq),
     save: async () => {},
     remove: async () => {},
+    syncPreview: () => ({ plugins: [], skills: [] }),
+    syncApply: async () => ({ items: [] }),
     ...overrides,
   }
 }
@@ -387,6 +389,73 @@ describe('/api-ssh handler', () => {
   it('requires a machineId on actions', async () => {
     const { body } = await call(fakeHost(), JSON.stringify({ method: 'machine.test', payload: {} }))
     expect(body).toEqual({ ok: false, error: { code: 'internal', message: 'missing machineId' } })
+  })
+
+  it('serves the sync preview', async () => {
+    const preview = {
+      plugins: [{ name: 'dsh-market', spec: 'github:a/b', syncable: true }],
+      skills: [{ name: 'alpha', root: 'dsh' as const }],
+    }
+    const host = fakeHost({ syncPreview: () => preview })
+    const { status, body } = await call(host, JSON.stringify({ method: 'sync.preview' }))
+    expect(status).toBe(200)
+    expect(body).toEqual({ ok: true, value: preview })
+  })
+
+  it('applies a sync selection and returns per-item results', async () => {
+    const syncApply = vi.fn(async () => ({
+      items: [
+        { kind: 'plugin' as const, name: 'dsh-market', ok: true },
+        { kind: 'skill' as const, name: 'alpha', root: 'dsh' as const, ok: false, error: 'exit 1: read-only' },
+      ],
+    }))
+    const host = fakeHost({ syncApply })
+    const { status, body } = await call(host, JSON.stringify({
+      method: 'sync.apply',
+      payload: {
+        machineId: 'm1',
+        plugins: [{ name: 'dsh-market', spec: 'github:a/b' }],
+        skills: [{ name: 'alpha', root: 'dsh' }],
+      },
+    }))
+    expect(status).toBe(200)
+    expect(body).toMatchObject({ ok: true })
+    expect(syncApply).toHaveBeenCalledWith(
+      MachineId('m1'),
+      [{ name: 'dsh-market', spec: 'github:a/b' }],
+      [{ name: 'alpha', root: 'dsh' }],
+    )
+    const value = (body as { ok: true, value: { items: Array<Record<string, unknown>> } }).value
+    expect(value.items).toHaveLength(2)
+    expect(value.items[1]).toMatchObject({ ok: false, error: 'exit 1: read-only' })
+  })
+
+  it('defaults an absent sync selection to empty lists', async () => {
+    const syncApply = vi.fn(async () => ({ items: [] }))
+    const host = fakeHost({ syncApply })
+    const { body } = await call(host, JSON.stringify({ method: 'sync.apply', payload: { machineId: 'm1' } }))
+    expect(body).toMatchObject({ ok: true })
+    expect(syncApply).toHaveBeenCalledWith(MachineId('m1'), [], [])
+  })
+
+  it('rejects malformed sync selections', async () => {
+    const badPlugin = await call(fakeHost(), JSON.stringify({
+      method: 'sync.apply',
+      payload: { machineId: 'm1', plugins: [{ name: 'x' }] },
+    }))
+    expect(badPlugin.body).toMatchObject({ ok: false, error: { message: 'invalid plugin ref' } })
+
+    const badRoot = await call(fakeHost(), JSON.stringify({
+      method: 'sync.apply',
+      payload: { machineId: 'm1', skills: [{ name: 'x', root: 'elsewhere' }] },
+    }))
+    expect(badRoot.body).toMatchObject({ ok: false, error: { message: 'invalid skill ref: root' } })
+
+    const notArray = await call(fakeHost(), JSON.stringify({
+      method: 'sync.apply',
+      payload: { machineId: 'm1', plugins: 'nope' },
+    }))
+    expect(notArray.body).toMatchObject({ ok: false, error: { message: 'invalid plugins' } })
   })
 
   it('rejects unknown methods', async () => {

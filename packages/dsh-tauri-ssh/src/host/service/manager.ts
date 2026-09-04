@@ -192,6 +192,21 @@ export class SshManager {
   }
 
   /**
+   * Open one dedicated authenticated session to the machine — handshake and
+   * TOFU gate only, no remote-instance bootstrap and no tunnel. Callers that
+   * drive plain remote commands (the sync engine) get an independent
+   * lifecycle: closing the returned session never touches a live link.
+   * @param machineId - the machine to reach.
+   * @param signal - aborts the handshake.
+   * @returns the authenticated session; the caller owns closing it.
+   * @throws {SshError} `machine-not-found` for an unknown id.
+   */
+  async openSession(machineId: MachineId, signal?: AbortSignal): Promise<SshSession> {
+    const profile = this.requireProfile(machineId)
+    return await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
+  }
+
+  /**
    * Tear down one machine's link, invalidating any in-flight connect.
    * Idempotent for an absent link; unknown ids resolve without writing
    * anything.

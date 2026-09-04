@@ -12,7 +12,11 @@ import type z from 'schemastery'
 import type { SshApiHost } from './routes/index.js'
 import type { SshHostBlock } from './service/ssh-config.js'
 import type { MachinesValue, Config as SshRemoteConfig } from './storage/index.js'
+<<<<<<< HEAD
 import type { HostSettingsScope, MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineEventsPage, SshMachineStatus, SshTestResult } from './types/index.js'
+=======
+import type { HostSettingsScope, MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineStatus, SshTestResult, SyncApplyResult, SyncPluginRef, SyncPreview, SyncSkillRef } from './types/index.js'
+>>>>>>> a59eb500 (feat(ssh): sync.* /api-ssh surface (engine + per-item results))
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
@@ -22,6 +26,8 @@ import { SshMachineEvents } from './service/events.js'
 import { KnownHostsStore } from './service/host-keys.js'
 import { profileView, SshManager } from './service/manager.js'
 import { discoverableHosts, loadSshConfigBlocks, lookupSshConfig, SshConfigResolver } from './service/ssh-config.js'
+import { profileDependenciesReader, skillRootsScanner, tarPacker } from './service/sync-local.js'
+import { SyncEngine } from './service/sync.js'
 import { Ssh2Transport } from './service/transport.js'
 import { ConfigSchema, DEFAULT_REMOTE_PORT, DEFAULT_SSH_PORT, MACHINES_NAMESPACE, machinesFromValue, MachinesSchema } from './storage/index.js'
 import { MachineId } from './types/index.js'
@@ -57,6 +63,9 @@ export class SshRemoteService implements SshApiHost {
   /** The validated plugin config (defaults applied by schemastery). */
   private readonly config: SshRemoteConfig
 
+  /** The plugin/skill sync engine (local sources → one remote machine). */
+  private readonly sync: SyncEngine
+
   /**
    * @param ctx - the plugin context (settings + webServer available through inject).
    * @param config - the validated plugin config.
@@ -86,6 +95,15 @@ export class SshRemoteService implements SshApiHost {
       base: { machines: {} },
     })
     this.scope = scope
+    // The sync engine: local profile/skill sources, remote commands over a
+    // dedicated session, the install-class deadline per remote command.
+    this.sync = new SyncEngine({
+      profileDependencies: profileDependenciesReader(),
+      scanSkills: skillRootsScanner(),
+      packSkills: tarPacker(),
+      openSession: (machineId) => this.manager.openSession(machineId),
+      ...config.installTimeoutMs === undefined ? {} : { commandTimeoutMs: config.installTimeoutMs },
+    })
     this.manager.refreshProfiles(this.applyStartDefaults(this.manualProfiles()))
     scope.watch(() => {
       void this.syncProfiles()
@@ -250,6 +268,25 @@ export class SshRemoteService implements SshApiHost {
     const machines = machinesFromValue(this.scope.get())
     machines.delete(machineId)
     await this.scope.replace({ machines: Object.fromEntries(machines) })
+  }
+
+  /** The local plugins and skills available to sync (the panel's selection list). */
+  syncPreview(): SyncPreview {
+    return this.sync.preview()
+  }
+
+  /**
+   * Sync the selection to one machine over a dedicated authenticated session.
+   * Command-level failures settle per item in the result; only a session the
+   * engine cannot open at all escalates to an envelope error.
+   * @param machineId - the target machine.
+   * @param plugins - the plugin refs to install.
+   * @param skills - the skill refs to copy.
+   * @returns one outcome per requested item.
+   */
+  async syncApply(machineId: MachineId, plugins: SyncPluginRef[], skills: SyncSkillRef[]): Promise<SyncApplyResult> {
+    await this.syncProfiles()
+    return await this.sync.apply(machineId, plugins, skills)
   }
 }
 

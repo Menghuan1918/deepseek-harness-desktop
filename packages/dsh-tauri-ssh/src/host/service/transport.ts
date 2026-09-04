@@ -27,12 +27,18 @@ export interface SshExecResult {
   stderr: string
 }
 
-/** Optional exec behavior: a deadline and/or a streaming stdout tap. */
+/** Optional exec behavior: a deadline, a streaming stdout tap, and stdin bytes. */
 export interface SshExecOptions {
   /** Abort the command after this many milliseconds (closes the connection). */
   timeoutMs?: number
   /** Receive stdout chunks as they arrive (long-running commands, logs). */
   onData?: (chunk: string) => void
+  /**
+   * Bytes written to the command's stdin, then EOF. Used to stream payloads
+   * (a skill tarball) without landing them on the remote command line, whose
+   * single-argument length the kernel caps far below a real payload.
+   */
+  stdinData?: Buffer
 }
 
 /** A local loopback listener forwarding into the SSH tunnel. */
@@ -368,6 +374,12 @@ class Ssh2Session implements SshSession {
         }
         let stdout = ''
         let stderr = ''
+        // Stdin payloads go out first (half-close semantics: EOF lets the
+        // remote `tar -xf -` finish while stdout keeps flowing back).
+        if (options?.stdinData !== undefined && options.stdinData.length > 0) {
+          stream.write(options.stdinData)
+          stream.end()
+        }
         stream.on('data', (chunk: Buffer) => {
           const text = chunk.toString('utf8')
           stdout += text

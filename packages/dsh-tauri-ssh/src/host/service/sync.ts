@@ -1,0 +1,236 @@
+/**
+ * Plugin & skill sync (local → one remote machine): the S4-owned `sync.*`
+ * surface behind `/api-ssh`. `preview` reads the local dsh profile's plugin
+ * dependencies and the user-level skill roots; `apply` installs the selected
+ * plugins on the remote (`<dsh> plugin --profile web add <spec>`, one exec
+ * per plugin so every item earns its own outcome) and streams the selected
+ * skills as a tarball over the command's stdin (`tar -xf -`). The apply
+ * result is deliberately per-item — a partial failure must never hide
+ * behind a batched error string (the defect this panel was rebuilt to fix).
+ * Command builders are pure functions; the engine's fs/ssh seams are
+ * injectable so tests never touch the network.
+ * @module dsh-tauri-ssh/host/service/sync
+ */
+
+import type { MachineId, SyncApplyResult, SyncItemResult, SyncPluginItem, SyncPluginRef, SyncPreview, SyncSkillItem, SyncSkillRef, SyncSkillRoot } from '../types/index.js'
+import type { SshSession } from './transport.js'
+import { firstLineOf, probeDshCommand } from './bootstrap.js'
+import { shQuote } from './transport.js'
+
+/** The remote profile plugins are installed into (the web-serving one). */
+export const REMOTE_PLUGIN_PROFILE = 'web'
+
+/** How many output lines an item failure carries (the operator-facing tail). */
+const FAILURE_TAIL_LINES = 5
+
+/** Classify one dependency spec: can a remote `dsh plugin add` resolve it? */
+export function classifySpec(spec: string): { syncable: boolean, reason?: string } {
+  const value = spec.trim()
+  if (value === '')
+    return { syncable: false, reason: 'empty dependency spec' }
+  if (/^(github:|git\+|git@)/u.test(value))
+    return { syncable: true }
+  if (/^(file:|link:|workspace:)/u.test(value))
+    return { syncable: false, reason: 'local-path dependency; it cannot be resolved on the remote' }
+  if (/^https?:\/\//u.test(value))
+    return { syncable: false, reason: 'URL dependencies are not supported' }
+  // Anything else is an npm version spec (^1.0.0, 0.16.0, latest, …).
+  return { syncable: true }
+}
+
+/**
+ * Build the preview from the local sources: profile dependencies minus the
+ * `@deepseek-ai/` core packages (the remote release ships those), and the
+ * scanned skill roots. Both halves sorted by name for a stable panel order.
+ * @param dependencies - the profile package.json dependency map.
+ * @param skillRoots - per root, the SKILL.md directory names found locally.
+ * @returns the preview payload.
+ */
+export function buildPreview(dependencies: Record<string, string>, skillRoots: ReadonlyArray<{ root: SyncSkillRoot, names: readonly string[] }>): SyncPreview {
+  const plugins: SyncPluginItem[] = Object.entries(dependencies)
+    .filter(([name]) => !name.startsWith('@deepseek-ai/'))
+    .map(([name, spec]) => {
+      const verdict = classifySpec(spec)
+      return {
+        name,
+        spec,
+        syncable: verdict.syncable,
+        ...verdict.reason === undefined ? {} : { reason: verdict.reason },
+      }
+    })
+    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+  const skills: SyncSkillItem[] = []
+  for (const entry of skillRoots) {
+    for (const name of [...entry.names].sort()) {
+      skills.push({ name, root: entry.root })
+    }
+  }
+  return { plugins, skills }
+}
+
+/** The remote plugin-install command for one spec (dsh add is pnpm-backed). */
+export function pluginAddCommand(dshPath: string, spec: string): string {
+  return `${shQuote(dshPath)} plugin --profile ${REMOTE_PLUGIN_PROFILE} add ${shQuote(spec)}`
+}
+
+/** The remote skill-extract command; the tarball arrives on its stdin. */
+export function skillExtractCommand(): string {
+  return `mkdir -p "$HOME/.dsh/skills" && tar -xf - -C "$HOME/.dsh/skills"`
+}
+
+/** The last few non-empty lines of a command's output, joined for an error message. */
+function tailOf(text: string): string {
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line !== '')
+  return lines.slice(-FAILURE_TAIL_LINES).join(' | ')
+}
+
+/** One operator-facing failure for a finished remote command. */
+function describeFailure(code: number | null, stdout: string, stderr: string): string {
+  const tail = [tailOf(stdout), tailOf(stderr)].filter(part => part !== '').join(' | ')
+  return `exit ${code ?? '?'}${tail === '' ? '' : `: ${tail}`}`
+}
+
+/** Engine seams — the fs/ssh touchpoints, injectable for tests. */
+export interface SyncEngineDeps {
+  /** The local profile's package.json dependency map. */
+  profileDependencies: () => Record<string, string>
+  /** The local skill roots as scanned, with their directories. */
+  scanSkills: () => Array<{ root: SyncSkillRoot, dir: string, names: string[] }>
+  /** Pack skill directories into a tar stream (local `tar -cf -`). */
+  packSkills: (dir: string, names: readonly string[]) => Promise<Buffer>
+  /** Open one dedicated authenticated session; the engine closes it. */
+  openSession: (machineId: MachineId) => Promise<SshSession>
+  /** Per-remote-command deadline (plugin adds are install-class operations). */
+  commandTimeoutMs?: number
+}
+
+/**
+ * The sync engine: preview from local sources, apply over one SSH session.
+ * Apply never throws for command-level failures — every requested item
+ * settles into the returned list, so the panel can render each outcome.
+ */
+export class SyncEngine {
+  constructor(private readonly deps: SyncEngineDeps) {}
+
+  /** The selectable local plugins and skills. */
+  preview(): SyncPreview {
+    return buildPreview(this.deps.profileDependencies(), this.deps.scanSkills())
+  }
+
+  /**
+   * Sync the selected plugins and skills to one machine, item by item.
+   * @param machineId - the target machine.
+   * @param plugins - the plugin refs to install (name is display identity).
+   * @param skills - the skill refs to copy (root picks the local source).
+   * @returns one outcome per requested item, in request order.
+   */
+  async apply(machineId: MachineId, plugins: readonly SyncPluginRef[], skills: readonly SyncSkillRef[]): Promise<SyncApplyResult> {
+    const items: SyncItemResult[] = []
+    const uniquePlugins = dedupeBy(plugins, ref => ref.spec)
+    const uniqueSkills = dedupeBy(skills, ref => `${ref.root}:${ref.name}`)
+    if (uniquePlugins.length === 0 && uniqueSkills.length === 0)
+      return { items }
+    const session = await this.deps.openSession(machineId)
+    try {
+      await this.applyPlugins(session, uniquePlugins, items)
+      await this.applySkills(session, uniqueSkills, items)
+    }
+    finally {
+      await session.close().catch(() => undefined)
+    }
+    return { items }
+  }
+
+  /** Install each plugin spec in its own exec so outcomes stay per-item. */
+  private async applyPlugins(session: SshSession, plugins: readonly SyncPluginRef[], items: SyncItemResult[]): Promise<void> {
+    if (plugins.length === 0)
+      return
+    const dshPath = firstLineOf((await session.exec(probeDshCommand())).stdout)
+    for (const plugin of plugins) {
+      if (dshPath === '') {
+        items.push({
+          kind: 'plugin',
+          name: plugin.name,
+          ok: false,
+          error: 'no dsh binary on the remote (checked the login PATH, ~/.local/bin and ~/.dsh/source/current); install dsh first',
+        })
+        continue
+      }
+      const result = await session.exec(pluginAddCommand(dshPath, plugin.spec), {
+        ...this.deps.commandTimeoutMs === undefined ? {} : { timeoutMs: this.deps.commandTimeoutMs },
+      })
+      items.push(
+        result.code === 0
+          ? { kind: 'plugin', name: plugin.name, ok: true }
+          : { kind: 'plugin', name: plugin.name, ok: false, error: describeFailure(result.code, result.stdout, result.stderr) },
+      )
+    }
+  }
+
+  /** Copy skills per root: local validation per item, one tar stream per root. */
+  private async applySkills(session: SshSession, skills: readonly SyncSkillRef[], items: SyncItemResult[]): Promise<void> {
+    if (skills.length === 0)
+      return
+    const roots = new Map(this.deps.scanSkills().map(entry => [entry.root as SyncSkillRoot, entry]))
+    for (const [root, entry] of roots) {
+      const requested = skills.filter(skill => skill.root === root)
+      if (requested.length === 0)
+        continue
+      const known = new Set(entry.names)
+      const transferable: SyncSkillRef[] = []
+      for (const skill of requested) {
+        if (known.has(skill.name)) {
+          transferable.push(skill)
+        }
+        else {
+          items.push({
+            kind: 'skill',
+            name: skill.name,
+            root,
+            ok: false,
+            error: `not found under the local "${root}" skill root (it may have been removed)`,
+          })
+        }
+      }
+      if (transferable.length === 0)
+        continue
+      let tar: Buffer
+      try {
+        tar = await this.deps.packSkills(entry.dir, transferable.map(skill => skill.name))
+      }
+      catch (error) {
+        // The local pack failed: every transferable item carries the reason.
+        const message = error instanceof Error ? error.message : String(error)
+        for (const skill of transferable) {
+          items.push({ kind: 'skill', name: skill.name, root, ok: false, error: message })
+        }
+        continue
+      }
+      const result = await session.exec(skillExtractCommand(), {
+        stdinData: tar,
+        ...this.deps.commandTimeoutMs === undefined ? {} : { timeoutMs: this.deps.commandTimeoutMs },
+      })
+      for (const skill of transferable) {
+        items.push(
+          result.code === 0
+            ? { kind: 'skill', name: skill.name, root, ok: true }
+            : { kind: 'skill', name: skill.name, root, ok: false, error: describeFailure(result.code, result.stdout, result.stderr) },
+        )
+      }
+    }
+  }
+}
+
+/** Keep the first occurrence of each keyed item, preserving request order. */
+function dedupeBy<T>(items: readonly T[], keyOf: (item: T) => string): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const item of items) {
+    const key = keyOf(item)
+    if (seen.has(key))
+      continue
+    seen.add(key)
+    out.push(item)
+  }
+  return out
+}
