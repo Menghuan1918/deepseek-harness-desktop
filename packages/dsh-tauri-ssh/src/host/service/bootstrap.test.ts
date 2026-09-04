@@ -1,8 +1,10 @@
 import type { MachineProfile } from '../types/index.js'
 import type { RemoteInstallPlan } from './bootstrap.js'
 import type { SshExecOptions, SshExecResult, SshSession } from './transport.js'
+import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import { join } from 'pathe'
@@ -12,16 +14,19 @@ import {
   buildInstallScript,
   bundleProbeCommand,
   checkMissingCommand,
+  createBootstrapLineDispatcher,
   credentialsCopyCommand,
   describeExecFailure,
   ensureRemoteInstance,
   firstLineOf,
   missingComponentsOf,
+  normalizeNpmIntegrity,
   parseBootstrapLine,
   planRemoteInstall,
   readEnvCredentials,
   REMOTE_ROOT,
   rootProbeCommand,
+  skippedVerificationSummary,
   splitBundleProbeStdout,
   startCommandFor,
 } from './bootstrap.js'
@@ -116,6 +121,66 @@ describe('parseBootstrapLine', () => {
     })
     expect(parseBootstrapLine('random tool output')).toEqual({ stage: 'install', line: 'random tool output' })
   })
+
+  it('demotes unknown stage words instead of leaking them into the typed channel', () => {
+    expect(parseBootstrapLine('::dsh bogus hello')).toEqual({ stage: 'install', line: '::dsh bogus hello' })
+    expect(parseBootstrapLine('::dsh 123 numbers')).toEqual({ stage: 'install', line: '::dsh 123 numbers' })
+  })
+})
+
+describe('createBootstrapLineDispatcher', () => {
+  it('holds a half-received line back until its newline completes it', () => {
+    const lines: string[] = []
+    const dispatch = createBootstrapLineDispatcher(line => lines.push(line))
+    dispatch.push('::dsh verify 警告: 远端缺少摘要工具，跳过校')
+    expect(lines).toEqual([])
+    dispatch.push('验 node.tar.gz\n::dsh download https://a.test/x')
+    expect(lines).toEqual(['::dsh verify 警告: 远端缺少摘要工具，跳过校验 node.tar.gz'])
+    dispatch.push('\n')
+    expect(lines).toEqual(['::dsh verify 警告: 远端缺少摘要工具，跳过校验 node.tar.gz', '::dsh download https://a.test/x'])
+  })
+
+  it('flushes a trailing unterminated line and drops empty lines', () => {
+    const lines: string[] = []
+    const dispatch = createBootstrapLineDispatcher(line => lines.push(line))
+    dispatch.push('one\n\ntwo\n')
+    dispatch.push('tail without newline')
+    dispatch.flush()
+    dispatch.flush()
+    expect(lines).toEqual(['one', 'two', 'tail without newline'])
+  })
+})
+
+describe('normalizeNpmIntegrity', () => {
+  it('decodes SRI base64 digests into the script-verifiable hex form', () => {
+    expect(normalizeNpmIntegrity('sha512-dQw4w9WgXcQ=')).toBe(`sha512:${Buffer.from('dQw4w9WgXcQ=', 'base64').toString('hex')}`)
+    expect(normalizeNpmIntegrity('sha256-ZXhhZQ==')).toBe(`sha256:${Buffer.from('ZXhhZQ==', 'base64').toString('hex')}`)
+  })
+
+  it('passes colonformed digests through and drops unshaped ones', () => {
+    expect(normalizeNpmIntegrity('sha512:deadbeef')).toBe('sha512:deadbeef')
+    expect(normalizeNpmIntegrity(undefined)).toBeUndefined()
+    expect(normalizeNpmIntegrity('md5-xxxx')).toBeUndefined()
+    expect(normalizeNpmIntegrity('garbage')).toBeUndefined()
+  })
+})
+
+describe('skippedVerificationSummary', () => {
+  it('merges plan notes and streamed skip warnings, deduplicated', () => {
+    expect(skippedVerificationSummary(
+      ['未取得 @deepseek-ai/dsh@0.1.2 的完整性摘要，将跳过校验', 'release 列表获取失败（offline）'],
+      ['警告: 未取得可信摘要，跳过校验 dsh.tgz'],
+    )).toBe('；跳过校验项: 未取得 @deepseek-ai/dsh@0.1.2 的完整性摘要，将跳过校验；警告: 未取得可信摘要，跳过校验 dsh.tgz')
+    expect(skippedVerificationSummary(
+      ['警告: 远端缺少摘要工具，跳过校验 node.tar.gz'],
+      ['警告: 远端缺少摘要工具，跳过校验 node.tar.gz'],
+    )).toBe('；跳过校验项: 警告: 远端缺少摘要工具，跳过校验 node.tar.gz')
+  })
+
+  it('stays empty when everything was verified', () => {
+    expect(skippedVerificationSummary(['版本选择: pin 直用'], [])).toBe('')
+    expect(skippedVerificationSummary([], [])).toBe('')
+  })
 })
 
 describe('planRemoteInstall', () => {
@@ -143,7 +208,8 @@ describe('planRemoteInstall', () => {
         'https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz',
         'https://registry.npmmirror.com/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz',
       ])
-      expect(plan.dsh.integrity).toBe('sha512-ZXhhZQ==')
+      // The SRI digest arrives normalized into the script-verifiable hex form.
+      expect(plan.dsh.integrity).toBe(`sha512:${Buffer.from('ZXhhZQ==', 'base64').toString('hex')}`)
     }
     expect(plan.dshEntry).toBe('lib/bin.js')
     expect(plan.node.urls[0]).toBe('https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-arm64.tar.gz')
@@ -234,12 +300,32 @@ describe('buildInstallScript', () => {
     const plan = await planRemoteInstall('Linux 5.15 aarch64', {}, healthyFetchers())
     const script = buildInstallScript(plan)
     expect(script).toContain('https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz')
-    expect(script).toContain('sha512-ZXhhZQ==')
+    expect(script).toContain(`sha512:${Buffer.from('ZXhhZQ==', 'base64').toString('hex')}`)
     expect(script).toContain('install --prod --silent --registry')
     expect(script).toContain('"$ROOT/dependencies/pnpm/bin/pnpm.cjs"')
     expect(script).toContain('https://registry.npmmirror.com')
+    // pnpm must run inside the extracted package (SSH exec starts in $HOME,
+    // where pnpm aborts with ERR_PNPM_NO_PKG_MANIFEST).
+    expect(script).toContain('( cd "$ROOT/dependencies/dsh" && "$ROOT/runtime/bin/node"')
     // The tarball path extracts with tar; the zip helper stays uncalled.
     expect(script).not.toContain('extract_zip "$TMP/dsh')
+  })
+
+  it('notes an unparseable installRepo instead of silently installing official', async () => {
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', { installRepo: 'not a repo at all' }, healthyFetchers())
+    expect(plan.repo).toBe(PKG_REPO)
+    expect(plan.notes.join('\n')).toContain('无法解析为 GitHub 仓库')
+    expect(plan.notes.join('\n')).toContain(PKG_REPO)
+  })
+
+  it('dedupes the npm tarball URL pair when the packument already carries the mirror', async () => {
+    const mirrorOnly = 'https://registry.npmmirror.com/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz'
+    const plan = await planRemoteInstall('Linux 5.15 aarch64', {}, healthyFetchers({
+      npmDist: () => Promise.resolve({ url: mirrorOnly, mirrorUrl: mirrorOnly, integrity: 'sha512-ZXhhZQ==' }),
+    }))
+    if (plan.dsh.kind !== 'npm-tgz')
+      throw new Error('expected npm-tgz')
+    expect(plan.dsh.urls).toEqual([mirrorOnly])
   })
 })
 
@@ -321,6 +407,123 @@ describe('install script execution (real POSIX sh)', () => {
     expect(outcome.stdout).toContain('远端初始化完成')
     expect(outcome.stdout).not.toContain('::dsh download')
     expect(existsSync(join(root, 'tmp'))).toBe(false)
+  })
+
+  /**
+   * Run one generated script under the real `sh` inside a sandboxed HOME
+   * whose fake `curl` serves crafted artifacts from `servedDir` by URL
+   * basename. Used for the arm64 npm path, whose node/pnpm/dsh tarballs are
+   * sh shims standing in for the real binaries.
+   */
+  function runScriptServing(script: string, sandbox: string, servedDir: string): Promise<{ code: number, stdout: string, stderr: string }> {
+    const binDir = join(sandbox, 'fake-bin')
+    mkdirSync(binDir, { recursive: true })
+    const fakeCurl = join(binDir, 'curl')
+    writeFileSync(fakeCurl, [
+      '#!/bin/sh',
+      'dst=""',
+      'prev=""',
+      'for arg in "$@"; do',
+      '  if [ "$prev" = "-o" ]; then dst="$arg"; fi',
+      '  prev="$arg"',
+      'done',
+      'url=""',
+      'for arg in "$@"; do url="$arg"; done',
+      'if [ -f "$SERVED/$(basename "$url")" ]; then cp "$SERVED/$(basename "$url")" "$dst"; exit 0; fi',
+      'echo "fake curl: no artifact for $url" >&2',
+      'exit 22',
+    ].join('\n'))
+    chmodSync(fakeCurl, 0o755)
+    const scriptPath = join(sandbox, 'install.sh')
+    writeFileSync(scriptPath, script)
+    const run = promisify(execFile)
+    return run('sh', [scriptPath], {
+      env: { ...process.env, HOME: sandbox, SERVED: servedDir, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+    }).then(
+      ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+      (error: { code?: number, stdout?: string, stderr?: string }) =>
+        ({ code: error.code ?? -1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }),
+    )
+  }
+
+  /**
+   * arm64 (npm-tgz) execution coverage: the whole script runs under real sh
+   * with crafted tarballs — node is an `exec sh` shim, pnpm.cjs a stand-in
+   * that REFUSES to run without a package.json in cwd (exactly the
+   * ERR_PNPM_NO_PKG_MANIFEST failure the missing `cd` would cause) and
+   * writes a marker into node_modules when it "installs".
+   */
+  it('arm64: pnpm install runs inside the extracted package (real POSIX sh)', async () => {
+    const work = tempDir()
+    const served = join(work, 'served')
+    mkdirSync(served, { recursive: true })
+
+    // node dist: bin/node = a sh shim standing in for the real binary, plus
+    // a second top-level entry so flatten_move sees the real multi-entry
+    // layout (a lone bin/ would flatten one level too many).
+    const nodeDir = join(work, 'node-v22.22.0-linux-arm64')
+    mkdirSync(join(nodeDir, 'bin'), { recursive: true })
+    mkdirSync(join(nodeDir, 'include'), { recursive: true })
+    writeFileSync(join(nodeDir, 'bin', 'node'), '#!/bin/sh\nexec sh "$@"\n')
+    chmodSync(join(nodeDir, 'bin', 'node'), 0o755)
+    writeFileSync(join(nodeDir, 'include', 'node'), 'headers\n')
+    const nodeTgz = join(served, 'node-v22.22.0-linux-arm64.tar.gz')
+    await promisify(execFile)('tar', ['-czf', nodeTgz, '-C', work, 'node-v22.22.0-linux-arm64'])
+
+    // pnpm dist: the cwd-gating stand-in, packed as package/{bin,lib}.
+    const pnpmStage = join(work, 'pnpm-stage')
+    mkdirSync(join(pnpmStage, 'package', 'bin'), { recursive: true })
+    mkdirSync(join(pnpmStage, 'package', 'lib'), { recursive: true })
+    writeFileSync(join(pnpmStage, 'package', 'bin', 'pnpm.cjs'), [
+      '#!/bin/sh',
+      'if [ ! -f package.json ]; then',
+      '  echo "ERR_PNPM_NO_PKG_MANIFEST: no package.json in $PWD" >&2',
+      '  exit 1',
+      'fi',
+      'mkdir -p node_modules',
+      'echo ok > node_modules/installed',
+    ].join('\n'))
+    writeFileSync(join(pnpmStage, 'package', 'lib', 'pnpm.js'), 'module.exports = {}\n')
+    const pnpmTgz = join(served, 'pnpm-11.7.0.tgz')
+    await promisify(execFile)('tar', ['-czf', pnpmTgz, '-C', pnpmStage, 'package'])
+
+    // dsh dist: the npm package layout (package.json + lib/bin.js).
+    const dshStage = join(work, 'dsh-stage')
+    mkdirSync(join(dshStage, 'package', 'lib'), { recursive: true })
+    writeFileSync(join(dshStage, 'package', 'package.json'), '{"name":"@deepseek-ai/dsh","version":"0.1.2-rc.1"}\n')
+    writeFileSync(join(dshStage, 'package', 'lib', 'bin.js'), '#!/usr/bin/env node\nvoid 0\n')
+    const dshTgz = join(served, 'dsh-0.1.2-rc.1.tgz')
+    await promisify(execFile)('tar', ['-czf', dshTgz, '-C', dshStage, 'package'])
+
+    const digest = (file: string, algorithm: 'sha256' | 'sha512', encoding: 'hex' | 'base64') =>
+      createHash(algorithm).update(readFileSync(file)).digest(encoding)
+    writeFileSync(join(served, 'SHASUMS256.txt'), `${digest(nodeTgz, 'sha256', 'hex')}  node-v22.22.0-linux-arm64.tar.gz\n`)
+
+    const basePlan = await planRemoteInstall('Linux 5.15 aarch64', {}, healthyFetchers({
+      npmDist: () => Promise.resolve({
+        url: 'https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz',
+        mirrorUrl: 'https://registry.npmmirror.com/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz',
+        // The real SRI form npm serves; the planner normalizes it to hex.
+        integrity: `sha512-${digest(dshTgz, 'sha512', 'base64')}`,
+      }),
+    }))
+    // The pinned pnpm digest is the real release's; point it at the crafted
+    // tarball so the verify step passes against what the fake curl serves.
+    const plan: RemoteInstallPlan = { ...basePlan, pnpm: { ...basePlan.pnpm, sha256: digest(pnpmTgz, 'sha256', 'hex') } }
+
+    const sandbox = tempDir()
+    const outcome = await runScriptServing(buildInstallScript(plan), sandbox, served)
+    // Without the cd into dependencies/dsh, the pnpm stand-in aborts with
+    // ERR_PNPM_NO_PKG_MANIFEST on both registries and the script exits 13.
+    expect(outcome.stderr).toBe('')
+    expect(outcome.code).toBe(0)
+    expect(outcome.stdout).toContain('dsh 依赖安装完成 (registry https://registry.npmjs.org)')
+    expect(outcome.stdout).toContain('远端初始化完成')
+    const root = join(sandbox, REMOTE_ROOT)
+    expect(existsSync(join(root, 'dependencies', 'dsh', 'node_modules', 'installed'))).toBe(true)
+    expect(existsSync(join(root, 'dependencies', 'dsh', 'lib', 'bin.js'))).toBe(true)
+    expect(existsSync(join(root, 'runtime', 'bin', 'node'))).toBe(true)
+    expect(existsSync(join(root, 'dependencies', 'pnpm', 'bin', 'pnpm.cjs'))).toBe(true)
   })
 })
 

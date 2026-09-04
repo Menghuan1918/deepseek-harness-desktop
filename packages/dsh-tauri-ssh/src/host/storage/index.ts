@@ -99,7 +99,7 @@ export interface Config {
    * version; unresolvable pins fall back to the latest stable release.
    */
   installRef?: string
-  /** Deadline for one remote dsh install (clone + pnpm install + build). */
+  /** Deadline for one remote binary install (download + verify + extract + pnpm assembly). */
   installTimeoutMs?: number
 }
 

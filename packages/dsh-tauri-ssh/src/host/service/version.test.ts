@@ -16,8 +16,8 @@ const RELEASES = [
   { tag: 'dsh-0.2.0-preview.1-32490000001', prerelease: true },
   { tag: 'dsh-0.1.2-rc.1-33729514615', prerelease: false },
   { tag: 'dsh-0.1.1-rc.1-32342588166', prerelease: false },
-  { tag: 'dsh-0.1.0-rc.8-32331963388', prerelease: false },
   { tag: 'dsh-0.1.0-rc.8-32342588167', prerelease: false },
+  { tag: 'dsh-0.1.0-rc.8-32331963388', prerelease: false },
   { tag: 'dsh-0.1.0-beta.1-32490000002', prerelease: false },
 ]
 
@@ -55,9 +55,20 @@ describe('pickReleaseTag', () => {
     expect(resolved.notes).toEqual([])
   })
 
-  it('dedupes republished versions keeping the last-listed tag', () => {
+  it('dedupes republished versions keeping the newest-listed tag', () => {
     const resolved = pickReleaseTag(RELEASES, { recommended: '0.1.0-rc.8' })
     expect(resolved.tag).toBe('dsh-0.1.0-rc.8-32342588167')
+  })
+
+  it('prefers the non-src republish of a version (newest-first listing)', () => {
+    // Mirrors the live pkg repo: `dsh-0.1.2-alpha.4` (newer) and the older
+    // `dsh-src-0.1.2-alpha.4` parse to the same version; newest-first order
+    // must keep the `dsh-` variant.
+    const srcPair = [
+      { tag: 'dsh-0.1.2-alpha.4-33260040123', prerelease: false },
+      { tag: 'dsh-src-0.1.2-alpha.4-33260039971', prerelease: false },
+    ]
+    expect(pickReleaseTag(srcPair, { recommended: '0.1.2-alpha.4' }).tag).toBe('dsh-0.1.2-alpha.4-33260040123')
   })
 
   it('honors an explicit tag pin, listed or not', () => {

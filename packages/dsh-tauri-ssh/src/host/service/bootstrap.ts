@@ -14,14 +14,15 @@
  */
 
 import type { Config } from '../storage/index.js'
-import type { MachineProfile, SshProgress } from '../types/index.js'
+import type { MachineProfile, SshMachineStage, SshMachineTerminal, SshProgress } from '../types/index.js'
 import type { RemoteArch, RemoteAssetMatrix, RemoteOs } from './assets.js'
 import type { SshSession } from './transport.js'
+import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
 import { assetMatrixFor, dshNpmTarballUrls, dshZipDownloadUrls, nodeDownloadUrls, nodeFilenameFor, nodeShasumUrls, parsePlatform, PNPM_SHA256, PNPM_VERSION, pnpmDownloadUrls } from './assets.js'
 import { clientUrlsFromBootHtml, looksLikePluginBundle } from './boot-html.js'
 import { shQuote } from './transport.js'
-import { listGithubAssets, listGithubReleases, npmDistMetadata, pickReleaseTag, pkgRepoOf } from './version.js'
+import { listGithubAssets, listGithubReleases, npmDistMetadata, parseGitHubRepo, pickReleaseTag, pkgRepoOf } from './version.js'
 
 /** Log file of the auto-started remote instance, under the remote home. */
 export const REMOTE_WEB_LOG = '.dsh/dsh-remote-web.log'
@@ -43,30 +44,114 @@ export const BOOTSTRAP_LOG_PREFIX = '::dsh '
 
 /** One parsed stage line of the install script's output stream. */
 export interface BootstrapLogLine {
-  stage: string
+  stage: SshMachineStage
   line: string
 }
 
 /**
+ * The install script's stage vocabulary as a runtime set. Keyed by every
+ * {@link SshMachineStage} member so the compiler flags drift (S3 adds the
+ * connection-lifecycle stages here too).
+ */
+const BOOTSTRAP_STAGES: Record<SshMachineStage, true> = {
+  probe: true,
+  download: true,
+  verify: true,
+  install: true,
+  launch: true,
+  ready: true,
+  failed: true,
+}
+
+/** Whether a parsed marker word is one of the known stage tags. */
+function isBootstrapStage(value: string): value is SshMachineStage {
+  return (BOOTSTRAP_STAGES as Record<string, true | undefined>)[value] === true
+}
+
+/**
  * Parse one output line of the install script into its stage tag; lines
- * without the marker are unexpected tool output and report stage `install`.
+ * without a known marker are unexpected tool output and report stage
+ * `install` with the raw line kept.
  * @param chunk - one raw output line.
  */
 export function parseBootstrapLine(chunk: string): BootstrapLogLine {
   const match = /^::dsh (\w+) (.*)$/u.exec(chunk)
-  if (match === null)
+  const stage = match?.[1]
+  if (match === null || stage === undefined || !isBootstrapStage(stage))
     return { stage: 'install', line: chunk }
-  return { stage: match[1] ?? 'install', line: match[2] ?? '' }
+  return { stage, line: match[2] ?? '' }
+}
+
+/**
+ * Line-buffered dispatcher for a bootstrap script's streamed output: SSH
+ * data arrives in arbitrary chunk boundaries, so a half-received line is
+ * held back until its newline (or the final flush) completes it.
+ * @param onLine - one complete output line.
+ */
+export function createBootstrapLineDispatcher(onLine: (line: string) => void): { push: (chunk: string) => void, flush: () => void } {
+  let pending = ''
+  return {
+    push(chunk: string): void {
+      pending = `${pending}${chunk}`
+      const lines = pending.split('\n')
+      pending = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line !== '')
+          onLine(line)
+      }
+    },
+    flush(): void {
+      const line = pending
+      pending = ''
+      if (line !== '')
+        onLine(line)
+    },
+  }
+}
+
+/**
+ * The skipped-verification summary terminal events carry: plan-level notes
+ * ("no trusted digest") plus the install script's live skip warnings,
+ * deduplicated. Empty when every artifact was actually verified — the
+ * fail-open skips stay impossible to miss on the settling event.
+ * @param notes - the install plan's resolution notes.
+ * @param skipLines - streamed verify lines that recorded a skipped check.
+ */
+export function skippedVerificationSummary(notes: string[], skipLines: string[]): string {
+  const items = [...new Set([...notes, ...skipLines].filter(item => item.includes('跳过')))]
+  return items.length === 0 ? '' : `；跳过校验项: ${items.join('；')}`
 }
 
 /** The npm-registry DSH kind's resolved asset. */
 interface DshNpmPlan {
   kind: 'npm-tgz'
   urls: string[]
-  /** Trusted `sha512-…` integrity from the packument, when available. */
+  /**
+   * Trusted digest in the install script's `sha512:<hex>` form (normalized
+   * from the packument's SRI `sha512-<base64>`), when available.
+   */
   integrity?: string
   packageName: string
   version: string
+}
+
+/**
+ * Normalize an npm packument integrity into the `shaNNN:<hex>` form the
+ * install script's `verify` understands. npm carries SRI (`sha512-<base64>`),
+ * which the script would otherwise compare against a hex digest — a
+ * guaranteed mismatch. Already-colonformed or unshaped values pass through
+ * unchanged (colon forms verify; unshaped ones mismatch loudly) — except
+ * unparseable ones, which report undefined so the plan notes the skip.
+ * @param integrity - the packument's `dist.integrity`, when present.
+ * @returns the `shaNNN:<hex>` digest, or undefined when unusable.
+ */
+export function normalizeNpmIntegrity(integrity: string | undefined): string | undefined {
+  if (integrity === undefined)
+    return undefined
+  const sri = /^sha(256|512)-([A-Za-z0-9+/]+={0,2})$/u.exec(integrity)
+  if (sri !== null)
+    return `sha${sri[1]}:${Buffer.from(sri[2] ?? '', 'base64').toString('hex')}`
+  return integrity.startsWith('sha256:') || integrity.startsWith('sha512:') ? integrity : undefined
 }
 
 /** The packaged-zip DSH kind's resolved asset. */
@@ -122,6 +207,11 @@ export async function planRemoteInstall(
   const matrix = assetMatrixFor(os, arch)
   const repo = pkgRepoOf(config.installRepo)
   const notes: string[] = []
+  // An unparseable configured repository falls back inside pkgRepoOf; note
+  // it so a config typo is visible instead of silently installing official.
+  const configuredRepo = config.installRepo?.trim()
+  if (configuredRepo !== undefined && configuredRepo !== '' && parseGitHubRepo(configuredRepo) === undefined)
+    notes.push(`installRepo "${configuredRepo}" 无法解析为 GitHub 仓库，回退官方发行仓 ${repo}`)
   const listReleases = fetchers.listReleases ?? listGithubReleases
   const listAssets = fetchers.listAssets ?? listGithubAssets
   const npmDist = fetchers.npmDist ?? npmDistMetadata
@@ -181,14 +271,16 @@ export async function planRemoteInstall(
   let integrity: string | undefined
   try {
     const dist = await npmDist(packageName, resolved.version)
-    urls = [dist.url, dist.mirrorUrl]
-    integrity = dist.integrity
+    // A packument served by the mirror already carries the mirror tarball
+    // URL — dedupe so the fallback list never repeats the same URL.
+    urls = [...new Set([dist.url, dist.mirrorUrl])]
+    integrity = normalizeNpmIntegrity(dist.integrity)
   }
   catch (error) {
     notes.push(`npm 元数据获取失败（${describeError(error)}），回退确定性 URL`)
   }
   if (integrity === undefined)
-    notes.push(`未取得 ${packageName}@${resolved.version} 的完整性摘要，将跳过校验`)
+    notes.push(`未取得 ${packageName}@${resolved.version} 的可校验完整性摘要，将跳过校验`)
   return {
     os,
     arch,
@@ -234,10 +326,12 @@ export function buildInstallScript(plan: RemoteInstallPlan): string {
       ].join('\n')
     : [
         // The npm kind assembles node_modules on the remote: pnpm resolves
-        // the platform-correct natives, official registry first, mirror fallback.
+        // the platform-correct natives, official registry first, mirror
+        // fallback. pnpm must run inside the extracted package (SSH exec
+        // starts in $HOME, where pnpm would abort with NO_PKG_MANIFEST).
         `install_dsh_deps() {`,
         `  for _reg in ${quoteUrls(['https://registry.npmjs.org', 'https://registry.npmmirror.com'])}; do`,
-        `    if "$ROOT/runtime/bin/node" "$ROOT/dependencies/pnpm/${PNPM_ENTRY}" install --prod --silent --registry="$_reg" >"$TMP/pnpm.log" 2>&1; then`,
+        `    if ( cd "$ROOT/dependencies/dsh" && "$ROOT/runtime/bin/node" "$ROOT/dependencies/pnpm/${PNPM_ENTRY}" install --prod --silent --registry="$_reg" >"$TMP/pnpm.log" 2>&1 ); then`,
         `      log install "dsh 依赖安装完成 (registry $_reg)"`,
         `      return 0`,
         `    fi`,
@@ -564,7 +658,7 @@ export interface BootstrapHooks {
   /** Coarse UI progress (the settings page's live status line). */
   onProgress?: (progress: SshProgress) => void
   /** Machine event channel appends (stage-tagged, the spec's C-EVENT). */
-  onEvent?: (stage: 'probe' | 'download' | 'verify' | 'install' | 'launch' | 'ready' | 'failed', line: string, options?: { terminal?: 'success' | 'failed', reason?: string }) => void
+  onEvent?: (stage: SshMachineStage, line: string, options?: { terminal?: SshMachineTerminal, reason?: string }) => void
 }
 
 /** Timing + source configuration of the assurance flow. */
@@ -603,12 +697,7 @@ export async function ensureRemoteInstance(
   const target = `${profile.host}:${profile.remotePort}`
   const readyFromHtml = await judgeReadiness(session, profile, bootstrap)
   if (readyFromHtml !== undefined) {
-    if (readyFromHtml.startsWith('boot')) {
-      onEvent?.('ready', `远端实例已就绪 (${target})`, { terminal: 'success' })
-    }
-    else {
-      onEvent?.('ready', `远端实例已就绪（旧探测兜底: ${readyFromHtml}）`, { terminal: 'success' })
-    }
+    emitReady(onEvent, target, readyFromHtml)
     return target
   }
   // The instance is not answering: bootstrap (probe → install → launch).
@@ -628,13 +717,17 @@ export async function ensureRemoteInstance(
   for (const note of plan.notes)
     onEvent?.('probe', note)
   const missing = missingComponentsOf((await session.exec(checkMissingCommand())).stdout)
+  let skips: string[] = []
   if (missing.length > 0) {
     onEvent?.('probe', `缺失组件: ${missing.join(', ')}`)
-    await runInstallScript(session, plan, bootstrap, hooks)
+    skips = await runInstallScript(session, plan, bootstrap, hooks)
   }
   else {
     onEvent?.('probe', '三件套已就绪，跳过安装')
   }
+  // The bootstrap's settling event carries the skipped-verification summary
+  // (plan notes + the script's live verify warnings), if any.
+  const skipSummary = skippedVerificationSummary(plan.notes, skips)
   onProgress?.({ phase: 'starting' })
   onEvent?.('launch', `拉起远端实例 (端口 ${profile.remotePort})`)
   const started = await session.exec(startCommandFor(profile, plan))
@@ -649,11 +742,7 @@ export async function ensureRemoteInstance(
     await sleep(bootstrap.healthPollIntervalMs)
     const verdict = await judgeReadiness(session, profile, bootstrap)
     if (verdict !== undefined) {
-      if (verdict.startsWith('boot')) {
-        onEvent?.('ready', `远端实例已就绪 (${target})`, { terminal: 'success' })
-        return target
-      }
-      onEvent?.('ready', `远端实例已就绪（旧探测兜底: ${verdict}）`, { terminal: 'success' })
+      emitReady(onEvent, target, verdict, skipSummary)
       return target
     }
   }
@@ -697,22 +786,31 @@ async function legacyRootVerdict(session: SshSession, profile: MachineProfile, b
   return probe.code === 0 ? `root answered ${probe.stdout.trim() || '?'}` : 'no answer'
 }
 
-/** Run the generated install script, streaming its stage-tagged output. */
-async function runInstallScript(session: SshSession, plan: RemoteInstallPlan, bootstrap: BootstrapConfig, hooks: BootstrapHooks): Promise<void> {
+/**
+ * Run the generated install script, streaming its stage-tagged output
+ * line-buffered (SSH chunks may split mid-line). Returns the verify-stage
+ * lines that recorded a skipped check, for the settling event's summary.
+ */
+async function runInstallScript(session: SshSession, plan: RemoteInstallPlan, bootstrap: BootstrapConfig, hooks: BootstrapHooks): Promise<string[]> {
   const { onEvent, onProgress } = hooks
   const installTimeoutMs = bootstrap.config.installTimeoutMs
   let log = ''
+  const skips: string[] = []
+  const dispatch = createBootstrapLineDispatcher((line) => {
+    const parsed = parseBootstrapLine(line)
+    if (parsed.stage === 'verify' && parsed.line.includes('跳过'))
+      skips.push(parsed.line)
+    onEvent?.(parsed.stage, parsed.line)
+  })
   const result = await session.exec(buildInstallScript(plan), {
     ...installTimeoutMs === undefined ? {} : { timeoutMs: installTimeoutMs },
     onData: (chunk) => {
       log = `${log}${chunk}`.slice(-2000)
-      for (const line of chunk.split('\n').filter(line => line !== '')) {
-        const parsed = parseBootstrapLine(line)
-        onEvent?.(parsed.stage as 'probe' | 'download' | 'verify' | 'install' | 'launch' | 'ready' | 'failed', parsed.line)
-      }
+      dispatch.push(chunk)
       onProgress?.({ phase: 'installing', log })
     },
   })
+  dispatch.flush()
   if (result.code !== 0) {
     // Prefer the streamed log (the transport taps stdout live); transports
     // without the tap still surface the markers through the collected stdout.
@@ -720,6 +818,23 @@ async function runInstallScript(session: SshSession, plan: RemoteInstallPlan, bo
     const tail = stream === '' ? '(no output captured)' : stream.split('\n').slice(-5).join(' | ')
     failBootstrap(onEvent, `install failed on remote (exit ${result.code ?? '?'}): ${tail}`)
   }
+  return skips
+}
+
+/**
+ * The settling ready event: primary boot-manifest verdict, legacy-fallback
+ * note, and the skipped-verification summary when checks were skipped.
+ */
+function emitReady(
+  onEvent: BootstrapHooks['onEvent'],
+  target: string,
+  verdict: string,
+  skipSummary = '',
+): void {
+  const base = verdict.startsWith('boot')
+    ? `远端实例已就绪 (${target})`
+    : `远端实例已就绪（旧探测兜底: ${verdict}）`
+  onEvent?.('ready', `${base}${skipSummary}`, { terminal: 'success' })
 }
 
 /** Record the terminal failure and build the thrown error. */

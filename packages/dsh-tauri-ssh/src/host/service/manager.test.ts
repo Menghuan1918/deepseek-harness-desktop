@@ -38,8 +38,8 @@ const config = {
 /** A boot page whose manifest the bundle probe confirms. */
 const BOOT_HTML = '<html><body><script>globalThis["__DSH_BOOT__"] = {"entries":[{"url":"/plugins/@deepseek-ai/dsh-client-ui-layout/client.js"}]};</script></body></html>'
 
-/** The layout entry the v2 install resolves (see {@link fakePlan}). */
-const ENTRY = '$HOME/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js'
+/** The layout entry the v2 install resolves (see {@link fakePlan}): the remote shell expands $HOME (root user in the fake). */
+const ENTRY = '/root/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js'
 
 /** A literal linux/x64 plan (no network): the recommended pin with digest. */
 function fakePlan(): RemoteInstallPlan {
@@ -116,7 +116,8 @@ class FakeSession implements SshSession {
         return { code: 0, stdout: '::dsh install 远端初始化完成', stderr: '' }
       }
       if (command.includes('test -f ')) {
-        return { code: 0, stdout: 'ok\n', stderr: '' }
+        // The real command prints the $HOME-expanded absolute entry path.
+        return { code: 0, stdout: `${ENTRY}\n`, stderr: '' }
       }
       if (command.includes('grep -q \'^DEEPSEEK_API_KEY=\'')) {
         return { code: 0, stdout: this.credentialsAnswer, stderr: '' }
@@ -759,11 +760,43 @@ describe('sshManager install', () => {
     const session = new FakeSession(() => false)
     session.exec = (command, _options) => command.includes('grep -q \'^DEEPSEEK_API_KEY=\'')
       ? Promise.resolve({ code: 1, stdout: '', stderr: 'disk full' })
-      : Promise.resolve({ code: 0, stdout: command.includes('test -f ') ? 'ok\n' : 'installed', stderr: '' })
+      : Promise.resolve({ code: 0, stdout: command.includes('test -f ') ? `${ENTRY}\n` : 'installed', stderr: '' })
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const result = await manager.install(MachineId('m1'))
     expect(result.credentialsCopied).toBe(false)
     expect(result.credentialsError).toContain('disk full')
+  })
+
+  it('settles the install with a terminal success event and line-buffered stream parsing', async () => {
+    let releaseInstall: (() => void) | undefined
+    const installGate = new Promise<void>((resolve) => {
+      releaseInstall = resolve
+    })
+    const session = new FakeSession(() => false)
+    session.missingResult = 'node\n'
+    session.execGate = command => command.includes('trap cleanup EXIT') ? installGate : undefined
+    const { manager, events } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({}) })
+    const pending = manager.install(MachineId('m1'))
+    await until(() => session.commands.some(command => command.includes('trap cleanup EXIT')), 'install exec')
+    const installIndex = session.commands.findIndex(command => command.includes('trap cleanup EXIT'))
+    // A stage line split across two SSH chunks must surface as ONE event
+    // with the full line, never two mangled halves.
+    session.options[installIndex]?.onData?.('::dsh verify 警告: 远端缺少摘要工具，跳过校')
+    session.options[installIndex]?.onData?.('验 node.tar.gz\n::dsh download https://example.test/a\n')
+    releaseInstall!()
+    const result = await pending
+    expect(result.dshPath).toBe(ENTRY)
+    const page = events.since(MachineId('m1'))
+    const lines = page.events.map(event => `${event.stage}: ${event.line}`)
+    expect(lines).toContain('verify: 警告: 远端缺少摘要工具，跳过校验 node.tar.gz')
+    expect(lines).toContain('download: https://example.test/a')
+    // The install operation settles on its own terminal event — independent
+    // of the connect handoff — and carries the skipped-verification summary.
+    const terminals = page.events.filter(event => event.terminal !== undefined)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]).toMatchObject({ stage: 'install', terminal: 'success' })
+    expect(terminals[0]?.line).toContain('dsh 安装成功')
+    expect(terminals[0]?.line).toContain('跳过校验项: 警告: 远端缺少摘要工具，跳过校验 node.tar.gz')
   })
 
   it('fails loud with machine-install-failed when the install command fails', async () => {
@@ -874,7 +907,7 @@ describe('sshManager install', () => {
       // oxlint-disable-next-line typescript/prefer-promise-reject-errors -- hostile rejection
       // eslint-disable-next-line prefer-promise-reject-errors -- deliberately non-Error: covers describeExecFailure's message tail
       ? Promise.reject('disk full')
-      : Promise.resolve({ code: 0, stdout: command.includes('test -f ') ? 'ok\n' : 'installed', stderr: '' })
+      : Promise.resolve({ code: 0, stdout: command.includes('test -f ') ? `${ENTRY}\n` : 'installed', stderr: '' })
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const result = await manager.install(MachineId('m1'))
     expect(result.credentialsCopied).toBe(false)
@@ -913,6 +946,9 @@ describe('sshManager install', () => {
         return Promise.resolve({ code: 0, stdout: 'node\n', stderr: '' })
       if (command.includes('trap cleanup EXIT'))
         return Promise.resolve({ code: 0, stdout: '::dsh install 远端初始化完成', stderr: '' })
+      if (command.includes('test -f '))
+        // The remote `test -f` itself fails: the entry never landed.
+        return Promise.resolve({ code: 1, stdout: '', stderr: '' })
       return Promise.resolve({ code: 0, stdout: '', stderr: '' })
     }
     const { manager } = boot({ sessionFactory: () => session })
@@ -940,7 +976,7 @@ describe('sshManager install', () => {
     await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
     expect(manager.status(MachineId('m1')).dshMissing).toBe(true)
     const result = await manager.install(MachineId('m1'))
-    expect(result.dshPath).toBe('$HOME/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js')
+    expect(result.dshPath).toBe(ENTRY)
     expect(manager.status(MachineId('m1')).dshMissing).toBeUndefined()
     await until(() => manager.status(MachineId('m1')).state === 'connected', 'auto-connect after install')
     // First (failed) connect + install + auto-connect.

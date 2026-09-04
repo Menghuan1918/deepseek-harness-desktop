@@ -50,9 +50,17 @@ const E2E_CONFIG = {
 /** Kill only processes whose command line references the shared layout. */
 const CLEANUP_COMMAND = [
   `if [ -f "$HOME/.dsh/.dsh-remote.pid" ]; then kill "$(cat "$HOME/.dsh/.dsh-remote.pid")" 2>/dev/null || true; rm -f "$HOME/.dsh/.dsh-remote.pid"; fi`,
-  `pgrep -af '\\.dsh-desktop' | while IFS= read -r _pid _rest; do kill "$_pid" 2>/dev/null || true; done`,
+  // No `IFS= read` here: an empty IFS disables word splitting, the whole
+  // pgrep line lands in the pid variable, and the kill silently no-ops
+  // (verified live — the leftover instance survived the old loop). pgrep
+  // without -a prints bare pids; this shell's own pid is skipped so the
+  // cleanup does not kill itself mid-script.
+  `for _pid in $(pgrep -f '\\.dsh-desktop'); do [ "$_pid" = "$$" ] && continue; kill "$_pid" 2>/dev/null || true; done`,
   `sleep 1`,
-  `pgrep -af '\\.dsh-desktop' || true`,
+  // Escalation pass: anything still alive after SIGTERM gets SIGKILL.
+  `for _pid in $(pgrep -f '\\.dsh-desktop'); do [ "$_pid" = "$$" ] && continue; kill -9 "$_pid" 2>/dev/null || true; done`,
+  `sleep 1`,
+  `pgrep -af '\\.dsh-desktop' | grep -v "^$$ " || true`,
 ].join('\n')
 
 const profile: MachineProfile = HOST === undefined
@@ -110,7 +118,11 @@ describe.skipIf(HOST === undefined)('bootstrap E2E (real linux x64 remote)', () 
     const session = await transport.connect(profile, () => true).catch(() => undefined)
     if (session !== undefined) {
       const leftovers = await session.exec(`${CLEANUP_COMMAND}\nrm -f "$HOME/.dsh-e2e-port.yml"`).catch(() => undefined)
-      console.log('[e2e] remote cleanup done; remaining layout processes:', JSON.stringify(leftovers?.stdout.trim() ?? '(probe failed)'))
+      const remaining = (leftovers?.stdout ?? '(probe failed)').trim()
+      console.log('[e2e] remote cleanup done; remaining layout processes:', JSON.stringify(remaining))
+      // The cleanup must actually leave nothing behind — a leftover instance
+      // would hold the port and fake the next run's readiness.
+      expect(remaining).toBe('')
       await session.close().catch(() => undefined)
     }
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })

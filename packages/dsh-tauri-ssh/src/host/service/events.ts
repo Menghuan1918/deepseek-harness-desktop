@@ -62,7 +62,7 @@ export class SshMachineEvents {
    * @param machineId - the machine to read.
    * @param sinceSeq - the last seq the caller already saw.
    * @returns the drained slice and the next poll cursor; unknown machines
-   * report an empty page anchored at seq 0.
+   * report an empty page anchored at `nextSeq: 1` (the first event's seq).
    */
   since(machineId: MachineId, sinceSeq?: number): SshMachineEventsPage {
     const buffer = this.buffers.get(machineId)

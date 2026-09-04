@@ -8,7 +8,7 @@ import type { Config } from '../storage/index.js'
  * @module dsh-tauri-ssh/host/service/manager
  */
 
-import type { MachineId, MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStage, SshMachineStatus, SshProgress, SshTestResult } from '../types/index.js'
+import type { MachineId, MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStatus, SshProgress, SshTestResult } from '../types/index.js'
 import type { SshMachineEvents } from './events.js'
 import type { KnownHostsStore } from './host-keys.js'
 import type { SshSession, SshTransport, SshTunnelHandle } from './transport.js'
@@ -16,7 +16,7 @@ import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { SshError } from '../types/index.js'
-import { buildInstallScript, checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, parseBootstrapLine, planRemoteInstall, readEnvCredentials, REMOTE_ROOT } from './bootstrap.js'
+import { buildInstallScript, checkMissingCommand, createBootstrapLineDispatcher, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, parseBootstrapLine, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, skippedVerificationSummary } from './bootstrap.js'
 import { fingerprintHostKey } from './host-keys.js'
 
 /** One machine's live connection state. */
@@ -415,23 +415,28 @@ export class SshManager {
       for (const note of plan.notes)
         events.append(machineId, 'probe', note)
       const missing = missingComponentsOf((await session.exec(checkMissingCommand())).stdout)
+      const skips: string[] = []
       if (missing.length > 0) {
         events.append(machineId, 'probe', `缺失组件: ${missing.join(', ')}`)
         let log = ''
+        const dispatch = createBootstrapLineDispatcher((line) => {
+          const parsed = parseBootstrapLine(line)
+          if (parsed.stage === 'verify' && parsed.line.includes('跳过'))
+            skips.push(parsed.line)
+          events.append(machineId, parsed.stage, parsed.line)
+        })
         const result = await session.exec(buildInstallScript(plan), {
           ...installTimeoutMs === undefined ? {} : { timeoutMs: installTimeoutMs },
           onData: (chunk) => {
             if (generation !== state.generation)
               return
             log = `${log}${chunk}`.slice(-2000)
-            for (const line of chunk.split('\n').filter(line => line !== '')) {
-              const parsed = parseBootstrapLine(line)
-              events.append(machineId, parsed.stage as SshMachineStage, parsed.line)
-            }
+            dispatch.push(chunk)
             state.progress = { phase: 'installing', log }
             this.emit(machineId)
           },
         })
+        dispatch.flush()
         if (result.code !== 0) {
           const tail = log.trim() === '' ? '(no output captured)' : log.trim().split('\n').slice(-5).join(' | ')
           events.append(machineId, 'failed', 'install failed', { terminal: 'failed', reason: tail })
@@ -445,14 +450,16 @@ export class SshManager {
       else {
         events.append(machineId, 'probe', '三件套已就绪，跳过安装')
       }
-      const dshPath = `$HOME/${REMOTE_ROOT}/dependencies/dsh/${plan.dshEntry}`
-      const entryCheck = await session.exec(`test -f ${dshPath} && printf 'ok\\n'`)
-      const dshResolved = firstLineOf(entryCheck.stdout)
-      if (dshResolved !== 'ok') {
+      // The entry check doubles as $HOME expansion: the shell prints the
+      // absolute path the type contract promises (never a literal `$HOME`).
+      const dshExpr = `"$HOME/${REMOTE_ROOT}/dependencies/dsh/${plan.dshEntry}"`
+      const entryCheck = await session.exec(`test -f ${dshExpr} && printf '%s\\n' ${dshExpr}`)
+      const dshPath = firstLineOf(entryCheck.stdout)
+      if (entryCheck.code !== 0 || dshPath === '') {
         throw new SshError(
           'machine-dsh-missing',
           machineId,
-          `dsh install finished on "${profile.host}" but the entry ${dshPath} is not present`,
+          `dsh install finished on "${profile.host}" but the entry ${dshExpr} is not present`,
         )
       }
       let credentialsCopied = false
@@ -463,6 +470,12 @@ export class SshManager {
       catch (error) {
         credentialsError = error instanceof Error ? error.message : String(error)
       }
+      const dshRef = plan.dsh.kind === 'pkg-zip' ? plan.dsh.tag : `npm:${plan.dsh.version}`
+      // The install operation settles here regardless of the connect handoff
+      // that follows: S4 can tell "installed, connect pending" from a failed
+      // install purely from the channel's terminal event. Skipped
+      // verifications (fail-open checks) ride the settling line.
+      events.append(machineId, 'install', `dsh 安装成功 (${dshRef})${skippedVerificationSummary(plan.notes, skips)}`, { terminal: 'success' })
       await session.close().catch(() => undefined)
       if (generation === state.generation) {
         delete state.progress
@@ -477,7 +490,7 @@ export class SshManager {
       }
       return {
         installed: missing,
-        dshRef: plan.dsh.kind === 'pkg-zip' ? plan.dsh.tag : `npm:${plan.dsh.version}`,
+        dshRef,
         dshVersion: plan.dshVersion,
         dshPath,
         credentialsCopied,

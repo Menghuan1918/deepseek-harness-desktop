@@ -160,14 +160,17 @@ export function pickReleaseTag(
     notes.push('release 列表不可用（网络/限流），回退已知稳定 tag')
     return { tag: FALLBACK_DSH_TAG, version: parseVersionFromTag(FALLBACK_DSH_TAG) ?? '', source: 'fallback', notes }
   }
-  // Dedupe by version keeping the last tag (the packager republishes the
-  // same version under test tags; the newest listing wins).
+  // Dedupe by version keeping the first-listed tag: GitHub lists releases
+  // newest-first (created_at descending, verified against the pkg repo), so
+  // the first tag of a version is its newest republish — e.g. `dsh-…` wins
+  // over an older `dsh-src-…` that parses to the same version.
   const byVersion = new Map<string, DshPkgReleaseMeta>()
   for (const meta of metas) {
     const version = parseVersionFromTag(meta.tag)
     if (version === undefined)
       continue
-    byVersion.set(version, meta)
+    if (!byVersion.has(version))
+      byVersion.set(version, meta)
   }
   const recommendedMeta = byVersion.get(recommended)
   if (recommendedMeta !== undefined)
