@@ -199,7 +199,8 @@ export class SshManager {
    * @param machineId - the machine to reach.
    * @param signal - aborts the handshake.
    * @returns the authenticated session; the caller owns closing it.
-   * @throws {SshError} `machine-not-found` for an unknown id.
+   * @throws {SshError} `machine-not-found` for an unknown id, or
+   *   `machine-reconnecting` while the reconnect loop owns the machine.
    */
   async openSession(machineId: MachineId, signal?: AbortSignal): Promise<SshSession> {
     const profile = this.requireProfile(machineId)
