@@ -79,6 +79,11 @@ const baseConfig: SshRemoteConfig = {
   healthCheckTimeoutMs: 1000,
   healthPollIntervalMs: 5,
   healthPollAttempts: 3,
+  keepaliveIntervalMs: 10000,
+  keepaliveCountMax: 3,
+  reconnectInitialDelayMs: 1,
+  reconnectMaxDelayMs: 2,
+  reconnectMaxAttempts: 2,
 }
 
 // Every service construction points the credential/discovery layer at a

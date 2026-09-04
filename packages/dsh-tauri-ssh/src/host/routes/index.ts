@@ -52,6 +52,10 @@ export interface SshMachineListItem extends MachineView {
   tunnelBaseUrl?: string
   lastError?: string
   dshMissing?: boolean
+  /** Epoch ms of the next scheduled reconnect retry (while reconnecting). */
+  nextRetryAt?: number
+  /** Which credential the live (or last successful) connection used. */
+  authMethod?: SshMachineStatus['authMethod']
 }
 
 /** The manager face this API needs (the plugin's service). */
@@ -216,6 +220,8 @@ function listItemOf(host: SshApiHost, view: MachineView): SshMachineListItem {
     ...status.lastError === undefined ? {} : { lastError: status.lastError },
     ...status.dshMissing === true ? { dshMissing: true } : {},
     ...status.progress === undefined ? {} : { progress: status.progress },
+    ...status.nextRetryAt === undefined ? {} : { nextRetryAt: status.nextRetryAt },
+    ...status.authMethod === undefined ? {} : { authMethod: status.authMethod },
   }
 }
 

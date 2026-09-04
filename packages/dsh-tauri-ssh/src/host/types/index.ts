@@ -94,8 +94,32 @@ export interface MachineSecretWrite {
   passphrase?: string
 }
 
-/** Live connection state of one machine. */
-export type SshConnectionState = 'disconnected' | 'connecting' | 'connected'
+/**
+ * Live connection state of one machine — the C-STATE vocabulary consumed by
+ * the status dot (S4) and the switcher (S5).
+ *
+ * - `disconnected` — not connected (never tried, or a deliberate disconnect);
+ * - `testing` — a one-shot `machine.test` probe is in flight;
+ * - `connecting` — a user-initiated connect is in flight;
+ * - `connected` — the tunnel link is live;
+ * - `reconnecting` — an established connection dropped and the automatic
+ *   retry loop owns the machine (a scheduled retry is announced through
+ *   {@link SshMachineStatus.nextRetryAt});
+ * - `given-up` — terminal failure state: either the first connect never
+ *   succeeded or the reconnect budget ran out. `lastError` carries the
+ *   reason; the same word is used for both sources on purpose (switchers
+ *   need not distinguish them). A fresh `connect` attempt exits it.
+ */
+export type SshConnectionState
+  = | 'disconnected'
+    | 'testing'
+    | 'connecting'
+    | 'connected'
+    | 'reconnecting'
+    | 'given-up'
+
+/** Which credential the transport last authenticated with. */
+export type SshAuthMethod = 'agent' | 'key' | 'password'
 
 /** One progress phase of a connection-plane operation, shown live in the UI. */
 export type SshProgressPhase = 'handshake' | 'starting' | 'probing' | 'installing'
@@ -123,6 +147,10 @@ export interface SshMachineStatus {
   dshMissing?: boolean
   /** Live progress of the in-flight operation; absent while idle. */
   progress?: SshProgress
+  /** Epoch milliseconds of the next scheduled reconnect retry; present while `reconnecting` waits. */
+  nextRetryAt?: number
+  /** Which credential the live (or last successful) connection authenticated with. */
+  authMethod?: SshAuthMethod
 }
 
 /** A live machine link: the id and the tunnel base URL. */
@@ -203,6 +231,40 @@ export type SshErrorCode
     | 'machine-dsh-missing'
     | 'machine-install-failed'
     | 'machine-ssh-error'
+    | 'machine-reconnecting'
+
+/**
+ * Connection-lifecycle stages this plugin feeds into the machine-level event
+ * channel (C-EVENT). The channel itself — `/api-ssh` `machine.events` — is
+ * owned by S2; these are the stages S3 appends to its stage enum, so the
+ * merged vocabulary is S2's bootstrap stages plus `auth` and `reconnect`.
+ */
+export const SSH_CONNECTION_EVENT_STAGES = ['auth', 'reconnect'] as const
+
+/** One connection-lifecycle stage of the machine event channel (S3's slice). */
+export type SshConnectionEventStage = typeof SSH_CONNECTION_EVENT_STAGES[number]
+
+/**
+ * One machine event: a displayable, secret-free line on the machine's log
+ * stream. `outcome` marks the line that closes a lifecycle run.
+ */
+export interface SshMachineEvent {
+  machineId: MachineId
+  stage: SshConnectionEventStage
+  /** Operator-facing text line; never carries secret values. */
+  text: string
+  /** Terminal outcome, present on the line that closes a run. */
+  outcome?: 'success' | 'failure'
+}
+
+/**
+ * Pluggable sink for {@link SshMachineEvent}s — the seam where the event
+ * routing lands. Today the default sink is a no-op; when S2's `machine.events`
+ * channel merges, the plugin assembly wires a sink that forwards into it.
+ */
+export interface SshMachineEventSink {
+  emit: (event: SshMachineEvent) => void
+}
 
 /** Typed failure thrown by ssh primitives so consumers map business codes without string matching. */
 export class SshError extends Error {

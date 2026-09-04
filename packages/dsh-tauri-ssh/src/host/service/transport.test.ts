@@ -1,3 +1,4 @@
+import type { AddressInfo } from 'node:net'
 import type { MachineProfile } from '../types/index.js'
 import { Buffer } from 'node:buffer'
 import { EventEmitter } from 'node:events'
@@ -5,7 +6,7 @@ import { Server, connect as tcpConnect } from 'node:net'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import { MachineId } from '../types/index.js'
-import { loginShell, shQuote, Ssh2Transport } from './transport.js'
+import { classifyConnectFailure, describeConnectFailure, loginShell, shQuote, Ssh2Transport } from './transport.js'
 
 const profile: MachineProfile = {
   id: MachineId('m1'),
@@ -52,6 +53,9 @@ class StubResolver {
 
 type HostVerifier = (key: Buffer, verify: (valid: boolean) => void) => void
 
+/** Transport options with the agent step disabled — deterministic chains. */
+const noAgent = { keepaliveIntervalMs: 10_000, keepaliveCountMax: 3, agentSocket: '' }
+
 class FakeClient extends EventEmitter {
   connectConfig: Record<string, unknown> | undefined
   hostKeyAccepted: boolean | undefined
@@ -62,6 +66,8 @@ class FakeClient extends EventEmitter {
   execHang = false
   /** When set, the exec stream emits this error instead of data/close. */
   streamError: Error | undefined
+  /** The auth descriptor the fake server "accepted" (null = auth rejected). */
+  acceptedAuth: unknown
 
   constructor(
     private readonly mode: 'ready' | 'error',
@@ -73,12 +79,30 @@ class FakeClient extends EventEmitter {
   connect(config: Record<string, unknown>): this {
     this.connectConfig = config
     const hostVerifier = config.hostVerifier as HostVerifier | undefined
+    const authHandler = config.authHandler as AuthHandler | undefined
     const finish = (): void => {
       if (this.mode === 'error') {
-        queueMicrotask(() => this.emit('error', new Error(this.errorMessage)))
+        const emitError = (): void => queueMicrotask(() => this.emit('error', new Error(this.errorMessage)))
+        // A real server drives the auth chain before declaring failure, so
+        // the transport's passwordOffered bookkeeping is set by the time the
+        // error lands; the fake mirrors that.
+        if (authHandler === undefined) {
+          emitError()
+          return
+        }
+        authHandler(null, false, () => emitError())
+      }
+      else if (authHandler === undefined) {
+        queueMicrotask(() => this.emit('ready'))
       }
       else {
-        queueMicrotask(() => this.emit('ready'))
+        // A real server drives the auth chain itself; the fake accepts the
+        // first offered descriptor (or stores null when the chain gives up)
+        // and only then reports ready.
+        authHandler(null, false, (descriptor) => {
+          this.acceptedAuth = descriptor
+          queueMicrotask(() => this.emit('ready'))
+        })
       }
     }
     if (hostVerifier === undefined) {
@@ -190,6 +214,13 @@ function authHandlerOf(client: FakeClient): AuthHandler {
   return handler as AuthHandler
 }
 
+/** Build a constructable once-implementation for the mocked Client (arrows cannot be `new`-ed). */
+function errorClientOnce(message: string): () => FakeClient {
+  return function () {
+    return fakeClientFactory('error', message)
+  }
+}
+
 /** Drive one authHandler round and return what it asks for next. */
 function nextAuth(handler: AuthHandler): Promise<unknown> {
   return new Promise(resolve => handler(null, false, resolve))
@@ -208,7 +239,7 @@ describe('shQuote / loginShell', () => {
 
 describe('ssh2Transport', () => {
   it('connects with password auth and resolves on ready', async () => {
-    const transport = new Ssh2Transport(15000, new StubResolver())
+    const transport = new Ssh2Transport(15000, new StubResolver(), noAgent)
     const session = await transport.connect(profile, () => true)
     expect(session).toBeDefined()
     const client = lastClient()
@@ -223,15 +254,32 @@ describe('ssh2Transport', () => {
     expect(client.ended).toBe(true)
   })
 
+  it('tries the ssh-agent first, then keys, then the stored password, then gives up', async () => {
+    const resolver = new StubResolver({
+      keys: [{ privateKey: 'KEY-A' }],
+    })
+    const transport = new Ssh2Transport(15000, resolver, { ...noAgent, agentSocket: '/tmp/agent.sock' })
+    const session = await transport.connect(profile, () => true)
+    const client = lastClient()
+    const handler = authHandlerOf(client)
+    // The fake server accepted the first offer (the agent); the rest of the
+    // chain is what ssh2 would try next had it been refused.
+    expect(client.acceptedAuth).toEqual({ type: 'agent', username: 'root', agent: '/tmp/agent.sock' })
+    expect(await nextAuth(handler)).toEqual({ type: 'publickey', username: 'root', key: 'KEY-A' })
+    expect(await nextAuth(handler)).toEqual({ type: 'password', username: 'root', password: 'sekrit' })
+    expect(await nextAuth(handler)).toBe(false)
+    await session.close()
+  })
+
   it('tries the resolved keys first, then the stored password, then gives up', async () => {
     const resolver = new StubResolver({
       keys: [{ privateKey: 'KEY-A' }, { privateKey: 'KEY-B', passphrase: 'PASS' }],
     })
-    const transport = new Ssh2Transport(15000, resolver)
+    const transport = new Ssh2Transport(15000, resolver, noAgent)
     const session = await transport.connect(profile, () => true)
     const client = lastClient()
     const handler = authHandlerOf(client)
-    expect(await nextAuth(handler)).toEqual({ type: 'publickey', username: 'root', key: 'KEY-A' })
+    expect(client.acceptedAuth).toEqual({ type: 'publickey', username: 'root', key: 'KEY-A' })
     expect(await nextAuth(handler)).toEqual({ type: 'publickey', username: 'root', key: 'KEY-B', passphrase: 'PASS' })
     expect(await nextAuth(handler)).toEqual({ type: 'password', username: 'root', password: 'sekrit' })
     expect(await nextAuth(handler)).toBe(false)
@@ -240,18 +288,60 @@ describe('ssh2Transport', () => {
 
   it('tries only keys when no password is stored', async () => {
     const resolver = new StubResolver({ keys: [{ privateKey: 'KEY', passphrase: 'PASS' }] })
-    const transport = new Ssh2Transport(15000, resolver)
+    const transport = new Ssh2Transport(15000, resolver, noAgent)
     const session = await transport.connect(withoutPassword(profile), () => true)
-    const handler = authHandlerOf(lastClient())
-    expect(await nextAuth(handler)).toEqual({ type: 'publickey', username: 'root', key: 'KEY', passphrase: 'PASS' })
+    const client = lastClient()
+    const handler = authHandlerOf(client)
+    expect(client.acceptedAuth).toEqual({ type: 'publickey', username: 'root', key: 'KEY', passphrase: 'PASS' })
     expect(await nextAuth(handler)).toBe(false)
     await session.close()
   })
 
   it('gives up immediately when nothing resolves', async () => {
-    const transport = new Ssh2Transport(15000, new StubResolver())
+    const transport = new Ssh2Transport(15000, new StubResolver(), noAgent)
     const session = await transport.connect(withoutPassword(profile), () => true)
-    expect(await nextAuth(authHandlerOf(lastClient()))).toBe(false)
+    expect(lastClient().acceptedAuth).toBe(false)
+    await session.close()
+  })
+
+  it('reads SSH_AUTH_SOCK when no agent socket is injected', async () => {
+    const previous = process.env.SSH_AUTH_SOCK
+    try {
+      process.env.SSH_AUTH_SOCK = '/tmp/from-env.sock'
+      const transport = new Ssh2Transport(15000, new StubResolver(), { keepaliveIntervalMs: 10_000, keepaliveCountMax: 3 })
+      const session = await transport.connect(profile, () => true)
+      expect(lastClient().acceptedAuth).toEqual({ type: 'agent', username: 'root', agent: '/tmp/from-env.sock' })
+      await session.close()
+    }
+    finally {
+      if (previous === undefined)
+        delete process.env.SSH_AUTH_SOCK
+      else
+        process.env.SSH_AUTH_SOCK = previous
+    }
+  })
+
+  it('configures the keepalive watchdog from the injected options', async () => {
+    const transport = new Ssh2Transport(15000, new StubResolver(), { keepaliveIntervalMs: 25_000, keepaliveCountMax: 7, agentSocket: '' })
+    const session = await transport.connect(profile, () => true)
+    expect(lastClient().connectConfig).toMatchObject({ keepaliveInterval: 25_000, keepaliveCountMax: 7 })
+    await session.close()
+  })
+
+  it('defaults the keepalive watchdog to 10 s and 3 missed beats', async () => {
+    const transport = new Ssh2Transport(15000, new StubResolver(), { agentSocket: '' })
+    const session = await transport.connect(profile, () => true)
+    expect(lastClient().connectConfig).toMatchObject({ keepaliveInterval: 10_000, keepaliveCountMax: 3 })
+    await session.close()
+  })
+
+  it('reports the winning auth method on the session', async () => {
+    const resolver = new StubResolver({ keys: [{ privateKey: 'KEY-A' }] })
+    const transport = new Ssh2Transport(15000, resolver, { ...noAgent, agentSocket: '/tmp/agent.sock' })
+    const session = await transport.connect(profile, () => true)
+    // The fake server accepted the agent offer, so the session reports it.
+    expect(lastClient().acceptedAuth).toMatchObject({ type: 'agent' })
+    expect(session.authMethod).toBe('agent')
     await session.close()
   })
 
@@ -275,7 +365,7 @@ describe('ssh2Transport', () => {
 
   it('rejects on transport errors', async () => {
     const { Client } = await import('ssh2')
-    vi.mocked(Client).mockImplementationOnce(() => fakeClientFactory('error', 'ECONNREFUSED'))
+    vi.mocked(Client).mockImplementationOnce(errorClientOnce('ECONNREFUSED'))
     const transport = new Ssh2Transport(15000, new StubResolver())
     await expect(transport.connect(profile, () => true)).rejects.toThrow('ECONNREFUSED')
   })
@@ -476,11 +566,97 @@ describe('ssh2Transport', () => {
   })
 
   it('fires the closed callback immediately for an already-closed session', async () => {
-    const transport = new Ssh2Transport(15000, new StubResolver())
+    const transport = new Ssh2Transport(15000, new StubResolver(), noAgent)
     const session = await transport.connect(profile, () => true)
     lastClient().emit('close')
     const callback = vi.fn()
     session.onClosed(callback)
     expect(callback).toHaveBeenCalledTimes(1)
+  })
+
+  it('rebinds the preferred local port for a reconnect-stable tunnel URL', async () => {
+    // Reserve a port, then release it: the tunnel must bind exactly it.
+    const holder = new Server()
+    await new Promise<void>(resolve => holder.listen(0, '127.0.0.1', () => resolve()))
+    const freePort = (holder.address() as AddressInfo).port
+    await new Promise<void>(resolve => holder.close(() => resolve()))
+    const transport = new Ssh2Transport(15000, new StubResolver(), noAgent)
+    const session = await transport.connect(profile, () => true)
+    const tunnel = await session.openTunnel(3080, freePort)
+    expect(tunnel.localPort).toBe(freePort)
+    await tunnel.close()
+    await session.close()
+  })
+
+  it('falls back to an ephemeral port when the preferred one is taken', async () => {
+    // Keep a listener on the port so the preferred bind fails.
+    const holder = new Server()
+    await new Promise<void>(resolve => holder.listen(0, '127.0.0.1', () => resolve()))
+    const takenPort = (holder.address() as AddressInfo).port
+    const transport = new Ssh2Transport(15000, new StubResolver(), noAgent)
+    const session = await transport.connect(profile, () => true)
+    const tunnel = await session.openTunnel(3080, takenPort)
+    expect(tunnel.localPort).not.toBe(takenPort)
+    expect(tunnel.localPort).toBeGreaterThan(0)
+    await tunnel.close()
+    await session.close()
+    await new Promise<void>(resolve => holder.close(() => resolve()))
+  })
+})
+
+describe('classifyConnectFailure', () => {
+  it('classifies network-level failures as unreachable', () => {
+    for (const code of ['ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH']) {
+      const error = Object.assign(new Error(`connect ${code} 10.0.0.1:22`), { code })
+      expect(classifyConnectFailure(error, false)).toBe('unreachable')
+      expect(classifyConnectFailure(error, true)).toBe('unreachable')
+    }
+    expect(classifyConnectFailure(new Error('Timed out while waiting for handshake'), false)).toBe('unreachable')
+    expect(classifyConnectFailure(new Error('Connection closed prematurely'), true)).not.toBe('unreachable')
+  })
+
+  it('splits exhausted auth into key-rejected and password-rejected', () => {
+    const error = new Error('All configured authentication methods failed')
+    expect(classifyConnectFailure(error, false)).toBe('key-rejected')
+    expect(classifyConnectFailure(error, true)).toBe('password-rejected')
+  })
+
+  it('leaves everything else as other', () => {
+    expect(classifyConnectFailure(new Error('Host key verification failed'), false)).toBe('other')
+    expect(classifyConnectFailure('plain string', true)).toBe('other')
+  })
+})
+
+describe('describeConnectFailure', () => {
+  it('gives each class an operator-distinct, actionable message', () => {
+    const refused = Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:22'), { code: 'ECONNREFUSED' })
+    const messages = [
+      describeConnectFailure('key-rejected', new Error('All configured authentication methods failed')),
+      describeConnectFailure('password-rejected', new Error('All configured authentication methods failed')),
+      describeConnectFailure('unreachable', refused),
+    ]
+    expect(new Set(messages).size).toBe(3)
+    expect(messages[0]).toContain('check your keys or store a password')
+    expect(messages[1]).toContain('update the stored password')
+    expect(messages[2]).toContain('host unreachable')
+    expect(messages[2]).toContain('ECONNREFUSED')
+  })
+
+  it('wraps transport failures with the classified message', async () => {
+    const { Client } = await import('ssh2')
+    vi.mocked(Client).mockImplementationOnce(errorClientOnce('connect ECONNREFUSED 127.0.0.1:1'))
+    const transport = new Ssh2Transport(15000, new StubResolver(), noAgent)
+    await expect(transport.connect(profile, () => true)).rejects.toThrow(/host unreachable: .*ECONNREFUSED/)
+  })
+
+  it('keeps the auth-failure message distinguishable when the chain exhausts', async () => {
+    const { Client } = await import('ssh2')
+    vi.mocked(Client).mockImplementationOnce(errorClientOnce('All configured authentication methods failed'))
+    const transport = new Ssh2Transport(15000, new StubResolver(), noAgent)
+    // With a stored password in the chain the message points at the password.
+    await expect(transport.connect(profile, () => true)).rejects.toThrow(/stored password was rejected/)
+    vi.mocked(Client).mockImplementationOnce(errorClientOnce('All configured authentication methods failed'))
+    // Without one it points at the keys/agent.
+    await expect(transport.connect(withoutPassword(profile), () => true)).rejects.toThrow(/no key or ssh-agent was accepted/)
   })
 })

@@ -8,9 +8,10 @@
 import type { Buffer } from 'node:buffer'
 import type { AddressInfo, Server } from 'node:net'
 import type { ConnectConfig } from 'ssh2'
-import type { MachineProfile } from '../types/index.js'
+import type { MachineProfile, SshAuthMethod } from '../types/index.js'
 import type { ResolvedSshAuth } from './ssh-config.js'
 import { createServer } from 'node:net'
+import process from 'node:process'
 import { Client } from 'ssh2'
 
 /** The credential-resolution face the transport needs (SshConfigResolver implements it). */
@@ -45,6 +46,11 @@ export interface SshTunnelHandle {
 /** One authenticated SSH session. */
 export interface SshSession {
   /**
+   * Which credential this session authenticated with (`agent`, `key`, or
+   * `password`); absent when the transport cannot tell.
+   */
+  readonly authMethod?: SshAuthMethod | undefined
+  /**
    * Run one command through the remote login shell.
    * @param command - the full command line.
    * @param options - optional deadline and streaming stdout tap.
@@ -55,9 +61,12 @@ export interface SshSession {
    * Forward a remote loopback port to a new local loopback listener
    * (`ssh -L` semantics).
    * @param remotePort - the remote 127.0.0.1 port to reach.
+   * @param preferredLocalPort - keep the tunnel's published URL stable across
+   *   reconnects by re-binding this port when possible (falls back to an
+   *   ephemeral port when it is taken).
    * @returns the local listener handle.
    */
-  openTunnel: (remotePort: number) => Promise<SshTunnelHandle>
+  openTunnel: (remotePort: number, preferredLocalPort?: number) => Promise<SshTunnelHandle>
   /**
    * Register the session-closed callback (connection dropped, server went
    * away, or {@link close} ran).
@@ -94,22 +103,110 @@ export function loginShell(command: string): string {
   return `sh -lc ${shQuote(command)}`
 }
 
+/** The three operator-distinguishable connection failure classes. */
+export type SshConnectFailureKind
+  = | 'key-rejected'
+    | 'password-rejected'
+    | 'unreachable'
+    | 'other'
+
+/** Network-level error codes that mean "the host cannot be reached at all". */
+const UNREACHABLE_CODES = new Set([
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ECONNRESET',
+])
+
+/** Whether one raw transport error reads as "host unreachable". */
+function isUnreachable(error: Error): boolean {
+  const code = (error as NodeJS.ErrnoException).code
+  if (code !== undefined && UNREACHABLE_CODES.has(code))
+    return true
+  return /timed?\s?out|connection refused|econnrefused|no route to host|name or service not known|getaddrinfo/iu.test(error.message)
+}
+
+/**
+ * Classify one connection failure into the three operator-distinguishable
+ * classes (key/agent rejected → check keys or store a password; password
+ * rejected → update the stored password; unreachable → network/host name).
+ * @param error - the raw transport failure.
+ * @param passwordOffered - whether the stored password was part of the chain.
+ * @returns the failure class.
+ */
+export function classifyConnectFailure(error: unknown, passwordOffered: boolean): SshConnectFailureKind {
+  const message = error instanceof Error ? error.message : String(error)
+  const normalized = error instanceof Error ? error : new Error(message)
+  if (isUnreachable(normalized))
+    return 'unreachable'
+  if (/all configured authentication methods failed|authentication failed|no supported authentication/iu.test(message)) {
+    return passwordOffered ? 'password-rejected' : 'key-rejected'
+  }
+  return 'other'
+}
+
+/** One operator-facing message for a classified connection failure. */
+export function describeConnectFailure(kind: SshConnectFailureKind, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  switch (kind) {
+    case 'key-rejected':
+      return 'authentication failed: no key or ssh-agent was accepted — check your keys or store a password for this machine'
+    case 'password-rejected':
+      return 'authentication failed: the stored password was rejected — update the stored password'
+    case 'unreachable':
+      return `host unreachable: ${message === '' ? 'SSH connection failed' : message}`
+    default:
+      return message === '' ? 'SSH connection failed' : message
+  }
+}
+
+/** Transport timing/watchdog options; the manager passes the plugin config through. */
+export interface Ssh2TransportOptions {
+  /** ssh2 keepalive heartbeat interval in milliseconds (default 10 s). */
+  keepaliveIntervalMs?: number
+  /** Unanswered-heartbeat threshold that declares the connection dead (default 3). */
+  keepaliveCountMax?: number
+  /**
+   * ssh-agent socket path. `undefined` reads `SSH_AUTH_SOCK` per connect
+   * (an empty/unset variable disables the agent step); an explicit empty
+   * string disables it too.
+   */
+  agentSocket?: string
+}
+
 /**
  * ssh2-backed transport. One `Client` per session; exec and tunnel run over
  * the shared connection. Credentials come from the injected
  * {@link SshCredentialsResolver}: the host's own `~/.ssh` (config aliases,
  * IdentityFiles, default keys) with the profile's stored password/passphrase
- * as fallbacks — the connection behaves like a local `ssh` invocation.
+ * as fallbacks — the connection behaves like a local `ssh` invocation. The
+ * auth chain order is fixed: ssh-agent → private keys → stored password;
+ * without an agent or a stored password the chain degrades to exactly the
+ * previous behavior.
  */
 export class Ssh2Transport implements SshTransport {
+  private readonly options: Required<Pick<Ssh2TransportOptions, 'keepaliveIntervalMs' | 'keepaliveCountMax'>> & Pick<Ssh2TransportOptions, 'agentSocket'>
+
   /**
    * @param readyTimeoutMs - handshake deadline for {@link Client.connect}.
    * @param resolver - the `~/.ssh` credential resolver (host, port, user, keys).
+   * @param options - keepalive watchdog timing and the agent socket override;
+   *   omitted fields fall back to the 10 s / 3-beat defaults.
    */
   constructor(
     private readonly readyTimeoutMs: number,
     private readonly resolver: SshCredentialsResolver,
-  ) {}
+    options?: Ssh2TransportOptions,
+  ) {
+    this.options = {
+      keepaliveIntervalMs: options?.keepaliveIntervalMs ?? 10_000,
+      keepaliveCountMax: options?.keepaliveCountMax ?? 3,
+      ...options?.agentSocket === undefined ? {} : { agentSocket: options.agentSocket },
+    }
+  }
 
   async connect(
     profile: MachineProfile,
@@ -132,24 +229,40 @@ export class Ssh2Transport implements SshTransport {
         signal?.removeEventListener('abort', onAbort)
         fn()
       }
+      // The auth chain's shared bookkeeping: which method won (reported on
+      // the session once ready) and whether the stored password participated
+      // (drives the failure classification when everything is rejected).
+      let winningMethod: SshAuthMethod | undefined
+      let passwordOffered = false
       client.on('ready', () => {
-        settle(() => resolve(new Ssh2Session(client)))
+        settle(() => resolve(new Ssh2Session(client, winningMethod)))
       })
       client.on('error', (error) => {
-        settle(() => reject(error))
+        settle(() => reject(describedConnectFailure(error, passwordOffered)))
       })
       void this.resolver.resolve(profile).then((auth) => {
-        // Try every resolved identity in order, then the stored password —
-        // the same preference order as OpenSSH (publickey before password).
-        // ssh2 parses each key itself and skips invalid ones, so a bad or
-        // passphrase-locked key never aborts the attempt. Each credential is
-        // offered at most once; the handler then gives up.
+        const agentSocket = this.options.agentSocket === undefined
+          ? process.env.SSH_AUTH_SOCK
+          : this.options.agentSocket
+        const agent = agentSocket === undefined || agentSocket === '' ? undefined : agentSocket
+        // Try the ssh-agent first, then every resolved identity in order,
+        // then the stored password — the same preference order as OpenSSH
+        // (agent, publickey, password). ssh2 parses each key itself and
+        // skips invalid ones, so a bad or passphrase-locked key never aborts
+        // the attempt. Each credential is offered at most once; the handler
+        // then gives up.
+        let agentOffered = false
         let keyIndex = 0
-        let passwordOffered = false
         const authHandler: NonNullable<ConnectConfig['authHandler']> = (_methodsLeft, _partialSuccess, callback) => {
-          const key = auth.keys[keyIndex]
-          if (key !== undefined) {
+          if (agent !== undefined && !agentOffered) {
+            agentOffered = true
+            winningMethod = 'agent'
+            callback({ type: 'agent', username: auth.username, agent })
+          }
+          else if (keyIndex < auth.keys.length) {
+            const key = auth.keys[keyIndex]!
             keyIndex += 1
+            winningMethod = 'key'
             callback({
               type: 'publickey',
               username: auth.username,
@@ -159,6 +272,7 @@ export class Ssh2Transport implements SshTransport {
           }
           else if (auth.password !== undefined && !passwordOffered) {
             passwordOffered = true
+            winningMethod = 'password'
             callback({ type: 'password', username: auth.username, password: auth.password })
           }
           else {
@@ -172,11 +286,11 @@ export class Ssh2Transport implements SshTransport {
           port: auth.port,
           username: auth.username,
           readyTimeout: this.readyTimeoutMs,
-          // Keep the connection alive during long remote commands (dsh
-          // installs, health polling): default ssh2 keepalives are off, and
-          // idle NAT/firewall state would otherwise drop a 10-minute install.
-          keepaliveInterval: 10_000,
-          keepaliveCountMax: 3,
+          // Keepalive watchdog: with these settings ssh2 declares the
+          // connection dead after `countMax` unanswered heartbeats and
+          // surfaces it as a close — the manager's reconnect trigger.
+          keepaliveInterval: this.options.keepaliveIntervalMs,
+          keepaliveCountMax: this.options.keepaliveCountMax,
           authHandler,
           // ssh2 accepts a synchronous boolean return OR the verify-callback
           // form; always driving the callback keeps async verifiers uniform.
@@ -195,12 +309,28 @@ export class Ssh2Transport implements SshTransport {
   }
 }
 
+/**
+ * Wrap one raw ssh2 handshake failure with its classified, operator-facing
+ * message (the three-way auth/unreachable distinction rides the message; the
+ * raw error's own text never carries secrets).
+ */
+function describedConnectFailure(error: Error, passwordOffered: boolean): Error {
+  const kind = classifyConnectFailure(error, passwordOffered)
+  const message = describeConnectFailure(kind, error)
+  if (message === error.message)
+    return error
+  return new Error(message)
+}
+
 /** The ssh2 session face over one authenticated `Client`. */
 class Ssh2Session implements SshSession {
   private readonly closed = new Set<() => void>()
   private closedFired = false
 
-  constructor(private readonly client: Client) {
+  constructor(
+    private readonly client: Client,
+    readonly authMethod: SshAuthMethod | undefined = undefined,
+  ) {
     this.client.on('close', () => {
       if (this.closedFired)
         return
@@ -267,7 +397,16 @@ class Ssh2Session implements SshSession {
     })
   }
 
-  openTunnel(remotePort: number): Promise<SshTunnelHandle> {
+  openTunnel(remotePort: number, preferredLocalPort?: number): Promise<SshTunnelHandle> {
+    return this.listenTunnel(remotePort, preferredLocalPort, true)
+  }
+
+  /**
+   * Bind the loopback forwarder, preferring `preferredLocalPort` so a
+   * reconnect can re-publish the same tunnel URL; a taken port falls back
+   * to an ephemeral one (only the first, deliberate preference retries).
+   */
+  private listenTunnel(remotePort: number, preferredLocalPort: number | undefined, allowFallback: boolean): Promise<SshTunnelHandle> {
     return new Promise<SshTunnelHandle>((resolve, reject) => {
       const sockets = new Set<import('node:net').Socket>()
       const server: Server = createServer((socket) => {
@@ -281,8 +420,17 @@ class Ssh2Session implements SshSession {
           socket.pipe(channel).pipe(socket)
         })
       })
-      server.on('error', reject)
-      server.listen(0, '127.0.0.1', () => {
+      server.on('error', (error: NodeJS.ErrnoException) => {
+        if (allowFallback && error.code === 'EADDRINUSE' && preferredLocalPort !== undefined) {
+          // The preferred port was reclaimed while we were away; an
+          // ephemeral port keeps the reconnect alive (the URL change rides
+          // the status publication).
+          void this.listenTunnel(remotePort, undefined, false).then(resolve, reject)
+          return
+        }
+        reject(error)
+      })
+      server.listen(preferredLocalPort ?? 0, '127.0.0.1', () => {
         const { port } = server.address() as AddressInfo
         resolve({
           localPort: port,

@@ -101,6 +101,19 @@ export interface Config {
   installRef?: string
   /** Deadline for one remote binary install (download + verify + extract + pnpm assembly). */
   installTimeoutMs?: number
+  /** ssh2 keepalive interval in milliseconds — the connection watchdog's heartbeat. */
+  keepaliveIntervalMs: number
+  /** How many unanswered keepalives declare the connection dead (the watchdog threshold). */
+  keepaliveCountMax: number
+  /** Delay before the first reconnect retry, in milliseconds. */
+  reconnectInitialDelayMs: number
+  /** Ceiling of the exponential reconnect backoff, in milliseconds. */
+  reconnectMaxDelayMs: number
+  /**
+   * Give-up threshold: how many reconnect retries run (after the initial
+   * attempt) before the machine lands in the `given-up` terminal state.
+   */
+  reconnectMaxAttempts: number
 }
 
 /** Plugin config schema; schemastery fills defaults before construction. */
@@ -116,6 +129,11 @@ export const ConfigSchema: z<Config> = z.object({
   installRepo: z.string(),
   installRef: z.string(),
   installTimeoutMs: z.number().default(1_800_000),
+  keepaliveIntervalMs: z.number().default(10_000),
+  keepaliveCountMax: z.number().default(3),
+  reconnectInitialDelayMs: z.number().default(1_000),
+  reconnectMaxDelayMs: z.number().default(20_000),
+  reconnectMaxAttempts: z.number().default(6),
 })
 
 /** Normalize a resolved namespace value into a machine profile map keyed by id. */
