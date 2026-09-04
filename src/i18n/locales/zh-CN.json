@@ -350,5 +350,17 @@
   "recovery.reason.runtime.detail": "该插件运行期上报了错误。卸载它并继续可能解决问题。",
   "recovery.reason.unknown.title": "插件启动失败",
   "recovery.reason.unknown.detail": "Harness 在加载插件时发生错误，但暂时无法自动判断更具体的原因。",
-  "backup.size_unit": "MB"
+  "backup.size_unit": "MB",
+  "remote.switcher": "远端机器",
+  "remote.local": "本地",
+  "remote.manage": "管理机器",
+  "remote.manage_hint": "在网页端「设置 → SSH 远端机器」面板中添加或管理机器。",
+  "remote.empty": "还没有机器——在网页端「设置 → SSH 远端机器」面板添加。",
+  "remote.degraded": "本地实例不可达，正在重试",
+  "remote.state.disconnected": "未连接",
+  "remote.state.testing": "测试中",
+  "remote.state.connecting": "连接中",
+  "remote.state.connected": "已连接",
+  "remote.state.reconnecting": "重连中",
+  "remote.state.given-up": "已放弃"
 }

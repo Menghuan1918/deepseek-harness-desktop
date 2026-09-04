@@ -350,5 +350,17 @@
   "recovery.reason.runtime.detail": "The plugin reported a runtime error. Removing it and continuing may resolve the issue.",
   "recovery.reason.unknown.title": "A plugin failed during startup",
   "recovery.reason.unknown.detail": "Harness reported an error while loading a plugin, but the exact cause could not be determined automatically.",
-  "backup.size_unit": "MB"
+  "backup.size_unit": "MB",
+  "remote.switcher": "Remote machines",
+  "remote.local": "Local",
+  "remote.manage": "Manage machines",
+  "remote.manage_hint": "Add or manage machines in the web app: open Settings → SSH Remote Machines.",
+  "remote.empty": "No machines yet — add one from the web Settings → SSH Remote Machines panel.",
+  "remote.degraded": "Local instance unreachable — retrying",
+  "remote.state.disconnected": "Disconnected",
+  "remote.state.testing": "Testing",
+  "remote.state.connecting": "Connecting",
+  "remote.state.connected": "Connected",
+  "remote.state.reconnecting": "Reconnecting",
+  "remote.state.given-up": "Failed"
 }

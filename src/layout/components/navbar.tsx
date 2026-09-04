@@ -26,6 +26,9 @@ import { ConfigDialog } from '@/ui/dialog/config'
 import { DesktopUpdateDialog } from '@/ui/dialog/update'
 import { writeClipboardText } from '@/utils/clipboard'
 import { toast } from '@/utils/toast'
+import { ConnectDialog } from './connect-dialog'
+import { RemoteManager } from './remote-manager'
+import { RemoteSwitcher } from './remote-switcher'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
@@ -154,6 +157,7 @@ export interface NavbarProps {
 }
 
 export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, onOpenFolder }: NavbarProps) {
+  const [managerOpen, setManagerOpen] = useState(false)
   const { t } = useTranslation()
   const isFullscreen = useMacOSFullscreen()
   // 只读取「dsh-tauri 插件是否已安装」；查询键与「插件」面板共用（同一份缓存），
@@ -364,6 +368,11 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
             else={<LayoutSideContent />}
           />
         </Button>
+      </If>
+      <If cond={onToggleSidebar != null}>
+        <RemoteSwitcher onManage={() => setManagerOpen(true)} />
+        <ConnectDialog />
+        <RemoteManager isOpen={managerOpen} onClose={() => setManagerOpen(false)} />
       </If>
       <If cond={!IS_MACOS}>
         <div className="ml-1">

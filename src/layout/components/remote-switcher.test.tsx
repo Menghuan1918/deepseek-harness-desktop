@@ -1,0 +1,184 @@
+// @vitest-environment jsdom
+import type { SshMachineRow } from '@/store/modules/remote'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { bindSshApiForTests, disposeRemoteForTests, remote } from '@/store/modules/remote'
+import { RemoteSwitcher } from './remote-switcher'
+
+// jsdom 未实现 CSS.escape（react-aria 可选集合的焦点定位依赖）；按 CSS 规范转义特殊字符
+if (typeof globalThis.CSS === 'undefined') {
+  Object.assign(globalThis, {
+    CSS: {
+      escape: (value: string) => value.replace(/[^\w-]/g, c => `\\${c}`),
+    },
+  })
+}
+
+// i18n 直通（key 即文案）；toast 捕获调用参数
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}))
+const toastSpy = vi.fn()
+vi.mock('@/utils/toast', () => ({
+  toast: (...args: unknown[]) => { toastSpy(...args) },
+}))
+
+function machineOf(partial: Partial<SshMachineRow>): SshMachineRow {
+  return { id: 'm1', name: 'machine', state: 'disconnected', ...partial }
+}
+
+/** 本轮引擎返回的机器列表（boot 的首次 refresh 会异步覆写 store，须同源）。 */
+let engineMachines: SshMachineRow[] = []
+/** 是否模拟本地实例不可达（/api-ssh 抛错 → 降级态）。 */
+let engineUnreachable = false
+
+function bindEngine() {
+  bindSshApiForTests({
+    listMachines: vi.fn(async () => {
+      if (engineUnreachable)
+        throw new Error('SSH_API_HTTP_503')
+      return engineMachines
+    }),
+    connect: vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:4001' })),
+    disconnect: vi.fn(async () => undefined),
+  })
+}
+
+/** 打开下拉并等待菜单出现在 portal 中。 */
+async function openMenu() {
+  fireEvent.click(screen.getByRole('button', { name: 'remote.switcher' }))
+  await waitFor(() => {
+    expect(screen.getByRole('menu')).toBeTruthy()
+  })
+  return screen.getByRole('menu')
+}
+
+/** 设定机器列表（store 与 mock 引擎同源，避免 boot 首刷覆写）。 */
+function seedMachines(machines: SshMachineRow[]) {
+  engineMachines = machines
+  remote.machines = machines
+}
+
+beforeEach(() => {
+  disposeRemoteForTests()
+  toastSpy.mockClear()
+  engineMachines = []
+  engineUnreachable = false
+  bindEngine()
+})
+
+afterEach(() => {
+  cleanup()
+  disposeRemoteForTests()
+  vi.restoreAllMocks()
+})
+
+describe('remoteSwitcher 渲染', () => {
+  it('空态：本地项 + 空态引导 + 管理入口（toast 引导到内嵌设置页）', async () => {
+    render(<RemoteSwitcher />)
+    await openMenu()
+    const menu = screen.getByRole('menu')
+    expect(within(menu).getByText('remote.local')).toBeTruthy()
+    expect(within(menu).getByText('remote.empty')).toBeTruthy()
+
+    fireEvent.click(within(menu).getByText('remote.manage'))
+    await waitFor(() => {
+      expect(toastSpy).toHaveBeenCalledWith('remote.manage_hint', {})
+    })
+  })
+
+  it('机器项：状态点语义（标识色优先内联 / 已连接绿 / 重连琥珀 / 放弃红）与状态文案', async () => {
+    seedMachines([
+      machineOf({ id: 'colored', name: 'colored', color: '#ff00ff', state: 'reconnecting' }),
+      machineOf({ id: 'green', name: 'green', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' }),
+      machineOf({ id: 'amber', name: 'amber', state: 'connecting' }),
+      machineOf({ id: 'red', name: 'red', state: 'given-up', lastError: 'connect failed after 3 attempt(s): refused' }),
+    ])
+    render(<RemoteSwitcher />)
+    await openMenu()
+
+    const colored = screen.getByText('colored').closest('[class*="flex"]')?.querySelector('span')
+    expect(colored?.getAttribute('style')).toContain('rgb(255, 0, 255)')
+
+    const green = screen.getByText('green').closest('[class*="flex"]')?.querySelector('span')
+    expect(green?.className).toContain('bg-success')
+    expect(screen.getByText('remote.state.connected')).toBeTruthy()
+
+    const amber = screen.getByText('amber').closest('[class*="flex"]')?.querySelector('span')
+    expect(amber?.className).toContain('bg-warning')
+
+    const red = screen.getByText('red').closest('[class*="flex"]')?.querySelector('span')
+    expect(red?.className).toContain('bg-danger')
+    // 放弃态的原因入口（title 提示）
+    expect(screen.getByText('red').closest('[title]')?.getAttribute('title')).toContain('refused')
+  })
+
+  it('触发按钮显示活动机器名与标识色点；无活动时显示本地', async () => {
+    seedMachines([machineOf({ id: 'm1', name: 'alpha', color: '#123456', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
+    remote.activeId = 'm1'
+    remote.activeTunnelUrl = 'http://127.0.0.1:4001'
+    const { unmount } = render(<RemoteSwitcher />)
+    const trigger = screen.getByRole('button', { name: 'remote.switcher' })
+    expect(trigger.textContent).toContain('alpha')
+    // jsdom 将内联色归一为 rgb()（#123456 → rgb(18, 52, 86)）
+    expect(trigger.querySelector('span[class*="rounded-full"]')?.getAttribute('style')).toContain('rgb(18, 52, 86)')
+    unmount()
+
+    remote.activeId = null
+    remote.activeTunnelUrl = ''
+    render(<RemoteSwitcher />)
+    expect(screen.getByRole('button', { name: 'remote.switcher' }).textContent).toContain('remote.local')
+  })
+})
+
+describe('remoteSwitcher 交互与降级', () => {
+  it('点击已连接机器项：切换视图（activeId/隧道 URL）', async () => {
+    seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
+    render(<RemoteSwitcher />)
+    const menu = await openMenu()
+    fireEvent.click(within(menu).getByText('alpha'))
+    await waitFor(() => {
+      expect(remote.activeId).toBe('m1')
+      expect(remote.activeTunnelUrl).toBe('http://127.0.0.1:4001')
+    })
+  })
+
+  it('点击本地项：回本地并撤销挂起切换', async () => {
+    seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connecting' })])
+    remote.activeId = 'm1'
+    remote.activeTunnelUrl = 'http://127.0.0.1:4001'
+    remote.pendingId = 'm1'
+    render(<RemoteSwitcher />)
+    const menu = await openMenu()
+    fireEvent.click(within(menu).getByText('remote.local'))
+    await waitFor(() => {
+      expect(remote.activeId).toBeNull()
+      expect(remote.activeTunnelUrl).toBe('')
+      expect(remote.pendingId).toBeNull()
+    })
+  })
+
+  it('本地实例不可达：降级提示 + 远端项禁用（不弹错误风暴），恢复后自动复原', async () => {
+    seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
+    engineUnreachable = true
+    render(<RemoteSwitcher />)
+    // boot 首刷即不可达 → 降级
+    await vi.waitFor(() => {
+      expect(remote.available).toBe(false)
+    })
+    const menu = await openMenu()
+    expect(within(menu).getByText('remote.degraded')).toBeTruthy()
+    const item = within(menu).getByText('alpha').closest('[role="menuitem"]')
+    expect(item?.getAttribute('aria-disabled')).toBe('true')
+
+    // 轮询恢复（引擎重新可达）：窗口聚焦触发的即时刷新让切换器立即复原
+    engineUnreachable = false
+    window.dispatchEvent(new Event('focus'))
+    await vi.waitFor(() => {
+      expect(remote.available).toBe(true)
+    })
+    await vi.waitFor(() => {
+      expect(screen.queryByText('remote.degraded')).toBeNull()
+    })
+  })
+})

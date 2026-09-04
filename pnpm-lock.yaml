@@ -483,6 +483,12 @@ importers:
       '@tauri-apps/cli':
         specifier: catalog:tauri
         version: 2.11.4
+      '@testing-library/dom':
+        specifier: catalog:testing
+        version: 10.4.1
+      '@testing-library/react':
+        specifier: catalog:testing
+        version: 16.3.3(@testing-library/dom@10.4.1)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@types/node':
         specifier: catalog:types
         version: 22.20.1
@@ -528,6 +534,9 @@ importers:
       eslint-plugin-react-refresh:
         specifier: catalog:lint
         version: 0.5.4(eslint@10.8.1(jiti@2.7.0))
+      jsdom:
+        specifier: catalog:testing
+        version: 26.1.0
       knip:
         specifier: catalog:lint
         version: 6.32.2
