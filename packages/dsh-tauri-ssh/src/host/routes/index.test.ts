@@ -4,6 +4,7 @@ import { Buffer } from 'node:buffer'
 import { IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
+import { SshMachineEvents } from '../service/events.js'
 import { MachineId, SshError } from '../types/index.js'
 import { createSshApiHandler, isLoopbackPeer } from './index.js'
 
@@ -18,6 +19,12 @@ const view: MachineView = {
   remotePort: 3080,
 }
 
+/** A seeded per-machine event log shared by the fake host. */
+const log = new SshMachineEvents()
+log.append(MachineId('m1'), 'probe', '探测远端平台 (uname -srm)')
+log.append(MachineId('m1'), 'download', 'https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz')
+log.append(MachineId('m1'), 'ready', '远端实例已就绪', { terminal: 'success' })
+
 function fakeHost(overrides: Partial<SshApiHost> = {}): SshApiHost {
   return {
     profileViews: () => [view],
@@ -26,7 +33,8 @@ function fakeHost(overrides: Partial<SshApiHost> = {}): SshApiHost {
     test: async (): Promise<SshTestResult> => ({ ok: true, banner: 'Linux alpha' }),
     connect: async () => ({ tunnelBaseUrl: 'http://127.0.0.1:45678' }),
     disconnect: async () => {},
-    install: async () => ({ dshPath: '/home/root/.local/bin/dsh', credentialsCopied: true }),
+    install: async () => ({ installed: ['node'], dshRef: 'dsh-0.1.2-rc.1-1', dshVersion: '0.1.2-rc.1', dshPath: '/root/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', credentialsCopied: true }),
+    events: (machineId, sinceSeq) => log.since(machineId, sinceSeq),
     save: async () => {},
     remove: async () => {},
     ...overrides,
@@ -318,13 +326,13 @@ describe('/api-ssh handler', () => {
   })
 
   it('installs dsh on a machine and returns the outcome', async () => {
-    const install = vi.fn(async () => ({ dshPath: '/home/root/.local/bin/dsh', credentialsCopied: true }))
+    const install = vi.fn(async () => ({ installed: ['node'], dshRef: 'dsh-0.1.2-rc.1-1', dshVersion: '0.1.2-rc.1', dshPath: '/root/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', credentialsCopied: true }))
     const host = fakeHost({ install })
     const { status, body } = await call(host, JSON.stringify({ method: 'machine.install', payload: { machineId: 'm1' } }))
     expect(status).toBe(200)
     expect(body).toEqual({
       ok: true,
-      value: { dshPath: '/home/root/.local/bin/dsh', credentialsCopied: true },
+      value: { installed: ['node'], dshRef: 'dsh-0.1.2-rc.1-1', dshVersion: '0.1.2-rc.1', dshPath: '/root/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', credentialsCopied: true },
     })
     expect(install).toHaveBeenCalledWith(MachineId('m1'), expect.any(AbortSignal))
   })
@@ -385,5 +393,43 @@ describe('/api-ssh handler', () => {
     const { status, body } = await call(fakeHost(), JSON.stringify({ method: 'machine.warp' }))
     expect(status).toBe(404)
     expect(body).toMatchObject({ ok: false, error: { code: 'unknown-method' } })
+  })
+  it('drains machine events from the beginning', async () => {
+    const response = await call(fakeHost(), JSON.stringify({ method: 'machine.events', payload: { machineId: 'm1' } }))
+    expect(response.status).toBe(200)
+    expect(response.body).toEqual({
+      ok: true,
+      value: {
+        events: [
+          expect.objectContaining({ seq: 1, stage: 'probe' }),
+          expect.objectContaining({ seq: 2, stage: 'download' }),
+          expect.objectContaining({ seq: 3, stage: 'ready', terminal: 'success' }),
+        ],
+        nextSeq: 4,
+      },
+    })
+  })
+
+  it('drains machine events incrementally by sinceSeq', async () => {
+    const response = await call(fakeHost(), JSON.stringify({ method: 'machine.events', payload: { machineId: 'm1', sinceSeq: 2 } }))
+    expect(response.body).toMatchObject({
+      ok: true,
+      value: {
+        events: [expect.objectContaining({ seq: 3 })],
+        nextSeq: 4,
+      },
+    })
+  })
+
+  it('reports unknown event machines as an empty page anchored at seq 1', async () => {
+    const response = await call(fakeHost(), JSON.stringify({ method: 'machine.events', payload: { machineId: 'ghost' } }))
+    expect(response.body).toEqual({ ok: true, value: { events: [], nextSeq: 1 } })
+  })
+
+  it('rejects malformed event cursors', async () => {
+    const response = await call(fakeHost(), JSON.stringify({ method: 'machine.events', payload: { machineId: 'm1', sinceSeq: -1 } }))
+    expect(response.body).toEqual({ ok: false, error: { code: 'internal', message: 'invalid sinceSeq' } })
+    const missing = await call(fakeHost(), JSON.stringify({ method: 'machine.events', payload: {} }))
+    expect(missing.body).toEqual({ ok: false, error: { code: 'internal', message: 'missing machineId' } })
   })
 })

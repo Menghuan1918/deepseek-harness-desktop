@@ -85,13 +85,19 @@ export interface Config {
    */
   startCommand?: string
   /**
-   * Git repository URL the one-click install clones from. Defaults to the
-   * official GitHub repository; set your own fork, an internal mirror, or a
-   * private repository (a credential-bearing URL works). The clone happens on
-   * the remote machine, so the remote must be able to reach and read it.
+   * The DSH install-source repository anchor. Defaults to the official DSH
+   * repository (org verified: `deepseek-ai`); the binary install resolves its
+   * download repository from it — the official anchor maps onto the official
+   * packaging repository (`dsh-tauri-desk/deepseek-harness-pkg`), and any
+   * other configured `owner/name` or GitHub URL is used directly as the
+   * release repository, so forks/mirrors of the packaging repo keep working.
    */
   installRepo?: string
-  /** Git ref (branch/tag) the one-click install checks out; defaults to the repository's default branch. */
+  /**
+   * DSH version pin for the binary install: a semver (`0.1.2-rc.1`) or a full
+   * release tag (`dsh-0.1.2-rc.1-33729514615`). Defaults to the recommended
+   * version; unresolvable pins fall back to the latest stable release.
+   */
   installRef?: string
   /** Deadline for one remote dsh install (clone + pnpm install + build). */
   installTimeoutMs?: number

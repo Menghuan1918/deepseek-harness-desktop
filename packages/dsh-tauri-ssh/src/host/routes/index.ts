@@ -7,15 +7,17 @@
  *   POST /api-ssh  { "method": "machine.list", "payload": {} }
  *   → 200          { "ok": true, "value": ... } | { "ok": false, "error": { "code", "message" } }
  *
- * Machines are stored in the `ssh-machines` settings namespace; this API only
- * serves the connection plane (list/test/connect/disconnect) and the CRUD
- * writes (save/remove), which is exactly what the settings page cannot do
- * through the settings domain.
+ * Machines are stored in the `ssh-machines` settings namespace; this API
+ * serves the connection plane (list/test/connect/disconnect/install), the
+ * per-machine bootstrap event drain (`machine.events`: ring-buffered,
+ * seq-cursored polling — no SSE/WebSocket), and the CRUD writes
+ * (save/remove), which is exactly what the settings page cannot do through
+ * the settings domain.
  * @module dsh-tauri-ssh/host/routes
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { MachineSaveRow, MachineSecretWrite, MachineView, SshInstallResult, SshMachineStatus, SshTestResult } from '../types/index.js'
+import type { MachineSaveRow, MachineSecretWrite, MachineView, SshInstallResult, SshMachineEventsPage, SshMachineStatus, SshTestResult } from '../types/index.js'
 import { Buffer } from 'node:buffer'
 import { MachineId, SshError } from '../types/index.js'
 
@@ -40,6 +42,7 @@ export type SshApiMethod
     | 'machine.connect'
     | 'machine.disconnect'
     | 'machine.install'
+    | 'machine.events'
     | 'machine.save'
     | 'machine.remove'
 
@@ -62,6 +65,8 @@ export interface SshApiHost {
   disconnect: (machineId: MachineId) => Promise<void>
   /** One-shot remote dsh install; a successful install auto-connects. */
   install: (machineId: MachineId, signal?: AbortSignal) => Promise<SshInstallResult>
+  /** Drain one machine's bootstrap log/progress events after a seq cursor. */
+  events: (machineId: MachineId, sinceSeq?: number) => SshMachineEventsPage
   save: (machineId: MachineId, row: MachineSaveRow, secrets?: MachineSecretWrite) => Promise<void>
   remove: (machineId: MachineId) => Promise<void>
 }
@@ -153,6 +158,12 @@ export function createSshApiHandler(host: SshApiHost): (req: IncomingMessage, re
           respond(200, { ok: true, value })
           return
         }
+        case 'machine.events': {
+          const machineId = machineIdOf(payload)
+          const sinceSeq = sinceSeqOf(payload)
+          respond(200, { ok: true, value: host.events(machineId, sinceSeq) })
+          return
+        }
         case 'machine.save': {
           const machineId = machineIdOf(payload)
           const row = saveRowOf(payload)
@@ -183,6 +194,16 @@ function machineIdOf(payload: Record<string, unknown>): MachineId {
     throw new Error('missing machineId')
   }
   return MachineId(payload.machineId)
+}
+
+/** Read the optional event poll cursor; absent or non-numeric means "from the start". */
+function sinceSeqOf(payload: Record<string, unknown>): number | undefined {
+  if (payload.sinceSeq === undefined)
+    return undefined
+  if (typeof payload.sinceSeq !== 'number' || !Number.isInteger(payload.sinceSeq) || payload.sinceSeq < 0) {
+    throw new Error('invalid sinceSeq')
+  }
+  return payload.sinceSeq
 }
 
 /** One list row: the redacted view plus its live status. */

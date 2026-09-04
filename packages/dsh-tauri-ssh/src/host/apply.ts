@@ -12,12 +12,13 @@ import type z from 'schemastery'
 import type { SshApiHost } from './routes/index.js'
 import type { SshHostBlock } from './service/ssh-config.js'
 import type { MachinesValue, Config as SshRemoteConfig } from './storage/index.js'
-import type { HostSettingsScope, MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineStatus, SshTestResult } from './types/index.js'
+import type { HostSettingsScope, MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineEventsPage, SshMachineStatus, SshTestResult } from './types/index.js'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { SSH_API_PREFIX, SSH_PLUGIN_NAME } from '../shared/constants.js'
 import { createSshApiHandler } from './routes/index.js'
+import { SshMachineEvents } from './service/events.js'
 import { KnownHostsStore } from './service/host-keys.js'
 import { profileView, SshManager } from './service/manager.js'
 import { discoverableHosts, loadSshConfigBlocks, lookupSshConfig, SshConfigResolver } from './service/ssh-config.js'
@@ -41,6 +42,9 @@ export class SshRemoteService implements SshApiHost {
   /** The connection manager (transport, TOFU store, and per-machine state). */
   readonly manager: SshManager
 
+  /** The machine event channel drained by the `/api-ssh` `machine.events` method. */
+  readonly machineEvents: SshMachineEvents
+
   /** The registered settings scope; the write path for machine CRUD. */
   private scope!: HostSettingsScope<MachinesValue>
 
@@ -62,6 +66,7 @@ export class SshRemoteService implements SshApiHost {
     this.homeDir = homedir()
     this.sshDir = config.sshDir ?? join(this.homeDir, '.ssh')
     this.config = config
+    this.machineEvents = new SshMachineEvents()
     this.manager = new SshManager({
       transport: new Ssh2Transport(
         config.connectTimeoutMs,
@@ -71,6 +76,7 @@ export class SshRemoteService implements SshApiHost {
       ),
       knownHosts,
       config,
+      events: this.machineEvents,
       // v8 ignore next -- deliberately empty status hook: the settings page polls /api-ssh
       emitStatus: () => {
         // The settings page polls status through /api-ssh; no live consumers.
@@ -187,6 +193,10 @@ export class SshRemoteService implements SshApiHost {
   async install(machineId: MachineId, signal?: AbortSignal): Promise<SshInstallResult> {
     await this.syncProfiles()
     return this.manager.install(machineId, signal)
+  }
+
+  events(machineId: MachineId, sinceSeq?: number): SshMachineEventsPage {
+    return this.machineEvents.since(machineId, sinceSeq)
   }
 
   /**

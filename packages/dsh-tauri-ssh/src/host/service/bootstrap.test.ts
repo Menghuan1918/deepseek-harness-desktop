@@ -1,22 +1,28 @@
 import type { MachineProfile } from '../types/index.js'
+import type { RemoteInstallPlan } from './bootstrap.js'
 import type { SshExecOptions, SshExecResult, SshSession } from './transport.js'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { promisify } from 'node:util'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MachineId } from '../types/index.js'
 import {
+  buildInstallScript,
+  bundleProbeCommand,
+  checkMissingCommand,
   credentialsCopyCommand,
-  defaultStartCommand,
   describeExecFailure,
-  DshMissingError,
   ensureRemoteInstance,
   firstLineOf,
-  healthCheckCommand,
-  installCommandFor,
-  OFFICIAL_INSTALL_REPO,
-  probeDshCommand,
+  missingComponentsOf,
+  parseBootstrapLine,
+  planRemoteInstall,
   readEnvCredentials,
+  REMOTE_ROOT,
+  rootProbeCommand,
+  splitBundleProbeStdout,
   startCommandFor,
 } from './bootstrap.js'
 
@@ -29,8 +35,41 @@ const profile: MachineProfile = {
   remotePort: 3080,
 }
 
-/** The dsh-path answer a remote probe would print. */
-const RESOLVED_DSH = '/usr/local/bin/dsh'
+/** A realistic newest-first release list matching the live pkg repository. */
+const RELEASES = [
+  { tag: 'dsh-0.2.0-preview.1-32490000001', prerelease: true },
+  { tag: 'dsh-0.1.2-rc.1-33729514615', prerelease: false },
+  { tag: 'dsh-0.1.1-rc.1-32342588166', prerelease: false },
+]
+
+const PKG_REPO = 'dsh-tauri-desk/deepseek-harness-pkg'
+
+/** The GitHub assets the linux-x64 zip release carries. */
+const LINUX_ASSETS = [
+  {
+    name: 'deepseek-harness-pkg-linux.zip',
+    url: `https://github.com/${PKG_REPO}/releases/download/dsh-0.1.2-rc.1-33729514615/deepseek-harness-pkg-linux.zip`,
+    digest: 'sha256:6b7ecfebe3b7d779b459262943b17777427860f1b96dbf3b6f16a5074b1119a7',
+  },
+]
+
+/** The default injected fetchers (no network): a healthy metadata view. */
+function healthyFetchers(overrides: Partial<{
+  listReleases: () => Promise<typeof RELEASES>
+  listAssets: () => Promise<typeof LINUX_ASSETS>
+  npmDist: () => Promise<{ url: string, mirrorUrl: string, integrity?: string }>
+}> = {}) {
+  return {
+    listReleases: () => Promise.resolve(RELEASES),
+    listAssets: () => Promise.resolve(LINUX_ASSETS),
+    npmDist: () => Promise.resolve({
+      url: 'https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz',
+      mirrorUrl: 'https://registry.npmmirror.com/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz',
+      integrity: 'sha512-ZXhhZQ==',
+    }),
+    ...overrides,
+  }
+}
 
 class FakeSession implements SshSession {
   commands: string[] = []
@@ -65,84 +104,271 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-describe('remote instance commands', () => {
-  it('builds the default start command from the profile port', () => {
-    expect(defaultStartCommand(profile)).toBe('dsh web --host 127.0.0.1 --port 3080')
-  })
-
-  it('honors the profile startCommand override and ensures the log directory', () => {
-    const overridden: MachineProfile = { ...profile, startCommand: 'dsh web --port 4000' }
-    expect(startCommandFor(overridden))
-      .toBe('mkdir -p "$HOME/.dsh" && ( dsh web --port 4000 >>"$HOME/.dsh/dsh-remote-web.log" 2>&1 < /dev/null & ) &')
-  })
-
-  it('builds the detached default start with log redirection', () => {
-    expect(startCommandFor(profile))
-      .toBe('mkdir -p "$HOME/.dsh" && ( dsh web --host 127.0.0.1 --port 3080 >>"$HOME/.dsh/dsh-remote-web.log" 2>&1 < /dev/null & ) &')
-  })
-
-  it('substitutes a resolved dsh path into the default start command', () => {
-    expect(startCommandFor(profile, RESOLVED_DSH))
-      .toBe('mkdir -p "$HOME/.dsh" && ( /usr/local/bin/dsh web --host 127.0.0.1 --port 3080 >>"$HOME/.dsh/dsh-remote-web.log" 2>&1 < /dev/null & ) &')
-  })
-
-  it('keeps the profile override untouched when a dsh path is known', () => {
-    const overridden: MachineProfile = { ...profile, startCommand: 'my-launcher web' }
-    expect(startCommandFor(overridden, RESOLVED_DSH)).toContain('my-launcher web')
-  })
-
-  it('builds a curl health probe with a bounded deadline', () => {
-    expect(healthCheckCommand(3080, 2500)).toBe('curl -s -o /dev/null -m 3 -w \'%{http_code}\' http://127.0.0.1:3080/')
-    expect(healthCheckCommand(4000, 100)).toBe('curl -s -o /dev/null -m 1 -w \'%{http_code}\' http://127.0.0.1:4000/')
-  })
-
-  it('summarizes a failed command for operators', () => {
-    expect(describeExecFailure(1, 'bash: dsh: command not found\n')).toBe('exit 1: bash: dsh: command not found')
-    expect(describeExecFailure(null, '  ')).toBe('exit ?')
-  })
-})
-
-describe('dsh probe', () => {
-  it('checks PATH, then the installer links, and never fails', () => {
-    const command = probeDshCommand()
-    expect(command).toContain('command -v dsh')
-    expect(command).toContain('"$HOME/.local/bin/dsh"')
-    expect(command).toContain('"$HOME/.dsh/source/current/bin/dsh"')
-    expect(command).toContain('true')
-    // Each fallback is a braced group: a successful earlier arm must
-    // short-circuit the chain instead of firing the later && printf arms too.
-    expect(command).toMatch(/\{ test -x "\$HOME\/\.local\/bin\/dsh" && printf/)
-  })
-
-  it('takes the first non-empty line of a probe result', () => {
-    expect(firstLineOf('/usr/local/bin/dsh\n/other/bin/dsh\n')).toBe('/usr/local/bin/dsh')
-    expect(firstLineOf('\n  \n/usr/local/bin/dsh')).toBe('/usr/local/bin/dsh')
-    expect(firstLineOf('   ')).toBe('')
-    expect(firstLineOf('')).toBe('')
-  })
-})
-
-describe('install commands', () => {
-  it('builds the built-in install from the official repo default', () => {
-    const command = installCommandFor({})
-    expect(command).toContain(`git clone --depth 1 '${OFFICIAL_INSTALL_REPO}' "$HOME/.dsh/source/master"`)
-    expect(command).toContain('corepack enable pnpm')
-    expect(command).toContain('npm install -g pnpm')
-    expect(command).toContain('pnpm install')
-    expect(command).toContain('pnpm run build')
-    expect(command).toContain('ln -sfn "$HOME/.dsh/source/current/bin/dsh" "$HOME/.local/bin/dsh"')
-    expect(command).toContain('rm -rf "$HOME/.dsh/source/master" "$HOME/.dsh/source/current"')
-    expect(command).toContain('set -e')
-  })
-
-  it('clones a configured repo with an optional ref', () => {
-    const command = installCommandFor({ installRepo: 'https://git.example.com/team/dsh.git' })
-    expect(command).toContain(`git clone --depth 1 'https://git.example.com/team/dsh.git' "$HOME/.dsh/source/master"`)
-    const withRef = installCommandFor({
-      installRepo: 'git@github.com:me/dsh.git',
-      installRef: 'snapshots/2026',
+describe('parseBootstrapLine', () => {
+  it('splits stage-tagged markers and demotes untagged lines', () => {
+    expect(parseBootstrapLine('::dsh download https://example.test/a')).toEqual({
+      stage: 'download',
+      line: 'https://example.test/a',
     })
-    expect(withRef).toContain(`git clone --depth 1 --branch 'snapshots/2026' 'git@github.com:me/dsh.git' "$HOME/.dsh/source/master"`)
+    expect(parseBootstrapLine('::dsh failed checksum mismatch: x')).toEqual({
+      stage: 'failed',
+      line: 'checksum mismatch: x',
+    })
+    expect(parseBootstrapLine('random tool output')).toEqual({ stage: 'install', line: 'random tool output' })
+  })
+})
+
+describe('planRemoteInstall', () => {
+  it('pins the recommended release for linux x64 with its trusted digest', async () => {
+    const plan = await planRemoteInstall('Linux 6.8.0-45-generic x86_64', {}, healthyFetchers())
+    expect(plan.os).toBe('linux')
+    expect(plan.arch).toBe('x64')
+    expect(plan.dsh.kind).toBe('pkg-zip')
+    if (plan.dsh.kind !== 'pkg-zip')
+      throw new Error('expected pkg-zip')
+    expect(plan.dsh.tag).toBe('dsh-0.1.2-rc.1-33729514615')
+    expect(plan.dsh.digest).toBe(LINUX_ASSETS[0]?.digest)
+    expect(plan.dsh.urls[0]).toBe(LINUX_ASSETS[0]?.url)
+    expect(plan.dsh.urls[1]).toContain('ghfast.top/')
+    expect(plan.dshEntry).toBe('node_modules/@deepseek-ai/dsh/lib/bin.js')
+    expect(plan.dshVersion).toBe('0.1.2-rc.1')
+    expect(plan.notes).toEqual([])
+  })
+
+  it('resolves the arm64 npm asset with its packument integrity', async () => {
+    const plan = await planRemoteInstall('Linux 5.15 aarch64', {}, healthyFetchers())
+    expect(plan.dsh.kind).toBe('npm-tgz')
+    if (plan.dsh.kind === 'npm-tgz') {
+      expect(plan.dsh.urls).toEqual([
+        'https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz',
+        'https://registry.npmmirror.com/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz',
+      ])
+      expect(plan.dsh.integrity).toBe('sha512-ZXhhZQ==')
+    }
+    expect(plan.dshEntry).toBe('lib/bin.js')
+    expect(plan.node.urls[0]).toBe('https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-arm64.tar.gz')
+  })
+
+  it('derives deterministic URLs and notes skipped verification when metadata fails', async () => {
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', {}, healthyFetchers({
+      listAssets: () => Promise.reject(new Error('rate limited')),
+    }))
+    expect(plan.dsh.kind).toBe('pkg-zip')
+    expect(plan.notes.join('\n')).toContain('资产元数据获取失败')
+    expect(plan.notes.join('\n')).toContain('跳过 SHA-256 校验')
+    if (plan.dsh.kind === 'pkg-zip')
+      expect(plan.dsh.urls[0]).toBe(LINUX_ASSETS[0]?.url)
+  })
+
+  it('derives deterministic npm URLs when the registry view fails', async () => {
+    const plan = await planRemoteInstall('Linux 5.15 aarch64', {}, healthyFetchers({
+      npmDist: () => Promise.reject(new Error('offline')),
+    }))
+    expect(plan.dsh.kind).toBe('npm-tgz')
+    if (plan.dsh.kind === 'npm-tgz')
+      expect(plan.dsh.urls[0]).toBe('https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz')
+    expect(plan.notes.join('\n')).toContain('未取得')
+  })
+
+  it('falls back to the known stable tag when the release listing fails', async () => {
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', {}, healthyFetchers({
+      listReleases: () => Promise.reject(new Error('offline')),
+    }))
+    if (plan.dsh.kind !== 'pkg-zip')
+      throw new Error('expected pkg-zip')
+    expect(plan.dsh.tag).toBe('dsh-0.1.2-rc.1-33729514615')
+    expect(plan.notes.join('\n')).toContain('release 列表获取失败')
+  })
+
+  it('honors a configured pin and a custom release repository', async () => {
+    const repos: string[] = []
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', {
+      installRepo: 'https://github.com/my-org/deepseek-harness-pkg.git',
+      installRef: '0.1.1-rc.1',
+    }, {
+      listReleases: (repo) => {
+        repos.push(repo)
+        return Promise.resolve(RELEASES)
+      },
+      listAssets: () => Promise.resolve(LINUX_ASSETS),
+      npmDist: () => Promise.reject(new Error('unused')),
+    })
+    expect(repos).toEqual(['my-org/deepseek-harness-pkg'])
+    if (plan.dsh.kind !== 'pkg-zip')
+      throw new Error('expected pkg-zip')
+    expect(plan.dsh.tag).toBe('dsh-0.1.1-rc.1-32342588166')
+  })
+
+  it('rejects platforms outside the matrix before any network use', async () => {
+    const fetchers = {
+      listReleases: (): Promise<typeof RELEASES> => {
+        throw new Error('must not be called')
+      },
+      listAssets: (): Promise<typeof LINUX_ASSETS> => {
+        throw new Error('must not be called')
+      },
+      npmDist: (): Promise<never> => {
+        throw new Error('must not be called')
+      },
+    }
+    await expect(planRemoteInstall('MINGW64_NT-10.0-19045 x86_64', {}, fetchers)).rejects.toThrow(/REMOTE_PLATFORM_UNSUPPORTED/)
+  })
+})
+
+describe('buildInstallScript', () => {
+  it('embeds the plan: URLs, digests, entries, and the cleanup trap', async () => {
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', {}, healthyFetchers())
+    const script = buildInstallScript(plan)
+    expect(script).toContain('https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz')
+    expect(script).toContain('https://npmmirror.com/mirrors/node/v22.22.0/node-v22.22.0-linux-x64.tar.gz')
+    expect(script).toContain('https://registry.npmjs.org/pnpm/-/pnpm-11.7.0.tgz')
+    expect(script).toContain(LINUX_ASSETS[0]?.url ?? '')
+    expect(script).toContain('sha256:6b7ecfebe3b7d779b459262943b17777427860f1b96dbf3b6f16a5074b1119a7')
+    expect(script).toContain('trap cleanup EXIT')
+    expect(script).toContain('checksum mismatch')
+    expect(script).toContain('unzip -q -o')
+    expect(script).not.toContain('pnpm install')
+  })
+
+  it('arm64: assembles node_modules on the remote with registry fallback', async () => {
+    const plan = await planRemoteInstall('Linux 5.15 aarch64', {}, healthyFetchers())
+    const script = buildInstallScript(plan)
+    expect(script).toContain('https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.1.2-rc.1.tgz')
+    expect(script).toContain('sha512-ZXhhZQ==')
+    expect(script).toContain('install --prod --silent --registry')
+    expect(script).toContain('"$ROOT/dependencies/pnpm/bin/pnpm.cjs"')
+    expect(script).toContain('https://registry.npmmirror.com')
+    // The tarball path extracts with tar; the zip helper stays uncalled.
+    expect(script).not.toContain('extract_zip "$TMP/dsh')
+  })
+})
+
+describe('install script execution (real POSIX sh)', () => {
+  /**
+   * Run one generated script under the real `sh` inside a sandboxed HOME,
+   * with a fake `curl` first on PATH that "downloads" tampered bytes and a
+   * SHASUMS256.txt pinning a digest those bytes cannot match.
+   */
+  function runScript(script: string, sandbox: string): Promise<{ code: number, stdout: string, stderr: string }> {
+    const binDir = join(sandbox, 'fake-bin')
+    mkdirSync(binDir, { recursive: true })
+    const fakeCurl = join(binDir, 'curl')
+    writeFileSync(fakeCurl, [
+      '#!/bin/sh',
+      'dst=""',
+      'prev=""',
+      'for arg in "$@"; do',
+      '  if [ "$prev" = "-o" ]; then dst="$arg"; fi',
+      '  prev="$arg"',
+      'done',
+      'url=""',
+      'for arg in "$@"; do url="$arg"; done',
+      'case "$url" in',
+      '  *SHASUMS256.txt)',
+      '    printf \'%s  %s\\n\' deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef node-v22.22.0-linux-x64.tar.gz > "$dst"',
+      '    ;;',
+      '  *)',
+      '    printf \'tampered-download-bytes\' > "$dst"',
+      '    ;;',
+      'esac',
+      'exit 0',
+    ].join('\n'))
+    chmodSync(fakeCurl, 0o755)
+    const scriptPath = join(sandbox, 'install.sh')
+    writeFileSync(scriptPath, script)
+    const run = promisify(execFile)
+    return run('sh', [scriptPath], {
+      env: { ...process.env, HOME: sandbox, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+    }).then(
+      ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+      (error: { code?: number, stdout?: string, stderr?: string }) =>
+        ({ code: error.code ?? -1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }),
+    )
+  }
+
+  it('aborts and cleans half-products when the SHA-256 mismatches (tampered asset)', async () => {
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', {}, healthyFetchers({
+      listAssets: () => Promise.resolve(LINUX_ASSETS),
+    }))
+    const sandbox = tempDir()
+    const outcome = await runScript(buildInstallScript(plan), sandbox)
+    // The node tarball's digest cannot match the tampered download: the run
+    // must abort before installing anything and the trap must clean up.
+    expect(outcome.code).toBe(11)
+    expect(outcome.stdout).toContain('::dsh failed checksum mismatch')
+    expect(existsSync(join(sandbox, REMOTE_ROOT, 'runtime'))).toBe(false)
+    expect(existsSync(join(sandbox, REMOTE_ROOT, 'tmp'))).toBe(false)
+    expect(existsSync(join(sandbox, REMOTE_ROOT, 'runtime.new'))).toBe(false)
+    expect(existsSync(join(sandbox, REMOTE_ROOT, 'dependencies', 'dsh'))).toBe(false)
+  })
+
+  it('skips every section when the three components are already installed', async () => {
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', {}, healthyFetchers())
+    const sandbox = tempDir()
+    const root = join(sandbox, REMOTE_ROOT)
+    mkdirSync(join(root, 'runtime', 'bin'), { recursive: true })
+    writeFileSync(join(root, 'runtime', 'bin', 'node'), 'placeholder')
+    chmodSync(join(root, 'runtime', 'bin', 'node'), 0o755)
+    mkdirSync(join(root, 'dependencies', 'pnpm', 'bin'), { recursive: true })
+    writeFileSync(join(root, 'dependencies', 'pnpm', 'bin', 'pnpm.cjs'), 'placeholder')
+    mkdirSync(join(root, 'dependencies', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
+    writeFileSync(join(root, 'dependencies', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'placeholder')
+    const outcome = await runScript(buildInstallScript(plan), sandbox)
+    expect(outcome.code).toBe(0)
+    expect(outcome.stdout).toContain('node 已就绪')
+    expect(outcome.stdout).toContain('pnpm 已就绪')
+    expect(outcome.stdout).toContain('dsh 已就绪')
+    expect(outcome.stdout).toContain('远端初始化完成')
+    expect(outcome.stdout).not.toContain('::dsh download')
+    expect(existsSync(join(root, 'tmp'))).toBe(false)
+  })
+})
+
+describe('component probe and launch commands', () => {
+  it('lists the missing components of the remote layout', () => {
+    const command = checkMissingCommand()
+    expect(command).toContain('.dsh-desktop')
+    expect(command).toContain('"$ROOT/runtime/bin/node"')
+    expect(command).toContain('"$ROOT/dependencies/pnpm/bin/pnpm.cjs"')
+    expect(command).toContain('"$ROOT/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"')
+    expect(missingComponentsOf('node\ndsh\n')).toEqual(['node', 'dsh'])
+    expect(missingComponentsOf('')).toEqual([])
+    expect(missingComponentsOf('node\njunk\npnpm\n')).toEqual(['node', 'pnpm'])
+  })
+
+  it('builds the layout launch: pinned port, pid file, detached, log redirect', async () => {
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', {}, healthyFetchers())
+    const command = startCommandFor(profile, plan)
+    expect(command).toContain('.dsh-desktop/runtime/bin/node')
+    expect(command).toContain('.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js')
+    expect(command).toContain('.dsh-remote.pid')
+    expect(command).toContain('--host 127.0.0.1')
+    expect(command).toContain(`--port "$4"`)
+    expect(command).toContain('DSH_WEB_PORT=3080')
+    expect(command).toContain('--no-open')
+    expect(command).toContain('REMOTE_NOT_INSTALLED')
+    expect(command).toContain('dsh-remote-web.log')
+  })
+
+  it('keeps the profile startCommand override untouched', () => {
+    const overridden: MachineProfile = { ...profile, startCommand: 'my-launcher web --port 4000' }
+    expect(startCommandFor(overridden))
+      .toBe('mkdir -p "$HOME/.dsh" && ( my-launcher web --port 4000 >>"$HOME/.dsh/dsh-remote-web.log" 2>&1 < /dev/null & ) &')
+  })
+})
+
+describe('health probes', () => {
+  it('builds the root probe and the bundle probe', () => {
+    expect(rootProbeCommand(3080, 2500)).toBe('curl -s -m 3 http://127.0.0.1:3080/')
+    expect(bundleProbeCommand('http://127.0.0.1:3080/plugins/x/client.js', 2500))
+      .toBe('curl -s -m 3 -w \'\\n%{http_code}\' \'http://127.0.0.1:3080/plugins/x/client.js\'')
+  })
+
+  it('splits a bundle probe answer into body and status', () => {
+    expect(splitBundleProbeStdout('console.log(1)\n200')).toEqual({ body: 'console.log(1)', status: 200 })
+    expect(splitBundleProbeStdout('404\n')).toEqual({ body: '', status: 404 })
+    expect(splitBundleProbeStdout('<!doctype html>\n200')).toEqual({ body: '<!doctype html>', status: 200 })
+    expect(splitBundleProbeStdout('garbage')).toEqual({ body: 'garbage', status: 0 })
   })
 })
 
@@ -179,114 +405,204 @@ describe('credentials', () => {
   })
 })
 
+/** A boot page the bundle probe answers with real JavaScript. */
+const BOOT_HTML = [
+  '<html><head>',
+  '<script src="/plugins/??@deepseek-ai/dsh-client-modules/client.js&amp;rev=1"></script>',
+  '</head><body><script>globalThis["__DSH_BOOT__"] = {"entries":[{"url":"/plugins/@deepseek-ai/dsh-client-ui-layout/client.js"}]};</script></body></html>',
+].join('')
+
+const BOOTSTRAP = {
+  config: {},
+  healthCheckTimeoutMs: 1000,
+  healthPollIntervalMs: 5,
+  healthPollAttempts: 3,
+}
+
+function plannerOf(plan: RemoteInstallPlan) {
+  return async (): Promise<RemoteInstallPlan> => plan
+}
+
 describe('ensureRemoteInstance', () => {
-  it('skips start when the instance already answers', async () => {
-    const session = new FakeSession(() => ({ code: 0, stdout: '200', stderr: '' }))
-    await expect(ensureRemoteInstance(session, profile, 1000, 10, 3)).resolves.toBe('10.0.0.1:3080')
-    expect(session.commands).toHaveLength(1)
-    expect(session.commands[0]).toContain('curl')
-  })
-
-  it('auto-starts when absent and reports the healthy address after polling', async () => {
-    const session = new FakeSession((_command, index) => {
-      // 1 = port probe (refused), 2 = dsh probe, 3 = start, 4 = post-start probe (healthy).
-      if (index === 1)
-        return { code: 0, stdout: RESOLVED_DSH, stderr: '' }
-      if (index === 2)
-        return { code: 0, stdout: '', stderr: '' }
-      if (index === 3)
-        return { code: 0, stdout: '200', stderr: '' }
-      return { code: 7, stdout: '', stderr: 'refused' }
-    })
-    await expect(ensureRemoteInstance(session, profile, 1000, 5, 3)).resolves.toBe('10.0.0.1:3080')
-    expect(session.commands[2]).toContain(`${RESOLVED_DSH} web --host 127.0.0.1 --port 3080`)
-  })
-
-  it('reports the bootstrap phases through the progress callback', async () => {
-    const session = new FakeSession((_command, index) => {
-      // 1 = port probe (refused), 2 = dsh probe, 3 = start, 4 = post-start probe (healthy).
-      if (index === 1)
-        return { code: 0, stdout: RESOLVED_DSH, stderr: '' }
-      if (index === 2)
-        return { code: 0, stdout: '', stderr: '' }
-      if (index === 3)
-        return { code: 0, stdout: '200', stderr: '' }
-      return { code: 7, stdout: '', stderr: 'refused' }
-    })
-    const phases: unknown[] = []
-    await ensureRemoteInstance(session, profile, 1000, 5, 3, progress => phases.push(progress))
-    expect(phases).toEqual([
-      { phase: 'starting' },
-      { phase: 'probing', attempt: 1, total: 3 },
-    ])
-  })
-
-  it('fails fast with DshMissingError when no dsh binary is reachable', async () => {
+  it('is satisfied immediately when the boot manifest answers with a real bundle', async () => {
     const session = new FakeSession((command) => {
-      if (command.includes('curl'))
-        return { code: 7, stdout: '', stderr: '' }
-      return { code: 0, stdout: '', stderr: '' }
+      if (command.includes('-w'))
+        return { code: 0, stdout: 'console.log(1)\n200', stderr: '' }
+      return { code: 0, stdout: BOOT_HTML, stderr: '' }
     })
-    await expect(ensureRemoteInstance(session, profile, 1000, 5, 3)).rejects.toBeInstanceOf(DshMissingError)
+    const events: Array<{ stage: string, line: string, terminal?: string }> = []
+    await expect(ensureRemoteInstance(session, profile, BOOTSTRAP, {
+      onEvent: (stage, line, options) => events.push({ stage, line, ...options?.terminal === undefined ? {} : { terminal: options.terminal } }),
+    })).resolves.toBe('10.0.0.1:3080')
+    expect(session.commands).toHaveLength(2)
+    expect(events).toEqual([{ stage: 'ready', line: expect.stringContaining('已就绪'), terminal: 'success' }])
   })
 
-  it('fails loud when the start command itself fails', async () => {
-    const session = new FakeSession((_command, index) => {
-      if (index === 1)
-        return { code: 0, stdout: RESOLVED_DSH, stderr: '' }
-      if (index === 2)
-        return { code: 127, stdout: '', stderr: 'sh: dsh: not found' }
+  it('falls back to the legacy any-response verdict when the HTML carries no manifest', async () => {
+    const session = new FakeSession((command) => {
+      if (command.includes('/dev/null'))
+        return { code: 0, stdout: '200', stderr: '' }
+      return { code: 0, stdout: '<html>an old instance without a boot graph</html>', stderr: '' }
+    })
+    const events: string[] = []
+    await expect(ensureRemoteInstance(session, profile, BOOTSTRAP, {
+      onEvent: (stage, line) => events.push(`${stage}: ${line}`),
+    })).resolves.toBe('10.0.0.1:3080')
+    expect(events[0]).toContain('旧探测兜底')
+    expect(events[0]).toContain('root answered 200')
+  })
+
+  it('bootstraps a fresh machine end to end: probe → install → launch → ready', async () => {
+    const plan = await planRemoteInstall('Linux 6.8.0-45-generic x86_64', {}, healthyFetchers())
+    let started = false
+    const session = new FakeSession((command) => {
+      if (command === 'uname -srm')
+        return { code: 0, stdout: 'Linux 6.8.0-45-generic x86_64\n', stderr: '' }
+      if (command.includes('echo node'))
+        return { code: 0, stdout: 'node\ndsh\npnpm\n', stderr: '' }
+      if (command.includes('trap cleanup EXIT'))
+        return { code: 0, stdout: '::dsh install 远端初始化完成', stderr: '' }
+      if (command.includes('dsh-remote.pid')) {
+        started = true
+        return { code: 0, stdout: '远端实例已拉起', stderr: '' }
+      }
+      // Readiness probes: refused until the launch, manifest-healthy after.
+      if (command.includes('-w'))
+        return { code: 0, stdout: 'console.log(1)\n200', stderr: '' }
+      return started
+        ? { code: 0, stdout: BOOT_HTML, stderr: '' }
+        : { code: 7, stdout: '', stderr: 'refused' }
+    })
+    const events: Array<{ stage: string, line: string, terminal?: string, reason?: string }> = []
+    const phases: unknown[] = []
+    await expect(ensureRemoteInstance(session, profile, BOOTSTRAP, {
+      onProgress: progress => phases.push(progress),
+      onEvent: (stage, line, options) => events.push({ stage, line, ...options ?? {} }),
+    }, plannerOf(plan))).resolves.toBe('10.0.0.1:3080')
+    const kinds = events.map(event => event.stage)
+    expect(kinds).toEqual(['probe', 'probe', 'probe', 'launch', 'ready'])
+    expect(events[0]?.line).toContain('探测远端平台')
+    expect(events[1]?.line).toContain('linux/x64')
+    expect(events[2]?.line).toContain('缺失组件: node, dsh, pnpm')
+    expect(events[4]?.terminal).toBe('success')
+    expect(phases).toEqual([{ phase: 'starting' }, { phase: 'probing', attempt: 1, total: 3 }])
+    expect(session.commands.some(command => command.includes('https://nodejs.org/dist/'))).toBe(true)
+  })
+
+  it('skips the install when the three components are already present', async () => {
+    const plan = await planRemoteInstall('Linux 6.8.0-45-generic x86_64', {}, healthyFetchers())
+    let started = false
+    const session = new FakeSession((command) => {
+      if (command === 'uname -srm')
+        return { code: 0, stdout: 'Linux 6.8.0-45-generic x86_64\n', stderr: '' }
+      if (command.includes('echo node'))
+        return { code: 0, stdout: '', stderr: '' }
+      if (command.includes('dsh-remote.pid')) {
+        started = true
+        return { code: 0, stdout: '远端实例已拉起', stderr: '' }
+      }
+      if (command.includes('-w'))
+        return { code: 0, stdout: 'console.log(1)\n200', stderr: '' }
+      return started
+        ? { code: 0, stdout: BOOT_HTML, stderr: '' }
+        : { code: 7, stdout: '', stderr: '' }
+    })
+    const events: string[] = []
+    await expect(ensureRemoteInstance(session, profile, BOOTSTRAP, {
+      onEvent: (stage, line) => events.push(`${stage}: ${line}`),
+    }, plannerOf(plan))).resolves.toBe('10.0.0.1:3080')
+    expect(events.some(entry => entry.includes('三件套已就绪，跳过安装'))).toBe(true)
+    expect(session.commands.some(command => command.includes('trap cleanup EXIT'))).toBe(false)
+  })
+
+  it('records the terminal failure and reason when the install script fails', async () => {
+    const plan = await planRemoteInstall('Linux 6.8.0-45-generic x86_64', {}, healthyFetchers())
+    const session = new FakeSession((command) => {
+      if (command === 'uname -srm')
+        return { code: 0, stdout: 'Linux 6.8.0-45-generic x86_64\n', stderr: '' }
+      if (command.includes('echo node'))
+        return { code: 0, stdout: 'node\n', stderr: '' }
+      if (command.includes('trap cleanup EXIT'))
+        return { code: 11, stdout: '::dsh failed checksum mismatch: node.tar.gz', stderr: '' }
       return { code: 7, stdout: '', stderr: '' }
     })
-    await expect(ensureRemoteInstance(session, profile, 1000, 5, 3)).rejects.toThrow(/start failed.*not found/)
+    const failures: Array<{ line: string, terminal?: string, reason?: string }> = []
+    await expect(ensureRemoteInstance(session, profile, BOOTSTRAP, {
+      onEvent: (stage, line, options) => {
+        if (stage === 'failed')
+          failures.push({ line, ...options ?? {} })
+      },
+    }, plannerOf(plan))).rejects.toThrow(/install failed on remote/)
+    expect(failures[0]?.terminal).toBe('failed')
+    expect(failures[0]?.reason).toContain('checksum mismatch')
   })
 
-  it('fails loud when the instance never becomes reachable, with the log tail', async () => {
+  it('reports unsupported platforms as a terminal failure', async () => {
     const session = new FakeSession((command) => {
-      if (command.includes('command -v dsh'))
-        return { code: 0, stdout: RESOLVED_DSH, stderr: '' }
-      if (command.includes('tail'))
-        return { code: 0, stdout: 'dsh: command not found\nline2\nline3\nline4\nline5\nline6', stderr: '' }
-      if (command.includes('curl'))
-        return { code: 7, stdout: '', stderr: '' }
-      return { code: 0, stdout: '', stderr: '' }
+      if (command === 'uname -srm')
+        return { code: 0, stdout: 'MINGW64_NT-10.0-19045 x86_64\n', stderr: '' }
+      return { code: 7, stdout: '', stderr: '' }
     })
-    await expect(ensureRemoteInstance(session, profile, 1000, 5, 2)).rejects.toThrow(
-      /did not become reachable.*line2 \| line3 \| line4 \| line5 \| line6/,
-    )
-    expect(session.commands).toHaveLength(6)
+    const failures: string[] = []
+    await expect(ensureRemoteInstance(session, profile, BOOTSTRAP, {
+      onEvent: (stage, line) => {
+        if (stage === 'failed')
+          failures.push(line)
+      },
+    })).rejects.toThrow(/REMOTE_PLATFORM_UNSUPPORTED/)
+    expect(failures).toHaveLength(1)
   })
 
-  it('notes an empty remote log in the failure message', async () => {
+  it('fails loud with fallback details when the instance never becomes ready', async () => {
+    const plan = await planRemoteInstall('Linux 6.8.0-45-generic x86_64', {}, healthyFetchers())
     const session = new FakeSession((command) => {
-      if (command.includes('command -v dsh'))
-        return { code: 0, stdout: RESOLVED_DSH, stderr: '' }
-      if (command.includes('tail'))
+      if (command === 'uname -srm')
+        return { code: 0, stdout: 'Linux 6.8.0-45-generic x86_64\n', stderr: '' }
+      if (command.includes('echo node'))
         return { code: 0, stdout: '', stderr: '' }
-      if (command.includes('curl'))
-        return { code: 7, stdout: '', stderr: '' }
-      return { code: 0, stdout: '', stderr: '' }
-    })
-    await expect(ensureRemoteInstance(session, profile, 1000, 5, 1)).rejects.toThrow(/log is empty/)
-  })
-
-  it('notes an unreadable remote log in the failure message', async () => {
-    const session = new FakeSession((command) => {
-      if (command.includes('command -v dsh'))
-        return { code: 0, stdout: RESOLVED_DSH, stderr: '' }
       if (command.includes('tail'))
-        throw new Error('channel closed')
-      if (command.includes('curl'))
-        return { code: 7, stdout: '', stderr: '' }
-      return { code: 0, stdout: '', stderr: '' }
+        return { code: 0, stdout: 'err1\nerr2\nerr3\nerr4\nerr5\nerr6', stderr: '' }
+      if (command.includes('dsh-remote.pid'))
+        return { code: 0, stdout: '远端实例已拉起', stderr: '' }
+      return { code: 7, stdout: '', stderr: '' }
     })
-    await expect(ensureRemoteInstance(session, profile, 1000, 5, 1)).rejects.toThrow(/log unreadable/)
+    const failures: Array<{ reason?: string, terminal?: string }> = []
+    await expect(ensureRemoteInstance(session, profile, {
+      ...BOOTSTRAP,
+      healthPollAttempts: 2,
+    }, {
+      onEvent: (_stage, _line, options) => {
+        if (options?.terminal === 'failed')
+          failures.push({ terminal: options.terminal, ...options.reason === undefined ? {} : { reason: options.reason } })
+      },
+    }, plannerOf(plan))).rejects.toThrow(/did not become ready.*fallback probe: root no answer.*err2 \| err3 \| err4 \| err5 \| err6/)
+    expect(failures[0]?.terminal).toBe('failed')
   })
 
-  it('propagates transport failures', async () => {
-    const session = new FakeSession(() => {
-      throw new Error('channel closed')
+  it('surfaces REMOTE_NOT_INSTALLED when the launch finds an incomplete runtime', async () => {
+    const plan = await planRemoteInstall('Linux 6.8.0-45-generic x86_64', {}, healthyFetchers())
+    const session = new FakeSession((command) => {
+      if (command === 'uname -srm')
+        return { code: 0, stdout: 'Linux 6.8.0-45-generic x86_64\n', stderr: '' }
+      if (command.includes('echo node'))
+        return { code: 0, stdout: '', stderr: '' }
+      if (command.includes('dsh-remote.pid'))
+        return { code: 1, stdout: 'REMOTE_NOT_INSTALLED: 远端三件套未安装完整', stderr: '' }
+      return { code: 7, stdout: '', stderr: '' }
     })
-    await expect(ensureRemoteInstance(session, profile, 1000, 5, 2)).rejects.toThrow()
+    await expect(ensureRemoteInstance(session, profile, BOOTSTRAP, {}, plannerOf(plan)))
+      .rejects
+      .toThrow(/REMOTE_NOT_INSTALLED/)
+  })
+
+  it('summarizes a failed command for operators', () => {
+    expect(describeExecFailure(1, 'sh: dsh: not found\n')).toBe('exit 1: sh: dsh: not found')
+    expect(describeExecFailure(null, '  ')).toBe('exit ?')
+  })
+
+  it('takes the first non-empty line of a probe result', () => {
+    expect(firstLineOf('ok\nother\n')).toBe('ok')
+    expect(firstLineOf('\n  \nok')).toBe('ok')
+    expect(firstLineOf('')).toBe('')
   })
 })

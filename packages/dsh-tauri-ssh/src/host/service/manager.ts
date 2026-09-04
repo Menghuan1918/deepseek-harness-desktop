@@ -8,14 +8,15 @@ import type { Config } from '../storage/index.js'
  * @module dsh-tauri-ssh/host/service/manager
  */
 
-import type { MachineId, MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStatus, SshProgress, SshTestResult } from '../types/index.js'
+import type { MachineId, MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStage, SshMachineStatus, SshProgress, SshTestResult } from '../types/index.js'
+import type { SshMachineEvents } from './events.js'
 import type { KnownHostsStore } from './host-keys.js'
 import type { SshSession, SshTransport, SshTunnelHandle } from './transport.js'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { SshError } from '../types/index.js'
-import { credentialsCopyCommand, describeExecFailure, DshMissingError, ensureRemoteInstance, firstLineOf, installCommandFor, probeDshCommand, readEnvCredentials } from './bootstrap.js'
+import { buildInstallScript, checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, parseBootstrapLine, planRemoteInstall, readEnvCredentials, REMOTE_ROOT } from './bootstrap.js'
 import { fingerprintHostKey } from './host-keys.js'
 
 /** One machine's live connection state. */
@@ -49,6 +50,10 @@ export interface SshManagerDeps {
   transport: SshTransport
   knownHosts: KnownHostsStore
   config: Config
+  /** The machine event channel (C-EVENT): bootstrap log/progress events. */
+  events: SshMachineEvents
+  /** The install-plan resolver (overridable so tests never touch the network). */
+  planInstall?: (unameOut: string, config: Pick<Config, 'installRepo' | 'installRef'>) => Promise<import('./bootstrap.js').RemoteInstallPlan>
   /** Publish one machine's status change (the service emits the seam event). */
   emitStatus: (machineId: MachineId, status: SshMachineStatus) => void
   /** Local dsh `.env` credentials to copy after an install (defaults to the host's own). */
@@ -84,8 +89,10 @@ export class SshManager {
     this.profiles.clear()
     for (const [id, profile] of profiles) this.profiles.set(id, profile)
     for (const id of this.states.keys()) {
-      if (!this.profiles.has(id))
+      if (!this.profiles.has(id)) {
+        this.deps.events.forget(id)
         void this.disconnect(id)
+      }
     }
   }
 
@@ -276,15 +283,24 @@ export class SshManager {
       await ensureRemoteInstance(
         session,
         profile,
-        this.deps.config.healthCheckTimeoutMs,
-        this.deps.config.healthPollIntervalMs,
-        this.deps.config.healthPollAttempts,
-        (progress) => {
-          if (generation === state.generation) {
-            state.progress = progress
-            this.emit(machineId)
-          }
+        {
+          config: this.deps.config,
+          healthCheckTimeoutMs: this.deps.config.healthCheckTimeoutMs,
+          healthPollIntervalMs: this.deps.config.healthPollIntervalMs,
+          healthPollAttempts: this.deps.config.healthPollAttempts,
         },
+        {
+          onProgress: (progress) => {
+            if (generation === state.generation) {
+              state.progress = progress
+              this.emit(machineId)
+            }
+          },
+          onEvent: (stage, line, options) => {
+            this.deps.events.append(machineId, stage, line, options)
+          },
+        },
+        this.deps.planInstall,
       )
       const tunnel = await session.openTunnel(profile.remotePort)
       // A disconnect that landed anywhere above (bootstrap, tunnel opening)
@@ -325,25 +341,25 @@ export class SshManager {
       }
       if (generation === state.generation) {
         delete state.progress
-        state.lastError = error instanceof Error ? error.message : String(error)
-        if (error instanceof DshMissingError)
+        const message = error instanceof Error ? error.message : String(error)
+        state.lastError = message
+        // The start script's own "not installed" verdict keeps the UI's
+        // install hint alive (the auto-bootstrap could not complete).
+        if (message.includes('REMOTE_NOT_INSTALLED'))
           state.dshMissing = true
         state.phase = 'disconnected'
         this.emit(machineId)
       }
-      throw new SshError(
-        error instanceof DshMissingError ? 'machine-dsh-missing' : 'machine-bootstrap-failed',
-        machineId,
-        state.lastError ?? 'remote instance bootstrap failed',
-      )
+      throw new SshError('machine-bootstrap-failed', machineId, state.lastError ?? 'remote instance bootstrap failed')
     }
   }
 
   /**
-   * One-shot remote dsh install: authenticate, stream the official installer
-   * (clone + pnpm install + build), resolve the installed binary, copy the
-   * local API credentials into the remote `~/.dsh/.env`, then hand off to
-   * {@link connect} automatically. Idempotent while in flight.
+   * One-shot remote dsh install (binary distribution): authenticate, probe
+   * the platform, download/verify/install the missing runtime components
+   * from the pinned release, copy the local API credentials into the remote
+   * `~/.dsh/.env`, then hand off to {@link connect} automatically.
+   * Idempotent while in flight.
    * @param machineId - the machine to install on.
    * @param signal - aborts the attempt.
    * @returns the install outcome.
@@ -373,6 +389,7 @@ export class SshManager {
   private async performInstall(machineId: MachineId, profile: MachineProfile, signal?: AbortSignal): Promise<SshInstallResult> {
     const state = this.ensureState(machineId)
     const generation = state.generation
+    const events = this.deps.events
     let session: SshSession
     try {
       session = await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
@@ -388,33 +405,54 @@ export class SshManager {
     }
     try {
       const installTimeoutMs = this.deps.config.installTimeoutMs
-      const result = await session.exec(installCommandFor(this.deps.config), {
-        ...installTimeoutMs === undefined ? {} : { timeoutMs: installTimeoutMs },
-        onData: (chunk) => {
-          if (generation !== state.generation)
-            return
-          state.installLog = [...(state.installLog ?? []), chunk].slice(-40)
-          state.progress = {
-            phase: 'installing',
-            log: state.installLog.join('').slice(-2000),
-          }
-        },
-      })
-      if (result.code !== 0) {
-        const log = state.installLog?.join('').trim() ?? ''
-        const tail = log === '' ? '(no output captured)' : log.split('\n').slice(-5).join(' | ')
-        throw new Error(
-          `dsh install failed on "${profile.host}": ${describeExecFailure(result.code, result.stderr)}; `
-          + `installer output tail: ${tail}`,
-        )
+      events.append(machineId, 'probe', '探测远端平台 (uname -srm)')
+      const uname = await session.exec('uname -srm')
+      if (uname.code !== 0) {
+        throw new Error(`cannot probe remote platform: ${describeExecFailure(uname.code, uname.stderr)}`)
       }
-      if (generation !== state.generation)
-        throw new AttemptCancelled()
-      const dshPath = firstLineOf((await session.exec(probeDshCommand())).stdout)
-      if (dshPath === '') {
-        throw new Error(
-          `dsh install finished on "${profile.host}" but no dsh binary is reachable `
-          + '(checked the login PATH, ~/.local/bin and ~/.dsh/source/current)',
+      const plan = await (this.deps.planInstall ?? planRemoteInstall)(uname.stdout, this.deps.config)
+      events.append(machineId, 'probe', `远端平台 ${plan.os}/${plan.arch}，安装源 ${plan.repo}${plan.dsh.kind === 'pkg-zip' ? ` tag ${plan.dsh.tag}` : ` npm ${plan.dsh.version}`}`)
+      for (const note of plan.notes)
+        events.append(machineId, 'probe', note)
+      const missing = missingComponentsOf((await session.exec(checkMissingCommand())).stdout)
+      if (missing.length > 0) {
+        events.append(machineId, 'probe', `缺失组件: ${missing.join(', ')}`)
+        let log = ''
+        const result = await session.exec(buildInstallScript(plan), {
+          ...installTimeoutMs === undefined ? {} : { timeoutMs: installTimeoutMs },
+          onData: (chunk) => {
+            if (generation !== state.generation)
+              return
+            log = `${log}${chunk}`.slice(-2000)
+            for (const line of chunk.split('\n').filter(line => line !== '')) {
+              const parsed = parseBootstrapLine(line)
+              events.append(machineId, parsed.stage as SshMachineStage, parsed.line)
+            }
+            state.progress = { phase: 'installing', log }
+            this.emit(machineId)
+          },
+        })
+        if (result.code !== 0) {
+          const tail = log.trim() === '' ? '(no output captured)' : log.trim().split('\n').slice(-5).join(' | ')
+          events.append(machineId, 'failed', 'install failed', { terminal: 'failed', reason: tail })
+          throw new Error(
+            `dsh install failed on "${profile.host}": ${describeExecFailure(result.code, result.stderr)}; installer output tail: ${tail}`,
+          )
+        }
+        if (generation !== state.generation)
+          throw new AttemptCancelled()
+      }
+      else {
+        events.append(machineId, 'probe', '三件套已就绪，跳过安装')
+      }
+      const dshPath = `$HOME/${REMOTE_ROOT}/dependencies/dsh/${plan.dshEntry}`
+      const entryCheck = await session.exec(`test -f ${dshPath} && printf 'ok\\n'`)
+      const dshResolved = firstLineOf(entryCheck.stdout)
+      if (dshResolved !== 'ok') {
+        throw new SshError(
+          'machine-dsh-missing',
+          machineId,
+          `dsh install finished on "${profile.host}" but the entry ${dshPath} is not present`,
         )
       }
       let credentialsCopied = false
@@ -438,6 +476,9 @@ export class SshManager {
         void this.connect(machineId).catch(() => undefined)
       }
       return {
+        installed: missing,
+        dshRef: plan.dsh.kind === 'pkg-zip' ? plan.dsh.tag : `npm:${plan.dsh.version}`,
+        dshVersion: plan.dshVersion,
         dshPath,
         credentialsCopied,
         ...credentialsError === undefined ? {} : { credentialsError },
@@ -455,6 +496,8 @@ export class SshManager {
         state.phase = 'disconnected'
         this.emit(machineId)
       }
+      if (error instanceof SshError)
+        throw error
       throw new SshError('machine-install-failed', machineId, state.lastError ?? 'dsh install failed')
     }
   }

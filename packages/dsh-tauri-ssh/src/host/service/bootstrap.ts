@@ -1,117 +1,437 @@
 /**
- * Remote-instance assurance: probe the remote `dsh web` port, auto-start the
- * instance when absent, and poll until it answers. Commands are pure
- * functions of the profile so the manager can drive them through any
- * transport; the polling loop owns the timing contract and reports its phase
- * through a progress callback so the settings page can show live progress.
- * Also the one-line dsh installer: probe for a `dsh` binary, run the official
- * install script through the remote shell, and copy the local API credentials.
+ * Remote-instance assurance, v2: binary distribution. Connect-time flow =
+ * probe the remote platform (`uname -srm`), download/verify/install the
+ * three-part runtime (Node + DSH + pnpm) under the remote-exclusive
+ * `~/.dsh-desktop` layout when components are missing, launch the instance,
+ * and judge readiness by parsing the served boot HTML's `__DSH_BOOT__`
+ * client manifest (the legacy any-response port probe stays as fallback).
+ * Ported from the retired Rust engine's `service/remote/bootstrap.rs`
+ * (official → mirror download fallback, SHA verification, single-top-level
+ * flattening, detached launch) with the stage-tagged event stream this spec
+ * adds. Commands remain pure functions of the profile/plan so the manager
+ * drives them through any transport.
  * @module dsh-tauri-ssh/host/service/bootstrap
  */
 
 import type { Config } from '../storage/index.js'
 import type { MachineProfile, SshProgress } from '../types/index.js'
+import type { RemoteArch, RemoteAssetMatrix, RemoteOs } from './assets.js'
 import type { SshSession } from './transport.js'
 import { readFileSync } from 'node:fs'
+import { assetMatrixFor, dshNpmTarballUrls, dshZipDownloadUrls, nodeDownloadUrls, nodeFilenameFor, nodeShasumUrls, parsePlatform, PNPM_SHA256, PNPM_VERSION, pnpmDownloadUrls } from './assets.js'
+import { clientUrlsFromBootHtml, looksLikePluginBundle } from './boot-html.js'
 import { shQuote } from './transport.js'
+import { listGithubAssets, listGithubReleases, npmDistMetadata, pickReleaseTag, pkgRepoOf } from './version.js'
 
 /** Log file of the auto-started remote instance, under the remote home. */
 export const REMOTE_WEB_LOG = '.dsh/dsh-remote-web.log'
 
-/** The installer's default clone source (its DSH_REPO default). */
-export const OFFICIAL_INSTALL_REPO = 'https://github.com/deepseek-harness/deepseek-harness.git'
+/** The remote-exclusive install root, relative to the remote home. */
+export const REMOTE_ROOT = '.dsh-desktop'
 
-/** The default remote-instance start command, parameterized by the profile's remote port. */
-export function defaultStartCommand(profile: MachineProfile): string {
-  return `dsh web --host 127.0.0.1 --port ${profile.remotePort}`
+/** The packaged-zip DSH entry, relative to the dsh install directory. */
+const DSH_ZIP_ENTRY = 'node_modules/@deepseek-ai/dsh/lib/bin.js'
+
+/** The npm-tarball DSH entry, relative to the dsh install directory. */
+const DSH_NPM_ENTRY = 'lib/bin.js'
+
+/** The pnpm entry, relative to the pnpm install directory. */
+const PNPM_ENTRY = 'bin/pnpm.cjs'
+
+/** Marker prefix the install script tags its stage lines with. */
+export const BOOTSTRAP_LOG_PREFIX = '::dsh '
+
+/** One parsed stage line of the install script's output stream. */
+export interface BootstrapLogLine {
+  stage: string
+  line: string
 }
 
 /**
- * The remote-instance start command: the profile override when present, else
- * the default with the resolved `dsh` binary substituted for the bare name
- * (the installer's `~/.local/bin` is rarely on a login shell's PATH). The
- * log directory is ensured first (a missing `$HOME/.dsh` would otherwise
- * swallow the redirection and every error with it), then the command runs
- * detached in the background with output redirected to the log; the health
- * probe judges the outcome, never the command. Deliberately no `nohup`: in an
- * sshd exec session there is no controlling terminal to detach from, and
- * macOS nohup then kills the child instead of protecting it — a plain
- * backgrounded job survives both the exec channel and connection close (no
- * pty was ever allocated).
- * @param profile - the machine profile.
- * @param dshPath - resolved remote `dsh` binary path, when known.
+ * Parse one output line of the install script into its stage tag; lines
+ * without the marker are unexpected tool output and report stage `install`.
+ * @param chunk - one raw output line.
+ */
+export function parseBootstrapLine(chunk: string): BootstrapLogLine {
+  const match = /^::dsh (\w+) (.*)$/u.exec(chunk)
+  if (match === null)
+    return { stage: 'install', line: chunk }
+  return { stage: match[1] ?? 'install', line: match[2] ?? '' }
+}
+
+/** The npm-registry DSH kind's resolved asset. */
+interface DshNpmPlan {
+  kind: 'npm-tgz'
+  urls: string[]
+  /** Trusted `sha512-…` integrity from the packument, when available. */
+  integrity?: string
+  packageName: string
+  version: string
+}
+
+/** The packaged-zip DSH kind's resolved asset. */
+interface DshZipPlan {
+  kind: 'pkg-zip'
+  urls: string[]
+  /** Trusted `sha256:<hex>` digest from the GitHub release, when available. */
+  digest?: string
+  zipName: string
+  tag: string
+}
+
+/** The fully resolved install plan for one remote. */
+export interface RemoteInstallPlan {
+  os: RemoteOs
+  arch: RemoteArch
+  matrix: RemoteAssetMatrix
+  /** The GitHub `owner/name` the DSH asset downloads from. */
+  repo: string
+  /** The DSH entry path relative to `$HOME/.dsh-desktop/dependencies/dsh`. */
+  dshEntry: string
+  /** The resolved DSH semver (empty when the tag carries none). */
+  dshVersion: string
+  node: { urls: string[], shasumUrls: string[], filename: string, version: string }
+  dsh: DshNpmPlan | DshZipPlan
+  pnpm: { urls: string[], sha256: string, version: string }
+  /** Resolution notes (fallbacks, skipped verification) worth surfacing. */
+  notes: string[]
+}
+
+/**
+ * Plan one remote's install: platform → asset matrix → pinned release tag →
+ * per-asset URLs and trusted digests. Pure orchestration over the injectable
+ * network functions, so tests cover every path without touching the network.
+ * @param unameOut - the remote `uname -srm` output.
+ * @param config - plugin config (source repository and version pin).
+ * @param fetchers - network overrides for tests.
+ * @param fetchers.listReleases - the packaged release list (newest first).
+ * @param fetchers.listAssets - one tag's release assets.
+ * @param fetchers.npmDist - the npm packument dist metadata.
+ * @throws {UnsupportedRemotePlatformError} when the platform is outside the matrix.
+ */
+export async function planRemoteInstall(
+  unameOut: string,
+  config: Pick<Config, 'installRepo' | 'installRef'>,
+  fetchers: {
+    listReleases?: (repo: string) => Promise<{ tag: string, prerelease: boolean }[]>
+    listAssets?: (repo: string, tag: string) => Promise<Array<{ name: string, url: string, digest?: string }>>
+    npmDist?: (packageName: string, version: string) => Promise<{ url: string, mirrorUrl: string, integrity?: string }>
+  } = {},
+): Promise<RemoteInstallPlan> {
+  const { os, arch } = parsePlatform(unameOut)
+  const matrix = assetMatrixFor(os, arch)
+  const repo = pkgRepoOf(config.installRepo)
+  const notes: string[] = []
+  const listReleases = fetchers.listReleases ?? listGithubReleases
+  const listAssets = fetchers.listAssets ?? listGithubAssets
+  const npmDist = fetchers.npmDist ?? npmDistMetadata
+  let metas
+  try {
+    metas = await listReleases(repo)
+  }
+  catch (error) {
+    notes.push(`release 列表获取失败（${describeError(error)}）`)
+  }
+  const resolved = pickReleaseTag(metas, { ref: config.installRef })
+  notes.push(...resolved.notes.map(note => `版本选择: ${note}`))
+  const nodeFilename = nodeFilenameFor(os, arch)
+  if (nodeFilename === undefined)
+    throw new Error(`node asset missing for ${os}/${arch}`)
+  const node = {
+    urls: nodeDownloadUrls(os, arch),
+    shasumUrls: nodeShasumUrls(),
+    filename: nodeFilename,
+    version: nodeFilename.split('-')[1] ?? '',
+  }
+  const pnpm = { urls: pnpmDownloadUrls(), sha256: PNPM_SHA256, version: PNPM_VERSION }
+  if (matrix.dshKind === 'pkg-zip') {
+    const zipName = matrix.dshZipName ?? ''
+    let urls: string[] | undefined
+    let digest: string | undefined
+    try {
+      const assets = await listAssets(repo, resolved.tag)
+      const asset = assets.find(candidate => candidate.name === zipName)
+      if (asset !== undefined) {
+        urls = [asset.url, ...dshZipDownloadUrls(repo, resolved.tag, zipName).slice(1)]
+        digest = asset.digest
+      }
+    }
+    catch (error) {
+      notes.push(`release 资产元数据获取失败（${describeError(error)}）`)
+    }
+    if (digest === undefined)
+      notes.push(`未取得 ${zipName} 的可信摘要，将跳过 SHA-256 校验`)
+    return {
+      os,
+      arch,
+      matrix,
+      repo,
+      dshEntry: DSH_ZIP_ENTRY,
+      dshVersion: resolved.version,
+      node,
+      dsh: { kind: 'pkg-zip', urls: urls ?? dshZipDownloadUrls(repo, resolved.tag, zipName), ...digest === undefined ? {} : { digest }, zipName, tag: resolved.tag },
+      pnpm,
+      notes,
+    }
+  }
+  const packageName = matrix.dshNpmPackage ?? '@deepseek-ai/dsh'
+  if (resolved.version === '')
+    throw new Error(`cannot resolve a DSH npm version from tag "${resolved.tag}"`)
+  let urls: string[] | undefined
+  let integrity: string | undefined
+  try {
+    const dist = await npmDist(packageName, resolved.version)
+    urls = [dist.url, dist.mirrorUrl]
+    integrity = dist.integrity
+  }
+  catch (error) {
+    notes.push(`npm 元数据获取失败（${describeError(error)}），回退确定性 URL`)
+  }
+  if (integrity === undefined)
+    notes.push(`未取得 ${packageName}@${resolved.version} 的完整性摘要，将跳过校验`)
+  return {
+    os,
+    arch,
+    matrix,
+    repo,
+    dshEntry: DSH_NPM_ENTRY,
+    dshVersion: resolved.version,
+    node,
+    dsh: { kind: 'npm-tgz', urls: urls ?? dshNpmTarballUrls(packageName, resolved.version), ...integrity === undefined ? {} : { integrity }, packageName, version: resolved.version },
+    pnpm,
+    notes,
+  }
+}
+
+/** The shell-quoted URL list for a fetch call. */
+function quoteUrls(urls: string[]): string {
+  return urls.map(shQuote).join(' ')
+}
+
+/**
+ * Build the remote install script (POSIX sh) for one plan. Behavior: idempotent
+ * (installed components are skipped), official → mirror download fallback with
+ * both sources' errors reported on double failure, SHA-256/512 verification
+ * with mismatch abort and partial cleanup (`trap`), single-top-level
+ * flattening, and the `npm-tgz` kind's `pnpm install` (registry official →
+ * mirror fallback). Progress reports through `::dsh <stage> <line>` markers.
+ * @param plan - the resolved install plan.
+ * @returns the full script text.
+ */
+export function buildInstallScript(plan: RemoteInstallPlan): string {
+  const dshSection = plan.dsh.kind === 'pkg-zip'
+    ? [
+        `if [ -f "$ROOT/dependencies/dsh/${DSH_ZIP_ENTRY}" ]; then`,
+        `  log install "dsh 已就绪"`,
+        `else`,
+        `  log download "dsh ${plan.dsh.tag}"`,
+        `  fetch "$TMP/dsh-pkg.zip" ${quoteUrls(plan.dsh.urls)}`,
+        `  verify "$TMP/dsh-pkg.zip" "${plan.dsh.digest ?? ''}" "${plan.dsh.zipName}"`,
+        `  extract_zip "$TMP/dsh-pkg.zip" "$ROOT/dependencies/dsh.new"`,
+        `  flatten_move "$ROOT/dependencies/dsh.new" "$ROOT/dependencies/dsh"`,
+        `  log install "dsh 安装完成 (${plan.dsh.tag})"`,
+        `fi`,
+      ].join('\n')
+    : [
+        // The npm kind assembles node_modules on the remote: pnpm resolves
+        // the platform-correct natives, official registry first, mirror fallback.
+        `install_dsh_deps() {`,
+        `  for _reg in ${quoteUrls(['https://registry.npmjs.org', 'https://registry.npmmirror.com'])}; do`,
+        `    if "$ROOT/runtime/bin/node" "$ROOT/dependencies/pnpm/${PNPM_ENTRY}" install --prod --silent --registry="$_reg" >"$TMP/pnpm.log" 2>&1; then`,
+        `      log install "dsh 依赖安装完成 (registry $_reg)"`,
+        `      return 0`,
+        `    fi`,
+        `  done`,
+        `  log failed "pnpm install 失败: $(tail -n 5 "$TMP/pnpm.log" 2>/dev/null | tr '\n' ' ')"`,
+        `  return 1`,
+        `}`,
+        `if [ -f "$ROOT/dependencies/dsh/${DSH_NPM_ENTRY}" ]; then`,
+        `  log install "dsh 已就绪"`,
+        `else`,
+        `  log download "dsh ${plan.dsh.packageName}@${plan.dsh.version} (npm)"`,
+        `  fetch "$TMP/dsh.tgz" ${quoteUrls(plan.dsh.urls)}`,
+        `  verify "$TMP/dsh.tgz" "${plan.dsh.integrity ?? ''}" "${plan.dsh.packageName}-${plan.dsh.version}.tgz"`,
+        `  rm -rf "$ROOT/dependencies/dsh.new"`,
+        `  mkdir -p "$ROOT/dependencies/dsh.new"`,
+        `  tar -xzf "$TMP/dsh.tgz" -C "$ROOT/dependencies/dsh.new" --strip-components=1`,
+        `  flatten_move "$ROOT/dependencies/dsh.new" "$ROOT/dependencies/dsh"`,
+        `  install_dsh_deps || exit 13`,
+        `  log install "dsh 安装完成 (${plan.dsh.packageName}@${plan.dsh.version})"`,
+        `fi`,
+      ].join('\n')
+  return [
+    'set -eu',
+    'ROOT="$HOME/.dsh-desktop"',
+    'TMP="$ROOT/tmp"',
+    'mkdir -p "$ROOT/dependencies" "$TMP"',
+    // Half-finished products never outlive the run: the trap clears the
+    // staging area and any *.new partial directory on every exit path.
+    'cleanup() { rm -rf "$TMP" "$ROOT/runtime.new" "$ROOT/dependencies/pnpm.new" "$ROOT/dependencies/dsh.new"; }',
+    'trap cleanup EXIT',
+    `log() { printf '${BOOTSTRAP_LOG_PREFIX}%s %s\\n' "$1" "$2"; }`,
+    'fetch() {',
+    '  _dst="$1"; shift',
+    '  _errs=""',
+    '  for _url in "$@"; do',
+    '    if command -v curl >/dev/null 2>&1; then',
+    '      log download "$_url"',
+    '      if curl -fsSL --retry 3 --connect-timeout 15 -o "$_dst" "$_url" 2>"$TMP/fetch.err"; then return 0; fi',
+    '      _errs="$_errs | $_url: $(head -n 1 "$TMP/fetch.err" 2>/dev/null || echo download failed)"',
+    '    elif command -v wget >/dev/null 2>&1; then',
+    '      log download "$_url"',
+    '      if wget -q --tries=3 -O "$_dst" "$_url" 2>/dev/null; then return 0; fi',
+    '      _errs="$_errs | $_url: wget download failed"',
+    '    else',
+    '      log failed "REMOTE_INSTALL_NO_DOWNLOADER: 远端缺少 curl 或 wget，请先安装其一"',
+    '      exit 9',
+    '    fi',
+    '  done',
+    '  log failed "所有下载源均失败:$_errs"',
+    '  exit 10',
+    '}',
+    'verify() {',
+    '  _file="$1"; _want="$2"; _name="$3"',
+    '  case "$_want" in',
+    '    sha256:*) _algo=256; _hex="$(printf \'%s\' "$_want" | sed \'s/^sha256://\')" ;;',
+    '    sha512:*) _algo=512; _hex="$(printf \'%s\' "$_want" | sed \'s/^sha512://\')" ;;',
+    '    "") log verify "警告: 未取得可信摘要，跳过校验 $_name"; return 0 ;;',
+    '    *) _algo=256; _hex="$_want" ;;',
+    '  esac',
+    '  _got=""',
+    `  if [ "\$_algo" = 256 ]; then`,
+    '    if command -v sha256sum >/dev/null 2>&1; then _got="$(sha256sum "$_file" | cut -d\' \' -f1)"',
+    '    elif command -v shasum >/dev/null 2>&1; then _got="$(shasum -a 256 "$_file" | cut -d\' \' -f1)"',
+    '    fi',
+    '  else',
+    '    if command -v sha512sum >/dev/null 2>&1; then _got="$(sha512sum "$_file" | cut -d\' \' -f1)"',
+    '    elif command -v shasum >/dev/null 2>&1; then _got="$(shasum -a 512 "$_file" | cut -d\' \' -f1)"',
+    '    fi',
+    '  fi',
+    '  if [ -z "$_got" ]; then',
+    '    log verify "警告: 远端缺少摘要工具，跳过校验 $_name"',
+    '    return 0',
+    '  fi',
+    '  if [ "$_got" != "$_hex" ]; then',
+    '    log failed "checksum mismatch: $_name (want sha$_algo:$_hex, got $_got)"',
+    '    exit 11',
+    '  fi',
+    `  log verify "$_name 校验通过 (sha$_algo)"`,
+    '}',
+    'extract_zip() {',
+    '  _zip="$1"; _dir="$2"',
+    '  mkdir -p "$_dir"',
+    '  if command -v unzip >/dev/null 2>&1; then unzip -q -o "$_zip" -d "$_dir"',
+    '  elif command -v python3 >/dev/null 2>&1; then python3 -m zipfile -e "$_zip" "$_dir"',
+    '  else',
+    '    log failed "REMOTE_INSTALL_NO_UNZIP: 远端缺少 unzip 或 python3，无法解压发行包"',
+    '    exit 12',
+    '  fi',
+    '}',
+    'flatten_move() {',
+    '  _src="$1"; _dst="$2"',
+    '  _count=0; _top=""',
+    '  for _e in "$_src"/*; do',
+    '    if [ -e "$_e" ]; then _count=$((_count + 1)); _top="$_e"; fi',
+    '  done',
+    '  rm -rf "$_dst"',
+    '  if [ "$_count" -eq 1 ] && [ -d "$_top" ]; then',
+    '    mkdir -p "$_dst"',
+    '    for _e in "$_top"/* "$_top"/.[!.]* "$_top"/..?*; do',
+    '      if [ -e "$_e" ]; then mv -f "$_e" "$_dst/"; fi',
+    '    done',
+    '    rmdir "$_top" 2>/dev/null || true',
+    '    rmdir "$_src" 2>/dev/null || true',
+    '  else',
+    '    mv -f "$_src" "$_dst"',
+    '  fi',
+    '}',
+    'if [ -x "$ROOT/runtime/bin/node" ]; then',
+    '  log install "node 已就绪: $("$ROOT/runtime/bin/node" --version 2>/dev/null || echo installed)"',
+    'else',
+    `  log download "node ${plan.node.version}"`,
+    `  fetch "$TMP/node.tar.gz" ${quoteUrls(plan.node.urls)}`,
+    `  fetch "$TMP/SHASUMS256.txt" ${quoteUrls(plan.node.shasumUrls)}`,
+    `  _want="$(grep " ${plan.node.filename}\$" "$TMP/SHASUMS256.txt" | head -n 1 | tr -d '\\r' | sed 's/^ *//' | cut -d' ' -f1)"`,
+    `  verify "$TMP/node.tar.gz" "\$_want" "${plan.node.filename}"`,
+    '  rm -rf "$ROOT/runtime.new"',
+    '  mkdir -p "$ROOT/runtime.new"',
+    '  tar -xzf "$TMP/node.tar.gz" -C "$ROOT/runtime.new" --strip-components=1',
+    '  flatten_move "$ROOT/runtime.new" "$ROOT/runtime"',
+    `  log install "node 安装完成: $("$ROOT/runtime/bin/node" --version 2>/dev/null || echo ok)"`,
+    'fi',
+    `if [ -f "$ROOT/dependencies/pnpm/${PNPM_ENTRY}" ]; then`,
+    '  log install "pnpm 已就绪"',
+    'else',
+    `  log download "pnpm ${plan.pnpm.version}"`,
+    `  fetch "$TMP/pnpm.tgz" ${quoteUrls(plan.pnpm.urls)}`,
+    `  verify "$TMP/pnpm.tgz" "sha256:${plan.pnpm.sha256}" "pnpm-${plan.pnpm.version}.tgz"`,
+    '  rm -rf "$ROOT/dependencies/pnpm.new"',
+    '  mkdir -p "$ROOT/dependencies/pnpm.new"',
+    '  tar -xzf "$TMP/pnpm.tgz" -C "$ROOT/dependencies/pnpm.new" --strip-components=1',
+    '  flatten_move "$ROOT/dependencies/pnpm.new" "$ROOT/dependencies/pnpm"',
+    `  log install "pnpm 安装完成: ${plan.pnpm.version}"`,
+    'fi',
+    dshSection,
+    'log install "远端初始化完成"',
+  ].join('\n')
+}
+
+/**
+ * The remote missing-components probe: prints one line per missing member of
+ * the three-part runtime (nothing when fully installed).
+ */
+export function checkMissingCommand(): string {
+  return [
+    `ROOT="$HOME/${REMOTE_ROOT}"`,
+    `[ -x "$ROOT/runtime/bin/node" ] || echo node`,
+    `[ -f "$ROOT/dependencies/pnpm/${PNPM_ENTRY}" ] || echo pnpm`,
+    `if [ ! -f "$ROOT/dependencies/dsh/${DSH_ZIP_ENTRY}" ] && [ ! -f "$ROOT/dependencies/dsh/${DSH_NPM_ENTRY}" ]; then echo dsh; fi`,
+    'true',
+  ].join('\n')
+}
+
+/** Parse the check script's stdout into the missing component set. */
+export function missingComponentsOf(stdout: string): string[] {
+  return stdout.split('\n').map(line => line.trim()).filter(line => line !== '' && ['node', 'dsh', 'pnpm'].includes(line))
+}
+
+/**
+ * The default remote-instance start command's entry resolution: the layout's
+ * Node binary and DSH entry, always (the installer's `~/.local/bin` link no
+ * longer exists in the binary layout).
+ */
+export function layoutDshEntry(plan?: RemoteInstallPlan): string {
+  return `$HOME/${REMOTE_ROOT}/dependencies/dsh/${plan?.dshEntry ?? DSH_ZIP_ENTRY}`
+}
+
+/**
+ * The remote-instance launch: the profile override when present, else the
+ * layout's Node + DSH entry with the port pinned twice (`DSH_WEB_PORT` and
+ * the flag). Detached through a double subshell so the exec channel settles
+ * immediately; the pid lands in `~/.dsh/.dsh-remote.pid`; output redirects
+ * to the log with stdin from /dev/null; no `nohup` (macOS kills the child).
+ * @param profile - the machine profile (port + start command override).
+ * @param plan - the resolved install plan (chooses the DSH entry).
  * @returns the shell command line that starts (or restarts) the instance.
  */
-export function startCommandFor(profile: MachineProfile, dshPath?: string): string {
-  const base = profile.startCommand !== undefined
-    ? profile.startCommand
-    : dshPath === undefined
-      ? defaultStartCommand(profile)
-      : `${dshPath} web --host 127.0.0.1 --port ${profile.remotePort}`
-  // Detach through a double subshell: `( … & ) &` — the inner background job
-  // reparents (orphan) as soon as the wrapping subshell exits, so nothing
-  // holds the exec channel's stdin and sshd closes the channel immediately
-  // (a bare `… &` keeps the instance in the session: sshd holds the channel
-  // open and ssh2's exec never settles). Output goes to the log with stdin
-  // from /dev/null; no nohup (macOS nohup kills the child in this context).
-  return `mkdir -p "$HOME/.dsh" && ( ${base} >>"$HOME/${REMOTE_WEB_LOG}" 2>&1 < /dev/null & ) &`
-}
-
-/**
- * Probe for a remote `dsh` binary, in install order: the login shell's PATH,
- * then the installer's `~/.local/bin` link, then the source checkout's
- * launcher. Prints the resolved path (possibly `$HOME`-relative) or nothing.
- * Each branch is a braced group so a successful `command -v` short-circuits
- * the whole `||` chain without the later `&& printf` arms firing too.
- */
-export function probeDshCommand(): string {
+export function startCommandFor(profile: MachineProfile, plan?: RemoteInstallPlan): string {
+  if (profile.startCommand !== undefined)
+    return `mkdir -p "$HOME/.dsh" && ( ${profile.startCommand} >>"$HOME/${REMOTE_WEB_LOG}" 2>&1 < /dev/null & ) &`
+  const node = `$HOME/${REMOTE_ROOT}/runtime/bin/node`
+  const dshBin = layoutDshEntry(plan)
   return [
-    'command -v dsh 2>/dev/null',
-    `{ test -x "$HOME/.local/bin/dsh" && printf '%s\\n' "$HOME/.local/bin/dsh"; }`,
-    `{ test -x "$HOME/.dsh/source/current/bin/dsh" && printf '%s\\n' "$HOME/.dsh/source/current/bin/dsh"; }`,
-    'true',
-  ].join(' || ')
-}
-
-/**
- * The one-line remote install, built in (no external script to curl — the
- * "official" installer URL does not exist yet): clone the repository (the
- * configured `installRepo`, default branch or `installRef`), install
- * dependencies, build the web frontend, and link `dsh` into
- * `~/.local/bin` (the path the probe resolves when the login PATH lacks it).
- * A prior managed install under `~/.dsh/source` is replaced, so re-running
- * reinstalls cleanly.
- * @param config - plugin config (repo and ref overrides).
- * @returns the full remote install command line.
- */
-export function installCommandFor(config: Pick<Config, 'installRepo' | 'installRef'>): string {
-  const repo = config.installRepo === undefined || config.installRepo === ''
-    ? OFFICIAL_INSTALL_REPO
-    : config.installRepo
-  const ref = config.installRef === undefined || config.installRef === ''
-    ? undefined
-    : config.installRef
-  const clone = ref === undefined
-    ? `git clone --depth 1 ${shQuote(repo)} "$HOME/.dsh/source/master"`
-    : `git clone --depth 1 --branch ${shQuote(ref)} ${shQuote(repo)} "$HOME/.dsh/source/master"`
-  return [
-    'set -e',
-    `mkdir -p "$HOME/.dsh/source" "$HOME/.local/bin"`,
-    `rm -rf "$HOME/.dsh/source/master" "$HOME/.dsh/source/current"`,
-    `echo '==> cloning dsh source'`,
-    clone,
-    `ln -s "$HOME/.dsh/source/master" "$HOME/.dsh/source/current"`,
-    `echo '==> ensuring pnpm'`,
-    // pnpm may live outside the login PATH (nvm etc.): enable it via
-    // corepack (ships with Node), else install it globally with npm.
-    `(command -v pnpm >/dev/null 2>&1) || (corepack enable pnpm >/dev/null 2>&1) || npm install -g pnpm`,
-    `echo '==> installing dependencies (pnpm install)'`,
-    `(cd "$HOME/.dsh/source/current" && pnpm install)`,
-    `echo '==> building web UI'`,
-    `(cd "$HOME/.dsh/source/current" && pnpm run build)`,
-    `ln -sfn "$HOME/.dsh/source/current/bin/dsh" "$HOME/.local/bin/dsh"`,
-    `echo '==> dsh installed'`,
-  ].join(' && ')
+    `ROOT="$HOME/${REMOTE_ROOT}"`,
+    `NODE=${node}`,
+    `DSH_BIN=${dshBin}`,
+    `LOG_DIR="$HOME/.dsh"`,
+    `LOG="$LOG_DIR/dsh-remote-web.log"`,
+    `if [ ! -x "$NODE" ] || [ ! -f "$DSH_BIN" ]; then echo "REMOTE_NOT_INSTALLED: 远端三件套未安装完整"; exit 1; fi`,
+    `mkdir -p "$LOG_DIR"`,
+    `export PATH="$ROOT/runtime/bin:$PATH"`,
+    `export DSH_TELEMETRY_DISABLED=1 NO_COLOR=1 DSH_WEB_PORT=${profile.remotePort}`,
+    `( sh -c 'echo $$ > "$1/.dsh-remote.pid"; exec "$2" "$3" web --host 127.0.0.1 --port "$4" --no-open' dsh-remote "$LOG_DIR" "$NODE" "$DSH_BIN" ${profile.remotePort} </dev/null >>"$LOG" 2>&1 & )`,
+    `echo "远端实例已拉起（日志: $LOG）"`,
+  ].join('\n')
 }
 
 /** Credentials read from a local dsh `.env` document. */
@@ -121,8 +441,7 @@ export interface EnvCredentials {
 }
 
 /**
- * Read `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL` from a dsh `.env` document
- * (the installer's own layout: `KEY=value` lines, no quoting).
+ * Read `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL` from a dsh `.env` document.
  * @param path - the `.env` file path (the harness home's `.env`).
  * @returns the credentials present in the document.
  */
@@ -185,13 +504,43 @@ export function firstLineOf(stdout: string): string {
 }
 
 /**
- * One health probe: curl the remote instance's web port. Any HTTP response
- *  (including 404 on the bare path) proves the webserver listens; a refused
- *  connection exits nonzero.
+ * The root-page probe: fetch the instance's boot HTML. Any HTTP response
+ * (including 404) exits 0 — the body decides; a refused connection exits
+ * nonzero.
+ * @param remotePort - the instance's loopback port.
+ * @param timeoutMs - per-probe curl deadline.
  */
-export function healthCheckCommand(remotePort: number, timeoutMs: number): string {
+export function rootProbeCommand(remotePort: number, timeoutMs: number): string {
   const seconds = Math.max(1, Math.ceil(timeoutMs / 1000))
-  return `curl -s -o /dev/null -m ${seconds} -w '%{http_code}' http://127.0.0.1:${remotePort}/`
+  return `curl -s -m ${seconds} http://127.0.0.1:${remotePort}/`
+}
+
+/**
+ * The client-bundle probe: fetch one boot-manifest URL, printing the body
+ * followed by the numeric status code on its last line.
+ * @param url - the absolute loopback URL to fetch.
+ * @param timeoutMs - per-probe curl deadline.
+ */
+export function bundleProbeCommand(url: string, timeoutMs: number): string {
+  const seconds = Math.max(1, Math.ceil(timeoutMs / 1000))
+  return `curl -s -m ${seconds} -w '\\n%{http_code}' ${shQuote(url)}`
+}
+
+/**
+ * Split a bundle probe's stdout into body and numeric status. Malformed
+ * output (no trailing status line) reports status 0.
+ * @param stdout - the raw probe stdout.
+ */
+export function splitBundleProbeStdout(stdout: string): { body: string, status: number } {
+  const trimmed = stdout.replace(/\n$/u, '')
+  const index = trimmed.lastIndexOf('\n')
+  if (index < 0) {
+    // A single-line answer is the bare status (an empty body).
+    const status = Number.parseInt(trimmed, 10)
+    return Number.isNaN(status) ? { body: trimmed, status: 0 } : { body: '', status }
+  }
+  const status = Number.parseInt(trimmed.slice(index + 1).trim(), 10)
+  return Number.isNaN(status) ? { body: trimmed, status: 0 } : { body: trimmed.slice(0, index), status }
 }
 
 /** The tail command that recovers the remote instance's log for the error message. */
@@ -199,69 +548,184 @@ export function logTailCommand(): string {
   return `tail -n 20 "$HOME/${REMOTE_WEB_LOG}" 2>/dev/null || true`
 }
 
-/** The typed failure "the remote has no `dsh` binary" (offers the install path). */
-export class DshMissingError extends Error {}
+/** One operator-facing fragment for a failed remote command. */
+export function describeExecFailure(code: number | null, stderr: string): string {
+  const tail = stderr.trim().split('\n').slice(-3).join(' | ')
+  return `exit ${code ?? '?'}${tail === '' ? '' : `: ${tail}`}`
+}
+
+/** One operator-facing fragment for an unknown-shape failure. */
+export function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** Hooks the assurance flow reports through (both optional). */
+export interface BootstrapHooks {
+  /** Coarse UI progress (the settings page's live status line). */
+  onProgress?: (progress: SshProgress) => void
+  /** Machine event channel appends (stage-tagged, the spec's C-EVENT). */
+  onEvent?: (stage: 'probe' | 'download' | 'verify' | 'install' | 'launch' | 'ready' | 'failed', line: string, options?: { terminal?: 'success' | 'failed', reason?: string }) => void
+}
+
+/** Timing + source configuration of the assurance flow. */
+export interface BootstrapConfig {
+  config: Pick<Config, 'installRepo' | 'installRef' | 'installTimeoutMs'>
+  healthCheckTimeoutMs: number
+  healthPollIntervalMs: number
+  healthPollAttempts: number
+}
 
 /**
- * Ensure the remote instance answers on its port: probe once, auto-start when
- * absent, then poll until healthy or the attempt budget is exhausted. The
- * failure message carries the remote log's tail — a backgrounded start always
- * exits 0 (even when the command itself fails), so the log is the only place
- * the real error (command not found, port busy, …) is visible. When the
- * default start command is in play (no profile override), the `dsh` binary is
- * resolved first and its absence fails fast with {@link DshMissingError}.
+ * Ensure the remote instance is ready: judge readiness from the served boot
+ * HTML (client-bundle manifest), and when it is not, bootstrap the machine —
+ * probe the platform, install missing runtime components from pinned binary
+ * assets, launch the instance, and poll until the manifest answers. The
+ * legacy any-response verdict stays as the fallback for instances whose HTML
+ * carries no manifest.
  * @param session - the authenticated SSH session.
- * @param profile - the machine profile (port + start command).
- * @param timeoutMs - per-probe curl deadline.
- * @param pollIntervalMs - pause between probes.
- * @param pollAttempts - total probes after the initial one.
- * @param onProgress - receives the live bootstrap phase (started/probing).
- * @returns a short description of the healthy instance (host:port).
- * @throws {DshMissingError} when no `dsh` binary is reachable.
- * @throws {Error} with an operator-facing message when the instance never becomes reachable.
+ * @param profile - the machine profile (port + start command override).
+ * @param bootstrap - timing + source configuration.
+ * @param hooks - progress and event reporting.
+ * @param planner - the install-plan resolver (injectable for tests).
+ * @returns a short description of the ready instance (host:port, plus how
+ * readiness was judged).
+ * @throws {Error} with an operator-facing message when the machine cannot be
+ * bootstrapped (unsupported platform, install failure, never ready).
  */
 export async function ensureRemoteInstance(
   session: SshSession,
   profile: MachineProfile,
-  timeoutMs: number,
-  pollIntervalMs: number,
-  pollAttempts: number,
-  onProgress?: (progress: SshProgress) => void,
+  bootstrap: BootstrapConfig,
+  hooks: BootstrapHooks = {},
+  planner: (unameOut: string, config: Pick<Config, 'installRepo' | 'installRef'>) => Promise<RemoteInstallPlan> = (unameOut, config) => planRemoteInstall(unameOut, config),
 ): Promise<string> {
-  const probe = async (): Promise<boolean> => {
-    const result = await session.exec(healthCheckCommand(profile.remotePort, timeoutMs))
-    return result.code === 0
+  const { onEvent, onProgress } = hooks
+  const target = `${profile.host}:${profile.remotePort}`
+  const readyFromHtml = await judgeReadiness(session, profile, bootstrap)
+  if (readyFromHtml !== undefined) {
+    if (readyFromHtml.startsWith('boot')) {
+      onEvent?.('ready', `远端实例已就绪 (${target})`, { terminal: 'success' })
+    }
+    else {
+      onEvent?.('ready', `远端实例已就绪（旧探测兜底: ${readyFromHtml}）`, { terminal: 'success' })
+    }
+    return target
   }
-  if (await probe())
-    return `${profile.host}:${profile.remotePort}`
+  // The instance is not answering: bootstrap (probe → install → launch).
+  onEvent?.('probe', '探测远端平台 (uname -srm)')
+  const uname = await session.exec('uname -srm')
+  if (uname.code !== 0) {
+    return failBootstrap(onEvent, `无法探测远端平台: ${describeExecFailure(uname.code, uname.stderr)}`)
+  }
+  let plan: RemoteInstallPlan
+  try {
+    plan = await planner(uname.stdout, bootstrap.config)
+  }
+  catch (error) {
+    return failBootstrap(onEvent, describeError(error))
+  }
+  onEvent?.('probe', `远端平台 ${plan.os}/${plan.arch}，安装源 ${plan.repo}${plan.dsh.kind === 'pkg-zip' ? ` tag ${plan.dsh.tag}` : ` npm ${plan.dsh.version}`}`)
+  for (const note of plan.notes)
+    onEvent?.('probe', note)
+  const missing = missingComponentsOf((await session.exec(checkMissingCommand())).stdout)
+  if (missing.length > 0) {
+    onEvent?.('probe', `缺失组件: ${missing.join(', ')}`)
+    await runInstallScript(session, plan, bootstrap, hooks)
+  }
+  else {
+    onEvent?.('probe', '三件套已就绪，跳过安装')
+  }
   onProgress?.({ phase: 'starting' })
-  let dshPath: string | undefined
-  if (profile.startCommand === undefined) {
-    dshPath = firstLineOf((await session.exec(probeDshCommand())).stdout)
-    if (dshPath === '') {
-      throw new DshMissingError(
-        `dsh is not installed on "${profile.host}" (checked the login PATH, ~/.local/bin and ~/.dsh/source/current); `
-        + 'install it with the one-click install, or configure the machine\'s start command',
-      )
+  onEvent?.('launch', `拉起远端实例 (端口 ${profile.remotePort})`)
+  const started = await session.exec(startCommandFor(profile, plan))
+  if (started.code !== 0) {
+    const message = started.stdout.includes('REMOTE_NOT_INSTALLED')
+      ? `remote runtime incomplete on "${profile.host}" (REMOTE_NOT_INSTALLED)`
+      : `remote instance start failed on "${profile.host}": ${describeExecFailure(started.code, started.stderr)}`
+    return failBootstrap(onEvent, message)
+  }
+  for (let attempt = 0; attempt < bootstrap.healthPollAttempts; attempt++) {
+    onProgress?.({ phase: 'probing', attempt: attempt + 1, total: bootstrap.healthPollAttempts })
+    await sleep(bootstrap.healthPollIntervalMs)
+    const verdict = await judgeReadiness(session, profile, bootstrap)
+    if (verdict !== undefined) {
+      if (verdict.startsWith('boot')) {
+        onEvent?.('ready', `远端实例已就绪 (${target})`, { terminal: 'success' })
+        return target
+      }
+      onEvent?.('ready', `远端实例已就绪（旧探测兜底: ${verdict}）`, { terminal: 'success' })
+      return target
     }
   }
-  const started = await session.exec(startCommandFor(profile, dshPath))
-  if (started.code !== 0) {
-    throw new Error(
-      `remote instance start failed on "${profile.host}": ${describeExecFailure(started.code, started.stderr)}`,
-    )
-  }
-  for (let attempt = 0; attempt < pollAttempts; attempt++) {
-    onProgress?.({ phase: 'probing', attempt: attempt + 1, total: pollAttempts })
-    await sleep(pollIntervalMs)
-    if (await probe())
-      return `${profile.host}:${profile.remotePort}`
-  }
   const tail = await logTail(session)
-  throw new Error(
-    `remote dsh web did not become reachable on "${profile.host}:${profile.remotePort}" `
-    + `within ${pollAttempts} polls; remote log (${shQuote(`$HOME/${REMOTE_WEB_LOG}`)}) tail: ${tail}`,
+  return failBootstrap(
+    onEvent,
+    `remote dsh web did not become ready on "${target}" within ${bootstrap.healthPollAttempts} polls; `
+    + `fallback probe: root ${await legacyRootVerdict(session, profile, bootstrap)}; `
+    + `remote log tail: ${tail}`,
   )
+}
+
+/**
+ * One readiness judgement: boot-HTML manifest (primary) or any-response
+ * (legacy fallback). Returns `boot …` / `legacy …`, or undefined while not
+ * ready.
+ */
+async function judgeReadiness(session: SshSession, profile: MachineProfile, bootstrap: BootstrapConfig): Promise<string | undefined> {
+  const root = await session.exec(rootProbeCommand(profile.remotePort, bootstrap.healthCheckTimeoutMs))
+  if (root.code !== 0)
+    return undefined
+  const urls = clientUrlsFromBootHtml(profile.remotePort, root.stdout)
+  if (urls === undefined) {
+    // No usable manifest: keep the legacy verdict — an answered port still
+    // proves a webserver listens (the v1 behavior, demoted to fallback).
+    return await legacyRootVerdict(session, profile, bootstrap)
+  }
+  const first = urls[0]
+  if (first === undefined)
+    return undefined
+  const probe = await session.exec(bundleProbeCommand(first, bootstrap.healthCheckTimeoutMs))
+  const { body, status } = splitBundleProbeStdout(probe.stdout)
+  if (probe.code === 0 && status >= 200 && status < 300 && looksLikePluginBundle(true, body))
+    return `boot manifest (${urls.length} bundles)`
+  return undefined
+}
+
+/** The legacy any-response verdict, with the observed status code attached. */
+async function legacyRootVerdict(session: SshSession, profile: MachineProfile, bootstrap: BootstrapConfig): Promise<string> {
+  const probe = await session.exec(`curl -s -o /dev/null -m ${Math.max(1, Math.ceil(bootstrap.healthCheckTimeoutMs / 1000))} -w '%{http_code}' http://127.0.0.1:${profile.remotePort}/`)
+  return probe.code === 0 ? `root answered ${probe.stdout.trim() || '?'}` : 'no answer'
+}
+
+/** Run the generated install script, streaming its stage-tagged output. */
+async function runInstallScript(session: SshSession, plan: RemoteInstallPlan, bootstrap: BootstrapConfig, hooks: BootstrapHooks): Promise<void> {
+  const { onEvent, onProgress } = hooks
+  const installTimeoutMs = bootstrap.config.installTimeoutMs
+  let log = ''
+  const result = await session.exec(buildInstallScript(plan), {
+    ...installTimeoutMs === undefined ? {} : { timeoutMs: installTimeoutMs },
+    onData: (chunk) => {
+      log = `${log}${chunk}`.slice(-2000)
+      for (const line of chunk.split('\n').filter(line => line !== '')) {
+        const parsed = parseBootstrapLine(line)
+        onEvent?.(parsed.stage as 'probe' | 'download' | 'verify' | 'install' | 'launch' | 'ready' | 'failed', parsed.line)
+      }
+      onProgress?.({ phase: 'installing', log })
+    },
+  })
+  if (result.code !== 0) {
+    // Prefer the streamed log (the transport taps stdout live); transports
+    // without the tap still surface the markers through the collected stdout.
+    const stream = log.trim() === '' ? result.stdout.trim() : log.trim()
+    const tail = stream === '' ? '(no output captured)' : stream.split('\n').slice(-5).join(' | ')
+    failBootstrap(onEvent, `install failed on remote (exit ${result.code ?? '?'}): ${tail}`)
+  }
+}
+
+/** Record the terminal failure and build the thrown error. */
+function failBootstrap(onEvent: BootstrapHooks['onEvent'], reason: string): never {
+  onEvent?.('failed', 'bootstrap 失败', { terminal: 'failed', reason })
+  throw new Error(reason)
 }
 
 /** The remote instance log's tail, or a note when nothing was captured. */
@@ -274,12 +738,6 @@ async function logTail(session: SshSession): Promise<string> {
   catch {
     return '(log unreadable)'
   }
-}
-
-/** One operator-facing fragment for a failed remote command. */
-export function describeExecFailure(code: number | null, stderr: string): string {
-  const tail = stderr.trim().split('\n').slice(-3).join(' | ')
-  return `exit ${code ?? '?'}${tail === '' ? '' : `: ${tail}`}`
 }
 
 function sleep(ms: number): Promise<void> {

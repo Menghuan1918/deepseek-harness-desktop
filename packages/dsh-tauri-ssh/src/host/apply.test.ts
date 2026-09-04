@@ -207,10 +207,10 @@ describe('ssh-remote plugin', () => {
   it('forwards installs to the manager', async () => {
     const { service } = boot()
     const install = vi.spyOn(service.manager, 'install')
-      .mockResolvedValue({ dshPath: '/home/root/.local/bin/dsh', credentialsCopied: true })
+      .mockResolvedValue({ installed: ['node'], dshRef: 'dsh-0.1.2-rc.1-1', dshVersion: '0.1.2-rc.1', dshPath: '/root/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', credentialsCopied: true })
     const result = await service.install(MachineId('a'))
     expect(install).toHaveBeenCalledWith(MachineId('a'), undefined)
-    expect(result).toEqual({ dshPath: '/home/root/.local/bin/dsh', credentialsCopied: true })
+    expect(result).toEqual({ installed: ['node'], dshRef: 'dsh-0.1.2-rc.1-1', dshVersion: '0.1.2-rc.1', dshPath: '/root/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', credentialsCopied: true })
   })
 
   it('saves a machine through the settings scope and refreshes the manager', async () => {

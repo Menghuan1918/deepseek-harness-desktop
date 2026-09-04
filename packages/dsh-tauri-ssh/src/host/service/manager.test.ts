@@ -1,4 +1,5 @@
 import type { MachineProfile } from '../types/index.js'
+import type { RemoteInstallPlan } from './bootstrap.js'
 import type { SshExecOptions, SshExecResult, SshSession, SshTransport, SshTunnelHandle } from './transport.js'
 import { Buffer } from 'node:buffer'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -6,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MachineId, SshError } from '../types/index.js'
+import { SshMachineEvents } from './events.js'
 import { KnownHostsStore } from './host-keys.js'
 import { SshManager } from './manager.js'
 
@@ -33,8 +35,38 @@ const config = {
   installTimeoutMs: 60000,
 }
 
-/** The dsh-path answer a remote probe would print. */
-const RESOLVED_DSH = '/usr/local/bin/dsh'
+/** A boot page whose manifest the bundle probe confirms. */
+const BOOT_HTML = '<html><body><script>globalThis["__DSH_BOOT__"] = {"entries":[{"url":"/plugins/@deepseek-ai/dsh-client-ui-layout/client.js"}]};</script></body></html>'
+
+/** The layout entry the v2 install resolves (see {@link fakePlan}). */
+const ENTRY = '$HOME/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js'
+
+/** A literal linux/x64 plan (no network): the recommended pin with digest. */
+function fakePlan(): RemoteInstallPlan {
+  return {
+    os: 'linux',
+    arch: 'x64',
+    matrix: { os: 'linux', arch: 'x64', dshKind: 'pkg-zip', nodeFilename: 'node-v22.22.0-linux-x64.tar.gz', dshZipName: 'deepseek-harness-pkg-linux.zip' },
+    repo: 'dsh-tauri-desk/deepseek-harness-pkg',
+    dshEntry: 'node_modules/@deepseek-ai/dsh/lib/bin.js',
+    dshVersion: '0.1.2-rc.1',
+    node: {
+      urls: ['https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz'],
+      shasumUrls: ['https://nodejs.org/dist/v22.22.0/SHASUMS256.txt'],
+      filename: 'node-v22.22.0-linux-x64.tar.gz',
+      version: 'v22.22.0',
+    },
+    dsh: {
+      kind: 'pkg-zip',
+      urls: ['https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/download/dsh-0.1.2-rc.1-33729514615/deepseek-harness-pkg-linux.zip'],
+      digest: 'sha256:6b7ecfeb',
+      zipName: 'deepseek-harness-pkg-linux.zip',
+      tag: 'dsh-0.1.2-rc.1-33729514615',
+    },
+    pnpm: { urls: ['https://registry.npmjs.org/pnpm/-/pnpm-11.7.0.tgz'], sha256: 'deaf'.repeat(16), version: '11.7.0' },
+    notes: [],
+  }
+}
 
 class FakeSession implements SshSession {
   commands: string[] = []
@@ -48,8 +80,6 @@ class FakeSession implements SshSession {
   tunnelGate: Promise<void> | undefined
   tunnelStarted: (() => void) | undefined
   execGate: ((command: string, index: number) => Promise<void> | undefined) | undefined
-  /** What the remote dsh probe answers; undefined = a binary is reachable. */
-  dshProbeResult: string | undefined = RESOLVED_DSH
   private closedCallbacks: Array<() => void> = []
 
   constructor(
@@ -59,28 +89,57 @@ class FakeSession implements SshSession {
     public installError?: Error,
   ) {}
 
+  /** The uname answer the platform probe prints (default: linux x64). */
+  unameResult = 'Linux 6.8.0-45-generic x86_64\n'
+  /** The check-script answer: one missing component per line (default: none). */
+  missingResult = ''
+  /** Whether the launch answered REMOTE_NOT_INSTALLED instead of starting. */
+  startNotInstalled = false
+
   exec(command: string, options?: SshExecOptions): Promise<SshExecResult> {
     this.commands.push(command)
     this.options.push(options ?? {})
     const respond = (): SshExecResult => {
       if (this.connectError !== undefined)
         throw this.connectError
-      if (command.includes('command -v dsh')) {
-        return { code: 0, stdout: this.dshProbeResult ?? '', stderr: '' }
+      if (command === 'uname -srm') {
+        return { code: 0, stdout: this.unameResult, stderr: '' }
       }
-      if (command.includes('git clone')) {
+      if (command.includes('echo node')) {
+        return { code: 0, stdout: this.missingResult, stderr: '' }
+      }
+      if (command.includes('trap cleanup EXIT')) {
+        // A successful script settles the missing set, like a real install.
+        this.missingResult = this.installError !== undefined ? this.missingResult : ''
         if (this.installError !== undefined)
-          return { code: 1, stdout: '', stderr: this.installError.message }
-        return { code: 0, stdout: 'installing...', stderr: '' }
+          return { code: 1, stdout: '::dsh install far', stderr: this.installError.message }
+        return { code: 0, stdout: '::dsh install 远端初始化完成', stderr: '' }
+      }
+      if (command.includes('test -f ')) {
+        return { code: 0, stdout: 'ok\n', stderr: '' }
       }
       if (command.includes('grep -q \'^DEEPSEEK_API_KEY=\'')) {
         return { code: 0, stdout: this.credentialsAnswer, stderr: '' }
       }
-      if (command.includes('curl') && !this.healthHealthy(this.commands.length - 1)) {
-        return { code: 7, stdout: '', stderr: 'refused' }
+      if (command.includes('dsh-remote.pid')) {
+        if (this.startNotInstalled)
+          return { code: 1, stdout: 'REMOTE_NOT_INSTALLED: 远端三件套未安装完整', stderr: '' }
+        if (this.startError !== undefined)
+          return { code: 127, stdout: '', stderr: this.startError.message }
+        return { code: 0, stdout: '远端实例已拉起', stderr: '' }
       }
-      if (command.includes('web --host') && this.startError !== undefined) {
-        return { code: 127, stdout: '', stderr: this.startError.message }
+      const healthy = this.healthHealthy(this.commands.length - 1)
+      if (command.includes('/dev/null')) {
+        return healthy ? { code: 0, stdout: '200', stderr: '' } : { code: 7, stdout: '', stderr: 'refused' }
+      }
+      if (command.includes('curl')) {
+        if (!healthy)
+          return { code: 7, stdout: '', stderr: 'refused' }
+        // The bundle probe (status-suffixed) answers JavaScript; the root
+        // probe answers the boot page.
+        return command.includes('-w')
+          ? { code: 0, stdout: 'console.log(1)\n200', stderr: '' }
+          : { code: 0, stdout: BOOT_HTML, stderr: '' }
       }
       return { code: 0, stdout: '200', stderr: '' }
     }
@@ -171,17 +230,21 @@ function boot(overrides: Partial<{
   const transport = new FakeTransport(overrides.sessionFactory ?? (() => new FakeSession(() => true)))
   transport.rejectKeys = overrides.rejectKeys ?? false
   const emits: Array<{ id: MachineId, state: string, progress?: { phase: string } }> = []
+  const events = new SshMachineEvents()
+  const plan = fakePlan()
   const manager = new SshManager({
     transport,
     knownHosts: tempKnownHosts(),
     config: overrides.config ?? config,
+    events,
+    planInstall: () => Promise.resolve(plan),
     ...overrides.readEnvCredentials === undefined ? {} : { readEnvCredentials: overrides.readEnvCredentials },
     emitStatus: (id, status) => {
       emits.push({ id, state: status.state, ...status.progress === undefined ? {} : { progress: status.progress } })
     },
   })
   manager.refreshProfiles(new Map([[profile.id, profile], [secondProfile.id, secondProfile]]))
-  return { manager, transport, emits }
+  return { manager, transport, emits, events }
 }
 
 describe('sshManager', () => {
@@ -239,8 +302,10 @@ describe('sshManager', () => {
     const { manager } = boot({ sessionFactory: () => session })
     await manager.connect(MachineId('m1'))
     expect(session.commands[0]).toContain('curl')
-    expect(session.commands[1]).toContain('command -v dsh')
-    expect(session.commands[2]).toContain(`${RESOLVED_DSH} web --host 127.0.0.1 --port 3080`)
+    expect(session.commands[1]).toBe('uname -srm')
+    expect(session.commands[2]).toContain('echo node')
+    expect(session.commands[3]).toContain('dsh-remote.pid')
+    expect(session.commands[3]).toContain('--host 127.0.0.1')
     expect(manager.status(MachineId('m1')).state).toBe('connected')
   })
 
@@ -265,13 +330,13 @@ describe('sshManager', () => {
       releaseStart = resolve
     })
     const session = new FakeSession(index => index !== 0)
-    session.execGate = command => command.includes('web --host') ? startGate : undefined
+    session.execGate = command => command.includes('dsh-remote.pid') ? startGate : undefined
     const { manager, emits } = boot({ sessionFactory: () => session })
     const pending = manager.connect(MachineId('m1'))
     // Wait until the start command is in flight, then supersede the attempt.
     await new Promise<void>((resolve) => {
       const timer = setInterval(() => {
-        if (session.commands.some(command => command.includes('web --host'))) {
+        if (session.commands.some(command => command.includes('dsh-remote.pid'))) {
           clearInterval(timer)
           resolve()
         }
@@ -462,7 +527,7 @@ describe('sshManager', () => {
     session.commands = []
     const { manager } = boot({ sessionFactory: () => session })
     const result = await manager.test(MachineId('m1'))
-    expect(result).toEqual({ ok: true, banner: '200' })
+    expect(result).toEqual({ ok: true, banner: 'Linux 6.8.0-45-generic x86_64' })
     expect(session.commands).toEqual(['uname -srm'])
     expect(session.closed).toBe(true)
   })
@@ -574,22 +639,22 @@ describe('sshManager', () => {
     expect(manager.status(MachineId('m2')).state).toBe('disconnected')
   })
 
-  it('marks dshMissing when the remote has no dsh binary', async () => {
+  it('marks dshMissing when the launch reports the runtime incomplete', async () => {
     const session = new FakeSession(index => index !== 0)
-    session.dshProbeResult = ''
+    session.startNotInstalled = true
     const { manager } = boot({ sessionFactory: () => session })
-    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-dsh-missing' })
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
     const status = manager.status(MachineId('m1'))
     expect(status.dshMissing).toBe(true)
     expect(status.state).toBe('disconnected')
-    expect(status.lastError).toContain('dsh is not installed')
+    expect(status.lastError).toContain('REMOTE_NOT_INSTALLED')
   })
 
   it('clears the dshMissing marker on disconnect', async () => {
     const session = new FakeSession(index => index !== 0)
-    session.dshProbeResult = ''
+    session.startNotInstalled = true
     const { manager } = boot({ sessionFactory: () => session })
-    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-dsh-missing' })
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
     await manager.disconnect(MachineId('m1'))
     expect(manager.status(MachineId('m1')).dshMissing).toBeUndefined()
   })
@@ -607,54 +672,70 @@ describe('sshManager install', () => {
   }
 
   it('installs dsh end-to-end, copies credentials, and auto-connects', async () => {
-    // Session 1 = install (installer, dsh probe, credentials copy); session 2
-    // = the automatic connect (port probe refused, dsh probe, start, healthy).
+    // Session 1 = install (platform probe, missing check, install script,
+    // entry check, credentials copy); session 2 = the automatic connect
+    // (root probe refused, platform probe, missing check, launch, healthy).
     let sessions = 0
     const factory = () => {
       sessions += 1
-      return new FakeSession(index => sessions === 2 && index === 3)
+      const session = new FakeSession(index => sessions === 2 && index >= 4)
+      if (sessions === 1)
+        session.missingResult = 'node\ndsh\npnpm\n'
+      return session
     }
     const { manager, transport } = boot({
       sessionFactory: factory,
       readEnvCredentials: () => ({ apiKey: 'sk-test', baseUrl: 'https://api.example.com' }),
     })
     const result = await manager.install(MachineId('m1'))
-    expect(result).toEqual({ dshPath: RESOLVED_DSH, credentialsCopied: true })
+    expect(result).toEqual({
+      installed: ['node', 'dsh', 'pnpm'],
+      dshRef: 'dsh-0.1.2-rc.1-33729514615',
+      dshVersion: '0.1.2-rc.1',
+      dshPath: ENTRY,
+      credentialsCopied: true,
+    })
     const installSession = transport.sessions[0]!
-    expect(installSession.commands[0]).toContain('git clone')
-    expect(installSession.commands[0]).toContain('pnpm run build')
-    expect(installSession.commands[1]).toContain('command -v dsh')
-    expect(installSession.commands[2]).toContain('DEEPSEEK_API_KEY')
-    expect(installSession.options[0]!.timeoutMs).toBe(60000)
-    expect(typeof installSession.options[0]!.onData).toBe('function')
+    expect(installSession.commands[0]).toBe('uname -srm')
+    expect(installSession.commands[1]).toContain('echo node')
+    expect(installSession.commands[2]).toContain('https://nodejs.org/dist/')
+    expect(installSession.commands[3]).toContain('test -f')
+    expect(installSession.commands[4]).toContain('DEEPSEEK_API_KEY')
+    expect(installSession.options[2]!.timeoutMs).toBe(60000)
+    expect(typeof installSession.options[2]!.onData).toBe('function')
     await until(() => manager.status(MachineId('m1')).state === 'connected', 'auto-connect')
     expect(transport.connectCalls).toBe(2)
   })
 
   it('publishes the installing phase with the streaming install log', async () => {
     const session = new FakeSession(() => false)
+    session.missingResult = 'node\n'
     const { manager } = boot({ sessionFactory: () => session })
     const pending = manager.install(MachineId('m1'))
     expect(manager.status(MachineId('m1')).progress).toEqual({ phase: 'installing' })
-    // Wait until the install command is in flight, then feed the streaming tap.
-    await until(() => session.commands.length >= 1, 'install exec')
-    session.options[0]?.onData?.('==> Checking dependencies\n')
-    session.options[0]?.onData?.('git ... ok')
+    // Wait until the install script is in flight, then feed the streaming tap.
+    await until(() => session.commands.some(command => command.includes('trap cleanup EXIT')), 'install exec')
+    const installIndex = session.commands.findIndex(command => command.includes('trap cleanup EXIT'))
+    session.options[installIndex]?.onData?.('==> downloading node\n')
+    session.options[installIndex]?.onData?.('::dsh verify ok')
     expect(manager.status(MachineId('m1')).progress).toEqual({
       phase: 'installing',
-      log: '==> Checking dependencies\ngit ... ok',
+      log: '==> downloading node\n::dsh verify ok',
     })
     await pending
   })
 
   it('dedupes concurrent installs onto one attempt', async () => {
-    const { manager, transport } = boot({ readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
+    const session = new FakeSession(() => false)
+    session.missingResult = 'node\n'
+    const { manager, transport } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const [a, b] = await Promise.all([manager.install(MachineId('m1')), manager.install(MachineId('m1'))])
     expect(a).toEqual(b)
-    // One install exec (the auto-connect session is separate).
-    const installRuns = transport.sessions
+    // One install exec (the auto-connect reuses the same session instance,
+    // so dedupe the transport's session list before counting commands).
+    const installRuns = [...new Set(transport.sessions)]
       .flatMap(session => session.commands)
-      .filter(command => command.includes('git clone'))
+      .filter(command => command.includes('trap cleanup EXIT'))
     expect(installRuns).toHaveLength(1)
   })
 
@@ -678,7 +759,7 @@ describe('sshManager install', () => {
     const session = new FakeSession(() => false)
     session.exec = (command, _options) => command.includes('grep -q \'^DEEPSEEK_API_KEY=\'')
       ? Promise.resolve({ code: 1, stdout: '', stderr: 'disk full' })
-      : Promise.resolve({ code: 0, stdout: 'installed', stderr: '' })
+      : Promise.resolve({ code: 0, stdout: command.includes('test -f ') ? 'ok\n' : 'installed', stderr: '' })
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const result = await manager.install(MachineId('m1'))
     expect(result.credentialsCopied).toBe(false)
@@ -687,8 +768,9 @@ describe('sshManager install', () => {
 
   it('fails loud with machine-install-failed when the install command fails', async () => {
     const session = new FakeSession(() => false)
+    session.missingResult = 'node\n'
     const original = session.exec.bind(session)
-    session.exec = (command, options) => command.includes('git clone')
+    session.exec = (command, options) => command.includes('trap cleanup EXIT')
       ? Promise.resolve({ code: 1, stdout: '', stderr: 'pnpm: not found' })
       : original(command, options)
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
@@ -704,20 +786,23 @@ describe('sshManager install', () => {
 
   it('carries the installer output tail in a failed-install error', async () => {
     const session = new FakeSession(() => false)
+    session.missingResult = 'node\n'
     const original = session.exec.bind(session)
     session.exec = (command, options) => {
-      if (command.includes('git clone')) {
+      if (command.includes('echo node'))
+        return Promise.resolve({ code: 0, stdout: 'node\n', stderr: '' })
+      if (command.includes('trap cleanup EXIT')) {
         // The transport streams installer output before failing.
-        options?.onData?.('==> cloning dsh source\n')
-        options?.onData?.('fatal: repository not found')
-        return Promise.resolve({ code: 1, stdout: '', stderr: 'clone failed' })
+        options?.onData?.('==> downloading node\n')
+        options?.onData?.('fatal: checksum mismatch')
+        return Promise.resolve({ code: 11, stdout: '', stderr: 'verify failed' })
       }
       return original(command, options)
     }
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({
       code: 'machine-install-failed',
-      message: /installer output tail: ==> cloning dsh source \| fatal: repository not found/,
+      message: /installer output tail: ==> downloading node \| fatal: checksum mismatch/,
     })
   })
 
@@ -731,14 +816,16 @@ describe('sshManager install', () => {
 
   it('runs without an install timeout when the config omits it', async () => {
     const session = new FakeSession(() => false)
+    session.missingResult = 'node\n'
     const { manager } = boot({
       sessionFactory: () => session,
       config: { ...config, installTimeoutMs: undefined as unknown as number },
       readEnvCredentials: () => ({ apiKey: 'sk-test' }),
     })
     await manager.install(MachineId('m1'))
-    expect(session.options[0]!.timeoutMs).toBeUndefined()
-    expect(typeof session.options[0]!.onData).toBe('function')
+    const installIndex = session.commands.findIndex(command => command.includes('trap cleanup EXIT'))
+    expect(session.options[installIndex]!.timeoutMs).toBeUndefined()
+    expect(typeof session.options[installIndex]!.onData).toBe('function')
   })
 
   it('falls back to the local harness .env when no credentials reader is injected', async () => {
@@ -747,7 +834,7 @@ describe('sshManager install', () => {
     // No readEnvCredentials injection: the manager reads the host's own
     // $DSH_HOME/.env — whatever it holds, the install still completes.
     const result = await manager.install(MachineId('m1'))
-    expect(result.dshPath).toBe(RESOLVED_DSH)
+    expect(result.dshPath).toBe(ENTRY)
     expect(result.credentialsError).toBeUndefined()
   })
 
@@ -787,7 +874,7 @@ describe('sshManager install', () => {
       // oxlint-disable-next-line typescript/prefer-promise-reject-errors -- hostile rejection
       // eslint-disable-next-line prefer-promise-reject-errors -- deliberately non-Error: covers describeExecFailure's message tail
       ? Promise.reject('disk full')
-      : Promise.resolve({ code: 0, stdout: 'installed', stderr: '' })
+      : Promise.resolve({ code: 0, stdout: command.includes('test -f ') ? 'ok\n' : 'installed', stderr: '' })
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const result = await manager.install(MachineId('m1'))
     expect(result.credentialsCopied).toBe(false)
@@ -800,12 +887,13 @@ describe('sshManager install', () => {
       releaseInstall = resolve
     })
     const session = new FakeSession(() => false, undefined, undefined, new Error('pnpm: not found'))
-    session.execGate = command => command.includes('git clone') ? installGate : undefined
+    session.missingResult = 'node\n'
+    session.execGate = command => command.includes('trap cleanup EXIT') ? installGate : undefined
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const pending = manager.install(MachineId('m1'))
     await new Promise<void>((resolve) => {
       const timer = setInterval(() => {
-        if (session.commands.some(command => command.includes('git clone'))) {
+        if (session.commands.some(command => command.includes('trap cleanup EXIT'))) {
           clearInterval(timer)
           resolve()
         }
@@ -813,18 +901,24 @@ describe('sshManager install', () => {
     })
     await manager.disconnect(MachineId('m1'))
     releaseInstall!()
-    await expect(pending).rejects.toMatchObject({ code: 'machine-install-failed', message: 'dsh install failed' })
+    await expect(pending).rejects.toMatchObject({ code: 'machine-install-failed', message: /dsh install failed/ })
     expect(manager.status(MachineId('m1')).lastError).toBeUndefined()
     expect(manager.status(MachineId('m1')).progress).toBeUndefined()
   })
 
-  it('fails loud when the install finished but no dsh binary is reachable', async () => {
+  it('fails loud when the install finished but the entry is not present', async () => {
     const session = new FakeSession(() => false)
-    session.dshProbeResult = ''
+    session.exec = (command, _options) => {
+      if (command.includes('echo node'))
+        return Promise.resolve({ code: 0, stdout: 'node\n', stderr: '' })
+      if (command.includes('trap cleanup EXIT'))
+        return Promise.resolve({ code: 0, stdout: '::dsh install 远端初始化完成', stderr: '' })
+      return Promise.resolve({ code: 0, stdout: '', stderr: '' })
+    }
     const { manager } = boot({ sessionFactory: () => session })
     await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({
-      code: 'machine-install-failed',
-      message: /no dsh binary is reachable/,
+      code: 'machine-dsh-missing',
+      message: /entry .* is not present/,
     })
   })
 
@@ -832,20 +926,21 @@ describe('sshManager install', () => {
     let sessions = 0
     const factory = () => {
       sessions += 1
-      const session = new FakeSession(index => sessions >= 2 && index === 3)
-      // The first (failed) connect sees no dsh; the install and auto-connect do.
+      const session = new FakeSession(index => sessions >= 2 && index >= 4)
+      // The first (failed) connect finds the runtime incomplete; the install
+      // and the auto-connect see it whole.
       if (sessions === 1)
-        session.dshProbeResult = ''
+        session.startNotInstalled = true
       return session
     }
     const { manager, transport } = boot({
       sessionFactory: factory,
       readEnvCredentials: () => ({ apiKey: 'sk-test' }),
     })
-    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-dsh-missing' })
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
     expect(manager.status(MachineId('m1')).dshMissing).toBe(true)
     const result = await manager.install(MachineId('m1'))
-    expect(result.dshPath).toBe(RESOLVED_DSH)
+    expect(result.dshPath).toBe('$HOME/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js')
     expect(manager.status(MachineId('m1')).dshMissing).toBeUndefined()
     await until(() => manager.status(MachineId('m1')).state === 'connected', 'auto-connect after install')
     // First (failed) connect + install + auto-connect.
@@ -858,20 +953,22 @@ describe('sshManager install', () => {
       releaseInstall = resolve
     })
     const session = new FakeSession(() => false)
-    session.execGate = command => command.includes('git clone') ? installGate : undefined
+    session.missingResult = 'node\n'
+    session.execGate = command => command.includes('trap cleanup EXIT') ? installGate : undefined
     const { manager, transport } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const pending = manager.install(MachineId('m1'))
-    await new Promise<void>((resolve) => {
+    const installIndex = await new Promise<number>((resolve) => {
       const timer = setInterval(() => {
-        if (session.commands.some(command => command.includes('git clone'))) {
+        const index = session.commands.findIndex(command => command.includes('trap cleanup EXIT'))
+        if (index >= 0) {
           clearInterval(timer)
-          resolve()
+          resolve(index)
         }
       }, 1)
     })
     await manager.disconnect(MachineId('m1'))
     // Output arriving after the supersede must not touch the published log.
-    session.options[0]?.onData?.('stale output')
+    session.options[installIndex]?.onData?.('stale output')
     expect(manager.status(MachineId('m1')).progress).toBeUndefined()
     releaseInstall!()
     await expect(pending).rejects.toMatchObject({ code: 'machine-install-failed', message: /cancelled by disconnect/ })
@@ -910,6 +1007,7 @@ describe('sshManager install', () => {
 
   it('swallows a close failure during a failed install', async () => {
     const session = new FakeSession(() => false, undefined, undefined, new Error('pnpm: not found'))
+    session.missingResult = 'node\n'
     session.closeError = new Error('close refused')
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-install-failed' })
@@ -936,11 +1034,16 @@ describe('sshManager install', () => {
 
   it('reports a non-Error install failure in the status', async () => {
     const session = new FakeSession(() => false)
-    session.exec = (command, _options) => command.includes('git clone')
-      // oxlint-disable-next-line typescript/prefer-promise-reject-errors -- hostile rejection
-      // eslint-disable-next-line prefer-promise-reject-errors -- deliberately non-Error: covers install failure normalization
-      ? Promise.reject('pnpm blew up')
-      : Promise.resolve({ code: 0, stdout: '', stderr: '' })
+    session.missingResult = 'node\n'
+    session.exec = (command, _options) => {
+      if (command.includes('echo node'))
+        return Promise.resolve({ code: 0, stdout: 'node\n', stderr: '' })
+      if (command.includes('trap cleanup EXIT'))
+        // oxlint-disable-next-line typescript/prefer-promise-reject-errors -- hostile rejection
+        // eslint-disable-next-line prefer-promise-reject-errors -- deliberately non-Error: covers install failure normalization
+        return Promise.reject('pnpm blew up')
+      return Promise.resolve({ code: 0, stdout: '', stderr: '' })
+    }
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-install-failed' })
     expect(manager.status(MachineId('m1')).lastError).toBe('pnpm blew up')

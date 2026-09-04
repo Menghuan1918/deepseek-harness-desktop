@@ -137,9 +137,57 @@ export type SshTestResult
   = | { ok: true, banner: string }
     | { ok: false, message: string }
 
+/** One bootstrap stage of the remote-instance assurance pipeline (S3 adds the connection-lifecycle stages on the same channel). */
+export type SshMachineStage
+  = | 'probe'
+    | 'download'
+    | 'verify'
+    | 'install'
+    | 'launch'
+    | 'ready'
+    | 'failed'
+
+/** Terminal verdict of a machine event, when it settles an operation. */
+export type SshMachineTerminal = 'success' | 'failed'
+
+/**
+ * One machine-scoped event of the `/api-ssh` `machine.events` channel: a
+ * displayable log line tagged with its pipeline stage. `seq` is per-machine
+ * and monotonically increasing; consumers poll with the last seen seq.
+ */
+export interface SshMachineEvent {
+  /** Per-machine sequence number, starting at 1. */
+  seq: number
+  /** Wall-clock timestamp of the event (ISO-8601). */
+  ts: string
+  /** The machine the event is about. */
+  machineId: MachineId
+  /** The pipeline stage the line belongs to. */
+  stage: SshMachineStage
+  /** The displayable log line. */
+  line: string
+  /** Terminal verdict, present only on the settling event of an operation. */
+  terminal?: SshMachineTerminal
+  /** Failure reason, present on `terminal: 'failed'` events. */
+  reason?: string
+}
+
+/** The `machine.events` response: the drained slice plus the poll cursor. */
+export interface SshMachineEventsPage {
+  events: SshMachineEvent[]
+  /** The next event's seq; poll again with `sinceSeq = nextSeq - 1`. */
+  nextSeq: number
+}
+
 /** Outcome of a one-shot remote dsh install. */
 export interface SshInstallResult {
-  /** Absolute path of the installed `dsh` binary as the remote sees it. */
+  /** Components freshly installed this run (a subset of node/dsh/pnpm). */
+  installed: string[]
+  /** The pinned DSH release actually installed (`<tag>` or `npm:<version>`). */
+  dshRef: string
+  /** The resolved DSH semver. */
+  dshVersion: string
+  /** Absolute path of the installed `dsh` entry as the remote sees it. */
   dshPath: string
   /** Whether the local DEEPSEEK_API_KEY was copied to the remote `~/.dsh/.env`. */
   credentialsCopied: boolean

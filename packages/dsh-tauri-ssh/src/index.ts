@@ -17,4 +17,5 @@
  */
 
 export { apply, Config, default, inject, name, SshRemoteService } from './host/apply.js'
+export type { SshMachineEvent, SshMachineEventsPage, SshMachineStage, SshMachineTerminal } from './host/types/index.js'
 export { SSH_API_PREFIX } from './shared/constants.js'
