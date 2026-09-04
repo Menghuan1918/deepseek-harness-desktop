@@ -9,7 +9,9 @@
  * @module dsh-tauri-ssh-ui/client/store
  */
 
+import type { MachineLifecycleState, SshMachineEvent, SyncApplyResult, SyncItemResult, SyncPreview } from '../types/index.js'
 import { SSH_API_PATH } from '../constants/index.js'
+import { isLifecycleState } from '../types/index.js'
 
 /** One redacted machine row (secret fields live only in the form). */
 export interface MachineRow {
@@ -36,7 +38,10 @@ export interface SecretValues {
 
 /** Live transport status of one machine, from the /api-ssh list. */
 export interface MachineStatus {
-  state: 'disconnected' | 'connecting' | 'connected'
+  /** The C-STATE vocabulary (S3-owned); unknown wire values read as disconnected. */
+  state: MachineLifecycleState
+  /** While reconnecting: when the next retry fires (S3's optional hint). */
+  nextRetryHint?: string
   tunnelBaseUrl?: string
   lastError?: string
   /** Whether the last failure was "dsh not installed on the remote" (offers install). */
@@ -60,6 +65,18 @@ export type SshApiResponse
   = | { ok: true, value: unknown }
     | { ok: false, error: { code: string, message: string } }
 
+/** The sync panel's slice of the page state. */
+export interface SyncPanelState {
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  error: string | null
+  /** The selectable plugins and skills (null until a preview lands). */
+  preview: SyncPreview | null
+  /** Whether a sync.apply is in flight. */
+  applying: boolean
+  /** The latest apply outcome, one entry per requested item; null before the first. */
+  results: SyncItemResult[] | null
+}
+
 /** Page state published to the component through the snapshot seam. */
 export interface MachinesPageState {
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -70,12 +87,16 @@ export interface MachinesPageState {
   discovered: MachineRow[]
   /** Live status per machine id. */
   statuses: Record<string, MachineStatus>
+  /** Streaming log lines per machine id (the S2 event channel; capped tail). */
+  logs: Record<string, string[]>
   /** One in-flight connection-plane op per machine id. */
   busy: Record<string, 'test' | 'connect' | 'disconnect' | 'install'>
   /** The latest connection-plane outcome, shown in the banner. */
   notice: string | null
   /** The latest install outcome per machine id (shown under the card). */
   installResults: Record<string, InstallResult>
+  /** The sync-to-remote panel state. */
+  sync: SyncPanelState
 }
 
 /** The fetch seam (window.fetch in the browser, fakes in tests). */
@@ -109,6 +130,117 @@ export function createSnapshotStore<T>(initial: T): SnapshotStore<T> & { update:
 /** Operator-facing description of any failure. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Read one wire state through the C-STATE vocabulary; unknowns read as disconnected. */
+function lifecycleStateOf(raw: unknown): MachineLifecycleState {
+  return isLifecycleState(raw) ? raw : 'disconnected'
+}
+
+/** How many log lines one machine keeps (the streaming tail). */
+const LOG_TAIL_LINES = 300
+
+/** Parse one machine.events value; malformed entries are dropped, not fatal. */
+export function machineEventsOf(value: unknown): SshMachineEvent[] {
+  if (typeof value !== 'object' || value === null)
+    return []
+  const events = (value as { events?: unknown }).events
+  if (!Array.isArray(events))
+    return []
+  const out: SshMachineEvent[] = []
+  for (const entry of events) {
+    if (typeof entry !== 'object' || entry === null)
+      continue
+    const event = entry as Record<string, unknown>
+    if (typeof event.seq !== 'number' || typeof event.machineId !== 'string' || typeof event.line !== 'string')
+      continue
+    if (event.ts !== undefined && typeof event.ts !== 'number')
+      continue
+    if (event.stage !== undefined && typeof event.stage !== 'string')
+      continue
+    out.push({
+      seq: event.seq,
+      ts: typeof event.ts === 'number' ? event.ts : 0,
+      machineId: event.machineId,
+      stage: typeof event.stage === 'string' ? event.stage : '',
+      line: event.line,
+      ...event.terminal === true ? { terminal: true } : {},
+      ...typeof event.reason === 'string' ? { reason: event.reason } : {},
+    })
+  }
+  return out
+}
+
+/** Parse one sync.preview value; null when the shape is wrong. */
+export function syncPreviewOf(value: unknown): SyncPreview | null {
+  if (typeof value !== 'object' || value === null)
+    return null
+  const raw = value as { plugins?: unknown, skills?: unknown }
+  if (!Array.isArray(raw.plugins) || !Array.isArray(raw.skills))
+    return null
+  const plugins = raw.plugins.flatMap((entry): SyncPreview['plugins'] => {
+    if (typeof entry !== 'object' || entry === null)
+      return []
+    const item = entry as Record<string, unknown>
+    if (typeof item.name !== 'string' || typeof item.spec !== 'string')
+      return []
+    return [{
+      name: item.name,
+      spec: item.spec,
+      syncable: item.syncable === true,
+      ...typeof item.reason === 'string' ? { reason: item.reason } : {},
+    }]
+  })
+  const skills = raw.skills.flatMap((entry): SyncPreview['skills'] => {
+    if (typeof entry !== 'object' || entry === null)
+      return []
+    const item = entry as Record<string, unknown>
+    if (typeof item.name !== 'string' || typeof item.root !== 'string')
+      return []
+    return [{ name: item.name, root: item.root }]
+  })
+  return { plugins, skills }
+}
+
+/** Parse one sync.apply value; null when the shape is wrong. */
+export function syncApplyResultOf(value: unknown): SyncApplyResult | null {
+  if (typeof value !== 'object' || value === null)
+    return null
+  const items = (value as { items?: unknown }).items
+  if (!Array.isArray(items))
+    return null
+  const out: SyncItemResult[] = []
+  for (const entry of items) {
+    if (typeof entry !== 'object' || entry === null)
+      continue
+    const item = entry as Record<string, unknown>
+    if (typeof item.name !== 'string' || typeof item.ok !== 'boolean')
+      continue
+    if (item.kind !== 'plugin' && item.kind !== 'skill')
+      continue
+    out.push({
+      kind: item.kind,
+      name: item.name,
+      ...typeof item.root === 'string' ? { root: item.root } : {},
+      ok: item.ok,
+      ...typeof item.error === 'string' ? { error: item.error } : {},
+    })
+  }
+  return { items: out }
+}
+
+/**
+ * The multi-select toggle: independent Set membership per key. This is the
+ * semantic the sync items needed (the old panel behaved like a radio group —
+ * picking one item silently dropped the others).
+ */
+export function toggleSelection(selected: ReadonlySet<string>, key: string): Set<string> {
+  const next = new Set(selected)
+  if (next.has(key))
+    next.delete(key)
+  else
+    next.add(key)
+  return next
 }
 
 /** Parse one /api-ssh envelope; non-ok envelopes throw. */
@@ -194,6 +326,12 @@ export class MachinesStore {
   /** The published page state. */
   readonly store: SnapshotStore<MachinesPageState> & { update: (mutator: (state: MachinesPageState) => void) => void }
 
+  /** The consumed event cursor (machine.events seq high-water mark). */
+  private lastEventSeq = 0
+
+  /** Whether the host still gets asked for machine.events (off after first refusal). */
+  private eventsSupported = true
+
   /**
    * @param fetchFn - the /api-ssh transport (window.fetch in the browser).
    */
@@ -204,9 +342,11 @@ export class MachinesStore {
       machines: [],
       discovered: [],
       statuses: {},
+      logs: {},
       busy: {},
       notice: null,
       installResults: {},
+      sync: { status: 'idle', error: null, preview: null, applying: false, results: null },
     })
   }
 
@@ -235,7 +375,9 @@ export class MachinesStore {
     const discovered = (list.discovered ?? []).map(machineRowOf).filter((row): row is MachineRow => row !== undefined)
     const statuses: Record<string, MachineStatus> = {}
     for (const item of [...(list.items ?? []), ...(list.discovered ?? [])]) {
-      const status: MachineStatus = { state: item.state }
+      const status: MachineStatus = { state: lifecycleStateOf(item.state) }
+      if (typeof item.nextRetryHint === 'string' && item.nextRetryHint !== '')
+        status.nextRetryHint = item.nextRetryHint
       if (item.tunnelBaseUrl !== undefined)
         status.tunnelBaseUrl = item.tunnelBaseUrl
       if (item.lastError !== undefined)
@@ -276,12 +418,50 @@ export class MachinesStore {
   async poll(): Promise<void> {
     try {
       this.applyList(await this.callApi<{ items?: MachineListItem[], discovered?: MachineListItem[] }>('machine.list', {}))
+      await this.pollEvents()
     }
     catch (error) {
       this.store.update((state) => {
         state.error = messageOf(error)
       })
     }
+  }
+
+  /**
+   * Pull machine.events past the cursor and fold the lines into the per-machine
+   * logs. A host without the S2 channel (or any refusal) turns the channel off
+   * for good — the panel then lives on the status progress fields alone, and
+   * the polling loop never fails the page for it.
+   */
+  private async pollEvents(): Promise<void> {
+    if (!this.eventsSupported)
+      return
+    let events: SshMachineEvent[]
+    try {
+      events = machineEventsOf(await this.callApi<unknown>('machine.events', {
+        ...this.lastEventSeq === 0 ? {} : { after: this.lastEventSeq },
+      }))
+    }
+    catch {
+      this.eventsSupported = false
+      return
+    }
+    if (events.length === 0)
+      return
+    this.lastEventSeq = Math.max(this.lastEventSeq, ...events.map(event => event.seq))
+    const byMachine = new Map<string, string[]>()
+    for (const event of events) {
+      if (event.line === '')
+        continue
+      byMachine.set(event.machineId, [...(byMachine.get(event.machineId) ?? []), event.line])
+    }
+    if (byMachine.size === 0)
+      return
+    this.store.update((state) => {
+      for (const [machineId, lines] of byMachine) {
+        state.logs[machineId] = [...(state.logs[machineId] ?? []), ...lines].slice(-LOG_TAIL_LINES)
+      }
+    })
   }
 
   /**
@@ -390,5 +570,65 @@ export class MachinesStore {
       })
       await this.load()
     })
+  }
+
+  /** Load the sync selection list (local plugins and skills) from sync.preview. */
+  async loadSyncPreview(): Promise<void> {
+    this.store.update((state) => {
+      state.sync.status = 'loading'
+      state.sync.error = null
+    })
+    try {
+      const preview = syncPreviewOf(await this.callApi<unknown>('sync.preview', {}))
+      if (preview === null)
+        throw new Error('malformed sync.preview payload')
+      this.store.update((state) => {
+        state.sync.status = 'ready'
+        state.sync.preview = preview
+      })
+    }
+    catch (error) {
+      this.store.update((state) => {
+        state.sync.status = 'error'
+        state.sync.error = messageOf(error)
+      })
+    }
+  }
+
+  /**
+   * Sync one selection to a machine. The per-item outcomes land in
+   * `state.sync.results` even on partial failure — a request-level failure
+   * (session unreachable) surfaces as `state.sync.error`.
+   * @param machineId - the connected target machine.
+   * @param plugins - the selected plugin refs.
+   * @param skills - the selected skill refs.
+   */
+  async applySync(machineId: string, plugins: SyncPreview['plugins'], skills: SyncPreview['skills']): Promise<void> {
+    this.store.update((state) => {
+      state.sync.applying = true
+      state.sync.error = null
+    })
+    try {
+      const result = syncApplyResultOf(await this.callApi<unknown>('sync.apply', {
+        machineId,
+        plugins: plugins.map(plugin => ({ name: plugin.name, spec: plugin.spec })),
+        skills: skills.map(skill => ({ name: skill.name, root: skill.root })),
+      }))
+      if (result === null)
+        throw new Error('malformed sync.apply payload')
+      this.store.update((state) => {
+        state.sync.results = result.items
+      })
+    }
+    catch (error) {
+      this.store.update((state) => {
+        state.sync.error = messageOf(error)
+      })
+    }
+    finally {
+      this.store.update((state) => {
+        state.sync.applying = false
+      })
+    }
   }
 }

@@ -43,7 +43,8 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-locale"
+        "@deepseek-ai/dsh-client-locale",
+        "dsh-tauri"
       ],
       "platform": "web"
     },
@@ -59,6 +60,7 @@
     "typecheck": "tsc"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-client-ui-primitives": "catalog:dsh",
     "@testing-library/dom": "catalog:testing",
     "@testing-library/react": "catalog:testing",
     "@types/node": "catalog:types",

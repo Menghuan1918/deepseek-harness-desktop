@@ -12,6 +12,7 @@
  * @module dsh-tauri-ssh/host/service/sync
  */
 
+import type { Buffer } from 'node:buffer'
 import type { MachineId, SyncApplyResult, SyncItemResult, SyncPluginItem, SyncPluginRef, SyncPreview, SyncSkillItem, SyncSkillRef, SyncSkillRoot } from '../types/index.js'
 import type { SshSession } from './transport.js'
 import { firstLineOf, probeDshCommand } from './bootstrap.js'
@@ -28,9 +29,9 @@ export function classifySpec(spec: string): { syncable: boolean, reason?: string
   const value = spec.trim()
   if (value === '')
     return { syncable: false, reason: 'empty dependency spec' }
-  if (/^(github:|git\+|git@)/u.test(value))
+  if (/^(?:github:|git\+|git@)/u.test(value))
     return { syncable: true }
-  if (/^(file:|link:|workspace:)/u.test(value))
+  if (/^(?:file:|link:|workspace:)/u.test(value))
     return { syncable: false, reason: 'local-path dependency; it cannot be resolved on the remote' }
   if (/^https?:\/\//u.test(value))
     return { syncable: false, reason: 'URL dependencies are not supported' }

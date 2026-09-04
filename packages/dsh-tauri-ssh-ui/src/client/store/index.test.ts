@@ -1,6 +1,6 @@
 import type { FetchFn, MachineRow, SshApiResponse } from './index.js'
 import { describe, expect, it, vi } from 'vitest'
-import { machineRowOf, MachinesStore, savePayloadOf } from './index.js'
+import { machineEventsOf, machineRowOf, MachinesStore, savePayloadOf, toggleSelection } from './index.js'
 
 type FetchMock = ReturnType<typeof vi.fn<FetchFn>>
 
@@ -359,5 +359,173 @@ describe('machinesStore', () => {
     await store.load()
     expect(listener.mock.calls.length).toBe(before)
     expect(store.getSnapshot()).toBe(store.store.getSnapshot())
+  })
+})
+
+describe('connection-state vocabulary', () => {
+  it('reads the C-STATE states and the next-retry hint', async () => {
+    const { store } = boot({
+      ok: true,
+      value: { items: [{ ...machineA, state: 'reconnecting', nextRetryHint: 'in 8s' }] },
+    })
+    await store.load()
+    expect(store.getSnapshot().statuses.a).toMatchObject({ state: 'reconnecting', nextRetryHint: 'in 8s' })
+  })
+
+  it('reads unknown wire states as disconnected', async () => {
+    const { store } = boot({
+      ok: true,
+      value: { items: [{ ...machineA, state: 'warping' }] },
+    })
+    await store.load()
+    expect(store.getSnapshot().statuses.a?.state).toBe('disconnected')
+  })
+})
+
+describe('machineEventsOf', () => {
+  it('parses well-formed events and drops malformed ones', () => {
+    expect(machineEventsOf({ events: [
+      { seq: 2, ts: 1700000001, machineId: 'a', stage: 'bootstrap:clone', line: 'cloning' },
+      { seq: 3, ts: 1700000002, machineId: 'a', stage: 'bootstrap:install', line: 'pnpm install', terminal: false },
+      { seq: 4, ts: 1700000003, machineId: 'a', stage: 'connect:failed', line: 'gave up', terminal: true, reason: 'auth failed' },
+    ] })).toEqual([
+      { seq: 2, ts: 1700000001, machineId: 'a', stage: 'bootstrap:clone', line: 'cloning' },
+      { seq: 3, ts: 1700000002, machineId: 'a', stage: 'bootstrap:install', line: 'pnpm install' },
+      { seq: 4, ts: 1700000003, machineId: 'a', stage: 'connect:failed', line: 'gave up', terminal: true, reason: 'auth failed' },
+    ])
+    expect(machineEventsOf(undefined)).toEqual([])
+    expect(machineEventsOf({ events: 'nope' })).toEqual([])
+    expect(machineEventsOf({ events: [{ machineId: 'a', line: 'x' }, 'junk'] })).toEqual([])
+  })
+})
+
+describe('event polling', () => {
+  /** A fetch mock that answers machine.list and sequential machine.events payloads. */
+  function eventsFetch(eventBatches: unknown[][]): FetchMock {
+    let batch = 0
+    return vi.fn<FetchFn>(async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as { method: string }
+      if (body.method === 'machine.events') {
+        const events = eventBatches[Math.min(batch, eventBatches.length - 1)] ?? []
+        batch += 1
+        return { json: async () => ({ ok: true, value: { events } }) } as unknown as Response
+      }
+      return { json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'connecting' }] } }) } as unknown as Response
+    })
+  }
+
+  it('folds event lines into the per-machine log tail past the cursor', async () => {
+    const fetchFn = eventsFetch([
+      [
+        { seq: 1, ts: 1, machineId: 'a', stage: 'bootstrap:clone', line: 'line 1' },
+        { seq: 2, ts: 2, machineId: 'a', stage: 'bootstrap:clone', line: 'line 2' },
+      ],
+      [
+        { seq: 3, ts: 3, machineId: 'a', stage: 'bootstrap:install', line: 'line 3' },
+      ],
+    ])
+    const store = new MachinesStore(fetchFn)
+    await store.poll()
+    expect(store.getSnapshot().logs.a).toEqual(['line 1', 'line 2'])
+    await store.poll()
+    expect(store.getSnapshot().logs.a).toEqual(['line 1', 'line 2', 'line 3'])
+    // The cursor rode along: the second call asked for events after seq 2.
+    const eventsCalls = fetchFn.mock.calls
+      .map(call => JSON.parse(String(call[1]?.body)) as { method: string, payload?: { after?: number } })
+      .filter(call => call.method === 'machine.events')
+    expect(eventsCalls[1]?.payload).toEqual({ after: 2 })
+  })
+
+  it('turns the channel off after the host refuses it once', async () => {
+    const fetchFn = vi.fn<FetchFn>(async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as { method: string }
+      if (body.method === 'machine.events') {
+        return { json: async () => ({ ok: false, error: { code: 'unknown-method', message: 'unknown method "machine.events"' } }) } as unknown as Response
+      }
+      return { json: async () => ({ ok: true, value: { items: [] } }) } as unknown as Response
+    })
+    const store = new MachinesStore(fetchFn)
+    await store.poll()
+    await store.poll()
+    await store.poll()
+    const eventsCalls = fetchFn.mock.calls
+      .filter(call => (JSON.parse(String(call[1]?.body)) as { method: string }).method === 'machine.events')
+    expect(eventsCalls).toHaveLength(1)
+    // The refusal never fails the page.
+    expect(store.getSnapshot().error).toBeNull()
+  })
+})
+
+describe('toggleSelection', () => {
+  it('toggles membership independently per key', () => {
+    let selected = toggleSelection(new Set(), 'a')
+    selected = toggleSelection(selected, 'b')
+    expect([...selected].sort()).toEqual(['a', 'b'])
+    selected = toggleSelection(selected, 'a')
+    expect([...selected].sort()).toEqual(['b'])
+  })
+})
+
+describe('sync state', () => {
+  /** A fetch mock answering per method. */
+  function syncFetch(routes: Record<string, unknown>): FetchMock {
+    return vi.fn<FetchFn>(async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as { method: string }
+      return { json: async () => ({ ok: true, value: routes[body.method] ?? {} }) } as unknown as Response
+    })
+  }
+
+  it('loads the preview into the sync slice', async () => {
+    const store = new MachinesStore(syncFetch({
+      'sync.preview': { plugins: [{ name: 'p', spec: 'github:a/b', syncable: true }], skills: [{ name: 's', root: 'dsh' }] },
+    }))
+    await store.loadSyncPreview()
+    expect(store.getSnapshot().sync).toMatchObject({
+      status: 'ready',
+      preview: {
+        plugins: [{ name: 'p', spec: 'github:a/b', syncable: true }],
+        skills: [{ name: 's', root: 'dsh' }],
+      },
+    })
+  })
+
+  it('settles a preview failure as the sync error state', async () => {
+    const fetchFn = vi.fn<FetchFn>(async () => ({ json: async () => ({ ok: false, error: { code: 'internal', message: 'nope' } }) }) as unknown as Response)
+    const store = new MachinesStore(fetchFn)
+    await store.loadSyncPreview()
+    expect(store.getSnapshot().sync).toMatchObject({ status: 'error', error: 'nope' })
+  })
+
+  it('applies a selection and lands the per-item results', async () => {
+    const fetchFn = syncFetch({
+      'sync.apply': { items: [
+        { kind: 'plugin', name: 'p', ok: true },
+        { kind: 'skill', name: 's', root: 'dsh', ok: false, error: 'exit 1' },
+      ] },
+    })
+    const store = new MachinesStore(fetchFn)
+    await store.applySync('a', [{ name: 'p', spec: 'github:a/b', syncable: true }], [{ name: 's', root: 'dsh' }])
+    const sync = store.getSnapshot().sync
+    expect(sync.applying).toBe(false)
+    expect(sync.error).toBeNull()
+    expect(sync.results).toEqual([
+      { kind: 'plugin', name: 'p', ok: true },
+      { kind: 'skill', name: 's', root: 'dsh', ok: false, error: 'exit 1' },
+    ])
+    const applyCall = fetchFn.mock.calls
+      .map(call => JSON.parse(String(call[1]?.body)) as { method: string, payload: Record<string, unknown> })
+      .find(call => call.method === 'sync.apply')
+    expect(applyCall?.payload).toEqual({
+      machineId: 'a',
+      plugins: [{ name: 'p', spec: 'github:a/b' }],
+      skills: [{ name: 's', root: 'dsh' }],
+    })
+  })
+
+  it('settles an apply failure as the sync error without losing applying=false', async () => {
+    const fetchFn = vi.fn<FetchFn>(async () => ({ json: async () => ({ ok: false, error: { code: 'machine-sync-failed', message: 'ssh down' } }) }) as unknown as Response)
+    const store = new MachinesStore(fetchFn)
+    await store.applySync('a', [{ name: 'p', spec: 'github:a/b', syncable: true }], [])
+    expect(store.getSnapshot().sync).toMatchObject({ applying: false, error: 'ssh down' })
   })
 })

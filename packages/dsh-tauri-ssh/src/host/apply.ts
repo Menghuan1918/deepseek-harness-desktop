@@ -101,7 +101,7 @@ export class SshRemoteService implements SshApiHost {
       profileDependencies: profileDependenciesReader(),
       scanSkills: skillRootsScanner(),
       packSkills: tarPacker(),
-      openSession: (machineId) => this.manager.openSession(machineId),
+      openSession: machineId => this.manager.openSession(machineId),
       ...config.installTimeoutMs === undefined ? {} : { commandTimeoutMs: config.installTimeoutMs },
     })
     this.manager.refreshProfiles(this.applyStartDefaults(this.manualProfiles()))

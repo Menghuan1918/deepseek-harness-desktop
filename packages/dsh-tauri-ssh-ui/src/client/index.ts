@@ -11,6 +11,7 @@ import type { UiContext } from './types/index.js'
 import { MachinesSection } from './components/machines-section.js'
 import { SETTINGS_SECTION_ID, SETTINGS_SECTION_ORDER, SETTINGS_SECTION_SLOT, SSH_LOCALE_NS } from './constants/index.js'
 import { en, zh } from './locales/index.js'
+import { desktopBridge } from './service/bridge.js'
 import { MachinesStore } from './store/index.js'
 
 /** Required services: the settings slot seam and the locale seat. */
@@ -31,7 +32,7 @@ export function apply(ctx: UiContext): void {
     order: SETTINGS_SECTION_ORDER,
     label: () => t('nav'),
     locale: SSH_LOCALE_NS,
-    inject: () => ({ store }),
+    inject: () => ({ store, bridge: desktopBridge }),
   }, MachinesSection))
 }
 

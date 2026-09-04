@@ -4,7 +4,13 @@ import { apply as hostApply } from '../index.js'
 import { MachinesSection } from './components/machines-section.tsx'
 import { apply, inject } from './index.js'
 import { en, zh } from './locales/index.js'
+import { desktopBridge } from './service/bridge.js'
 import { MachinesStore } from './store/index.js'
+
+// The desktop invoke bridge resolves through the runtime module table, which
+// does not exist under vitest; the registrant tests only need its shape.
+// (vitest hoists vi.mock above the imports, so placement here is safe.)
+vi.mock('dsh-tauri/client', () => ({ invokeBridgedTauri: vi.fn(async () => undefined) }))
 
 function scriptedCtx(): {
   ctx: UiContext
@@ -69,6 +75,7 @@ describe('ui-ssh client plugin', () => {
     expect(options.locale).toBe('ssh')
     const injected = options.inject()
     expect(injected.store).toBeInstanceOf(MachinesStore)
+    expect(injected.bridge).toBe(desktopBridge)
     expect(slots.register.mock.calls[0]?.[1]).toBe(MachinesSection)
     // Drive one store load so the window.fetch thunk the plugin installed
     // actually executes (stubbed: no network in tests).

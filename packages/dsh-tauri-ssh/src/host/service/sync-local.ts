@@ -6,13 +6,14 @@
  * @module dsh-tauri-ssh/host/service/sync-local
  */
 
+import type { Buffer } from 'node:buffer'
 import type { SyncSkillRoot } from '../types/index.js'
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import process from 'node:process'
-import { join } from 'pathe'
 import { promisify } from 'node:util'
+import { join } from 'pathe'
 
 const execFileAsync = promisify(execFile)
 

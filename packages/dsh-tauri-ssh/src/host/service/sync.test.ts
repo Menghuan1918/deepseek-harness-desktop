@@ -1,4 +1,5 @@
 import type { SshExecResult, SshSession } from './transport.js'
+import { Buffer } from 'node:buffer'
 import { describe, expect, it, vi } from 'vitest'
 import { MachineId } from '../types/index.js'
 import { buildPreview, classifySpec, pluginAddCommand, skillExtractCommand, SyncEngine } from './sync.js'
@@ -86,7 +87,7 @@ describe('command builders', () => {
   })
 })
 
-describe('SyncEngine.apply', () => {
+describe('syncEngine.apply', () => {
   const machine = MachineId('m1')
 
   it('returns per-item successes when everything lands', async () => {

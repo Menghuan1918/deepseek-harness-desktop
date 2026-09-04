@@ -19,3 +19,14 @@ export const SETTINGS_SECTION_ORDER = 50
 
 /** The /api-ssh route the host plugin mounts (same-origin POST envelope). */
 export const SSH_API_PATH = '/api-ssh'
+
+/**
+ * C-BRIDGE (S5-owned): the desktop iframe invoke commands the panel talks to
+ * through `invokeBridgedTauri`. A timeout or rejection on the ping means the
+ * page runs outside the desktop shell (pure web) and the popup affordance
+ * hides itself.
+ */
+export const REMOTE_BRIDGE_PING_COMMAND = 'remote_bridge_ping'
+
+/** Open (or focus) the `remote-<machineId>` window for a tunnel URL. */
+export const REMOTE_OPEN_WINDOW_COMMAND = 'remote_open_window'

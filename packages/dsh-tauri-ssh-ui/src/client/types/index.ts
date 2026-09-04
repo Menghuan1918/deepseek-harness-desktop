@@ -38,3 +38,15 @@ export interface UiContext {
   slots: SlotsService
   locale: LocaleService
 }
+
+export type {
+  MachineLifecycleState,
+  RemoteBridge,
+  SshMachineEvent,
+  SyncApplyResult,
+  SyncItemResult,
+  SyncPluginItem,
+  SyncPreview,
+  SyncSkillItem,
+} from './sync.js'
+export { isLifecycleState } from './sync.js'

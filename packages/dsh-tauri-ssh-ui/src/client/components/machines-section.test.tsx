@@ -1,12 +1,13 @@
 import type { SshKey } from '../locales/index.js'
 import type { FetchFn, MachineRow, SshApiResponse } from '../store/index.js'
+import type { RemoteBridge } from '../types/index.js'
 import { fireEvent, screen, waitFor, within } from '@testing-library/dom'
 import { act, cleanup, render } from '@testing-library/react'
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { en } from '../locales/index.js'
 import { MachinesStore } from '../store/index.js'
-import { MachinesSection, OPEN_WINDOW_FEATURES } from './machines-section.js'
+import { MachinesSection } from './machines-section.js'
 
 afterEach(() => {
   cleanup()
@@ -21,6 +22,17 @@ function fakeFetch(envelope: SshApiResponse): FetchMock {
   return vi.fn<FetchFn>(async () => ({ json: async () => envelope }) as unknown as Response)
 }
 
+/** A bridge whose ping never answers (the pure-web environment). */
+const unreachableBridge: RemoteBridge = {
+  probe: () => Promise.reject(new Error('NODE_NOT_ANSWERED: invoke remote_bridge_ping timed out')),
+  openWindow: () => Promise.reject(new Error('no bridge')),
+}
+
+/** A bridge whose ping answers; `openWindow` is a spy. */
+function desktopBridge(openWindow: RemoteBridge['openWindow'] = vi.fn(async () => undefined)): RemoteBridge {
+  return { probe: async () => true, openWindow }
+}
+
 const machineA: MachineRow = {
   id: 'a',
   name: 'alpha',
@@ -32,10 +44,12 @@ const machineA: MachineRow = {
   remotePort: 3080,
 }
 
-function mount(overrides: { envelope?: SshApiResponse } = {}) {
+function mount(overrides: { envelope?: SshApiResponse, bridge?: RemoteBridge } = {}) {
   const fetchFn = fakeFetch(overrides.envelope ?? { ok: true, value: { items: [] } })
   const store = new MachinesStore(fetchFn)
-  const view = render(<MachinesSection store={store} t={t} />)
+  const view = render(
+    <MachinesSection store={store} t={t} {...overrides.bridge === undefined ? {} : { bridge: overrides.bridge }} />,
+  )
   return { view, store, fetchFn }
 }
 
@@ -85,7 +99,7 @@ describe('machinesSection', () => {
     expect(payload.secrets).toMatchObject({ password: 'sekrit' })
   })
 
-  it('removes a draft and removes the machine on save', async () => {
+  it('removes a draft through the confirmation modal and removes the machine on save', async () => {
     const { fetchFn } = mount({
       envelope: {
         ok: true,
@@ -95,20 +109,28 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
     const betaCard = screen.getByTestId('machine-b')
     fireEvent.click(withinButton(betaCard, 'Remove'))
+    // The modal states what is about to be removed; cancel first keeps the row.
+    await waitFor(() => expect(screen.getByText(/This removes the "beta" machine profile/)).toBeTruthy())
+    fireEvent.click(screen.getByText('Cancel'))
+    expect(screen.getByTestId('machine-b')).toBeTruthy()
+    fireEvent.click(withinButton(betaCard, 'Remove'))
+    await waitFor(() => expect(screen.getByText('Remove it')).toBeTruthy())
+    fireEvent.click(screen.getByText('Remove it'))
+    await waitFor(() => expect(screen.queryByTestId('machine-b')).toBeNull())
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect(removeCalls(fetchFn)).toHaveLength(1))
     expect(removeCalls(fetchFn)[0]).toEqual({ method: 'machine.remove', payload: { machineId: 'b' } })
   })
 
-  it('tests, connects, opens, and disconnects a machine', async () => {
+  it('tests, connects, opens through the desktop bridge, and disconnects a machine', async () => {
+    const openWindow = vi.fn(async () => undefined)
     const fetchFn = fakeFetch({ ok: true, value: { items: [] } })
     const store = new MachinesStore(fetchFn)
     store.store.update((state) => {
       state.status = 'ready'
       state.machines = [machineA]
     })
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
-    render(<MachinesSection store={store} t={t} />)
+    render(<MachinesSection store={store} t={t} bridge={desktopBridge(openWindow)} />)
     await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
 
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: true, banner: 'Linux alpha' } }) } as unknown as Response)
@@ -119,11 +141,34 @@ describe('machinesSection', () => {
     fireEvent.click(withinButton(screen.getByTestId('machine-a'), 'Connect'))
     await waitFor(() => expect(withinButton(screen.getByTestId('machine-a'), 'Open')).toBeTruthy())
     fireEvent.click(withinButton(screen.getByTestId('machine-a'), 'Open'))
-    expect(openSpy).toHaveBeenCalledWith('http://127.0.0.1:49152', '_blank', OPEN_WINDOW_FEATURES)
+    await waitFor(() => expect(openWindow).toHaveBeenCalledWith('a', 'http://127.0.0.1:49152'))
+    expect(screen.queryByTestId('bridge-error-a')).toBeNull()
 
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: {} }) } as unknown as Response)
     fireEvent.click(withinButton(screen.getByTestId('machine-a'), 'Disconnect'))
     await waitFor(() => expect(withinButton(screen.getByTestId('machine-a'), 'Connect')).toBeTruthy())
+  })
+
+  it('hides the open button entirely in the pure-web environment', async () => {
+    const openWindow = vi.fn(async () => undefined)
+    mount({
+      bridge: unreachableBridge,
+      envelope: { ok: true, value: { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:49152' }] } },
+    })
+    // The rejected probe settles: pure web never shows the popup affordance.
+    await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Connected'))
+    await waitFor(() => expect(screen.queryByText('Open')).toBeNull())
+    expect(openWindow).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a failed bridge open call as a visible error', async () => {
+    const openWindow = vi.fn(() => Promise.reject(new Error('window refused')))
+    mount({
+      bridge: desktopBridge(openWindow),
+      envelope: { ok: true, value: { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:49152' }] } },
+    })
+    fireEvent.click(await screen.findByText('Open'))
+    await waitFor(() => expect(screen.getByTestId('bridge-error-a').textContent).toContain('window refused'))
   })
 
   it('renders the connecting state with the connect action disabled', async () => {
@@ -131,6 +176,24 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
     expect(screen.getByTestId('status-a').textContent).toContain('Connecting')
     expect(withinButton(screen.getByTestId('machine-a'), 'Connect').hasAttribute('disabled')).toBe(true)
+  })
+
+  it('renders the testing and reconnecting states with the retry hint', async () => {
+    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'testing' }] } } })
+    await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Testing'))
+
+    cleanup()
+    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'reconnecting', nextRetryHint: 'in 8s' }] } } })
+    await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Reconnecting'))
+    expect(screen.getByTestId('status-a').textContent).toContain('next retry: in 8s')
+    expect(withinButton(screen.getByTestId('machine-a'), 'Connect').hasAttribute('disabled')).toBe(true)
+  })
+
+  it('renders the given-up state and lets the operator retry the connect', async () => {
+    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'given-up', lastError: 'auth failed after 10 tries' }] } } })
+    await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Given up'))
+    expect(screen.getByText('auth failed after 10 tries')).toBeTruthy()
+    expect(withinButton(screen.getByTestId('machine-a'), 'Connect').hasAttribute('disabled')).toBe(false)
   })
 
   it('edits every config field and falls back on malformed numbers', async () => {
@@ -151,12 +214,26 @@ describe('machinesSection', () => {
     expect(payload.secrets).toMatchObject({ passphrase: 'phrase' })
   })
 
+  it('masks the secret inputs and keeps the write-only direction', async () => {
+    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } } })
+    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    const password = screen.getByLabelText('Password (optional)')
+    const passphrase = screen.getByLabelText('Key passphrase (optional)')
+    expect(password.getAttribute('type')).toBe('password')
+    expect(passphrase.getAttribute('type')).toBe('password')
+    // Presence flags only: the placeholders report set/unset, never values.
+    expect(password.getAttribute('placeholder')).toBe('set')
+    expect(passphrase.getAttribute('placeholder')).toBe('not set')
+  })
+
   it('opens nothing when a connected machine has no tunnel url', async () => {
-    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'connected' }] } } })
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
-    await waitFor(() => expect(withinButton(screen.getByTestId('machine-a'), 'Open')).toBeTruthy())
-    fireEvent.click(withinButton(screen.getByTestId('machine-a'), 'Open'))
-    expect(openSpy).not.toHaveBeenCalled()
+    const openWindow = vi.fn(async () => undefined)
+    mount({
+      bridge: desktopBridge(openWindow),
+      envelope: { ok: true, value: { items: [{ ...machineA, state: 'connected' }] } },
+    })
+    fireEvent.click(await screen.findByText('Open'))
+    expect(openWindow).not.toHaveBeenCalled()
   })
 
   it('persists the identity color and the border tint switch', async () => {
@@ -207,6 +284,44 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Starting the remote instance'))
   })
 
+  it('streams the install log through the unified log surface', async () => {
+    const { store } = mount({
+      envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } },
+    })
+    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    act(() => {
+      store.store.update((state) => {
+        state.busy.a = 'install'
+        state.statuses.a = {
+          state: 'disconnected',
+          dshMissing: true,
+          progress: { phase: 'installing', log: '==> Checking dependencies\ngit ... ok' },
+        }
+      })
+    })
+    expect(screen.getAllByText(/Installing dsh/).length).toBeGreaterThan(0)
+    const log = screen.getByTestId('machine-log-a')
+    expect(log.textContent).toContain('==> Checking dependencies')
+    expect(log.textContent).toContain('git ... ok')
+  })
+
+  it('prefers the machine.events lines over the progress log', async () => {
+    const { store } = mount({
+      envelope: { ok: true, value: { items: [{ ...machineA, state: 'connecting' }] } },
+    })
+    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    act(() => {
+      store.store.update((state) => {
+        state.logs.a = ['[bootstrap] cloning dsh source', '[bootstrap] pnpm install']
+        state.statuses.a = { state: 'connecting', progress: { phase: 'starting', log: 'old progress text' } }
+      })
+    })
+    const log = screen.getByTestId('machine-log-a')
+    expect(log.textContent).toContain('[bootstrap] cloning dsh source')
+    expect(log.textContent).toContain('[bootstrap] pnpm install')
+    expect(log.textContent).not.toContain('old progress text')
+  })
+
   it('polls the host while an operation is in flight and stops when idle', async () => {
     vi.useFakeTimers()
     try {
@@ -220,14 +335,15 @@ describe('machinesSection', () => {
       render(<MachinesSection store={store} t={t} />)
       const before = fetchFn.mock.calls.length
       await act(async () => vi.advanceTimersByTime(1600))
-      expect(fetchFn.mock.calls.length).toBe(before + 1)
+      // One poll = machine.list + machine.events (the S2 channel ride-along).
+      expect(fetchFn.mock.calls.length).toBe(before + 2)
       // Idle machines stop the polling loop.
       store.store.update((state) => {
         state.statuses = { a: { state: 'disconnected' } }
         state.busy = {}
       })
       await act(async () => vi.advanceTimersByTime(3200))
-      expect(fetchFn.mock.calls.length).toBe(before + 1)
+      expect(fetchFn.mock.calls.length).toBe(before + 2)
     }
     finally {
       vi.useRealTimers()
@@ -245,6 +361,14 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByText(/Error: boom/)).toBeTruthy())
   })
 
+  it('renders the load-failure state with a retry affordance instead of a blank page', async () => {
+    const fetchFn = vi.fn<FetchFn>(async () => ({ json: async () => ({ ok: false, error: { code: 'internal', message: 'route down' } }) }) as unknown as Response)
+    const store = new MachinesStore(fetchFn)
+    render(<MachinesSection store={store} t={t} />)
+    await waitFor(() => expect(screen.getByText('The panel failed to load.')).toBeTruthy())
+    expect(screen.getAllByText('Refresh').length).toBeGreaterThan(0)
+  })
+
   it('renders discovered config aliases as read-only cards with working actions', async () => {
     const fetchFn = fakeFetch({
       ok: true,
@@ -258,7 +382,7 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByText('dev')).toBeTruthy())
     expect(screen.getByText('Hosts from ~/.ssh/config')).toBeTruthy()
     const card = screen.getByTestId('machine-dev')
-    // Read-only: no editable fields, no Remove button.
+    // Read-only: no editable fields, no Remove button, no secrets.
     expect(within(card).queryByLabelText('ID')).toBeNull()
     expect(within(card).queryByText('Remove')).toBeNull()
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: true, banner: 'Linux dev' } }) } as unknown as Response)
@@ -266,7 +390,8 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByTestId('notice').textContent).toContain('Linux dev'))
   })
 
-  it('connects and opens a discovered config alias', async () => {
+  it('connects and opens a discovered config alias through the bridge', async () => {
+    const openWindow = vi.fn(async () => undefined)
     const fetchFn = fakeFetch({
       ok: true,
       value: {
@@ -275,25 +400,28 @@ describe('machinesSection', () => {
       },
     })
     const store = new MachinesStore(fetchFn)
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
-    render(<MachinesSection store={store} t={t} />)
+    render(<MachinesSection store={store} t={t} bridge={desktopBridge(openWindow)} />)
     await waitFor(() => expect(screen.getByText('dev')).toBeTruthy())
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { tunnelBaseUrl: 'http://127.0.0.1:49152' } }) } as unknown as Response)
     fireEvent.click(withinButton(screen.getByTestId('machine-dev'), 'Connect'))
     await waitFor(() => expect(withinButton(screen.getByTestId('machine-dev'), 'Open')).toBeTruthy())
     fireEvent.click(withinButton(screen.getByTestId('machine-dev'), 'Open'))
-    expect(openSpy).toHaveBeenCalledWith('http://127.0.0.1:49152', '_blank', OPEN_WINDOW_FEATURES)
+    await waitFor(() => expect(openWindow).toHaveBeenCalledWith('dev', 'http://127.0.0.1:49152'))
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: {} }) } as unknown as Response)
     fireEvent.click(withinButton(screen.getByTestId('machine-dev'), 'Disconnect'))
     await waitFor(() => expect(withinButton(screen.getByTestId('machine-dev'), 'Connect')).toBeTruthy())
   })
 
   it('opens nothing for a discovered card without a tunnel url', async () => {
-    mount({ envelope: { ok: true, value: { discovered: [{ ...machineA, id: 'dev', name: 'dev', host: 'dev', user: '', hasPassword: false, state: 'connected' }] } } })
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
-    await waitFor(() => expect(withinButton(screen.getByTestId('machine-dev'), 'Open')).toBeTruthy())
-    fireEvent.click(withinButton(screen.getByTestId('machine-dev'), 'Open'))
-    expect(openSpy).not.toHaveBeenCalled()
+    const openWindow = vi.fn(async () => undefined)
+    const fetchFn = fakeFetch({
+      ok: true,
+      value: { items: [], discovered: [{ ...machineA, id: 'dev', name: 'dev', host: 'dev', user: '', hasPassword: false, state: 'connected' }] },
+    })
+    const store = new MachinesStore(fetchFn)
+    render(<MachinesSection store={store} t={t} bridge={desktopBridge(openWindow)} />)
+    fireEvent.click(await screen.findByText('Open'))
+    expect(openWindow).not.toHaveBeenCalled()
   })
 
   it('disables connect while a discovered alias is connecting', async () => {
@@ -336,27 +464,6 @@ describe('machinesSection', () => {
       expect(fetchFn.mock.calls.some(([_url, init]) =>
         String(init.body).includes('machine.install'))).toBe(true)
     })
-  })
-
-  it('shows the installing phase with the live streaming log', async () => {
-    const { store } = mount({
-      envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } },
-    })
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
-    act(() => {
-      store.store.update((state) => {
-        state.busy.a = 'install'
-        state.statuses.a = {
-          state: 'disconnected',
-          dshMissing: true,
-          progress: { phase: 'installing', log: '==> Checking dependencies\ngit ... ok' },
-        }
-      })
-    })
-    expect(screen.getAllByText(/Installing dsh/).length).toBeGreaterThan(0)
-    const log = screen.getByTestId('install-log')
-    expect(log.textContent).toContain('==> Checking dependencies')
-    expect(log.textContent).toContain('git ... ok')
   })
 
   it('shows the install outcome note under the card', async () => {
