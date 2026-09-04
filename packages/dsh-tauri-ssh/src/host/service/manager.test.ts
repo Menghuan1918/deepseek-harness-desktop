@@ -1,4 +1,4 @@
-import type { MachineProfile } from '../types/index.js'
+import type { MachineProfile, SshMachineEvent } from '../types/index.js'
 import type { RemoteInstallPlan } from './bootstrap.js'
 import type { SshExecOptions, SshExecResult, SshSession, SshTransport, SshTunnelHandle } from './transport.js'
 import { Buffer } from 'node:buffer'
@@ -227,6 +227,7 @@ function boot(overrides: Partial<{
   rejectKeys: boolean
   readEnvCredentials: () => { apiKey?: string, baseUrl?: string }
   config: typeof config
+  planInstall: () => Promise<RemoteInstallPlan>
 }> = {}) {
   const transport = new FakeTransport(overrides.sessionFactory ?? (() => new FakeSession(() => true)))
   transport.rejectKeys = overrides.rejectKeys ?? false
@@ -238,7 +239,7 @@ function boot(overrides: Partial<{
     knownHosts: tempKnownHosts(),
     config: overrides.config ?? config,
     events,
-    planInstall: () => Promise.resolve(plan),
+    planInstall: overrides.planInstall ?? (() => Promise.resolve(plan)),
     ...overrides.readEnvCredentials === undefined ? {} : { readEnvCredentials: overrides.readEnvCredentials },
     emitStatus: (id, status) => {
       emits.push({ id, state: status.state, ...status.progress === undefined ? {} : { progress: status.progress } })
@@ -246,6 +247,11 @@ function boot(overrides: Partial<{
   })
   manager.refreshProfiles(new Map([[profile.id, profile], [secondProfile.id, secondProfile]]))
   return { manager, transport, emits, events }
+}
+
+/** The terminal (settling) events one machine's channel recorded. */
+function terminalsOf(events: SshMachineEvents): SshMachineEvent[] {
+  return events.since(MachineId('m1')).events.filter(event => event.terminal !== undefined)
 }
 
 describe('sshManager', () => {
@@ -384,6 +390,27 @@ describe('sshManager', () => {
     await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
   })
 
+  it('settles the bootstrap stream when a transport exception bypasses the bootstrap failure path', async () => {
+    const session = new FakeSession(() => false)
+    session.exec = () => Promise.reject(new Error('channel reset during probe'))
+    const { manager, events } = boot({ sessionFactory: () => session })
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
+    const terminals = terminalsOf(events)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]).toMatchObject({ stage: 'failed', terminal: 'failed', line: 'bootstrap 失败' })
+    expect(terminals[0]?.reason).toContain('channel reset')
+  })
+
+  it('never double-settles a bootstrap failure the bootstrap itself already recorded', async () => {
+    const { manager, events } = boot({ sessionFactory: () => new FakeSession(() => false) })
+    // The never-ready path settles through its own terminal event; the
+    // manager's catch must not append a second one.
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
+    const terminals = terminalsOf(events)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]?.reason).toContain('did not become ready')
+  })
+
   it('rejects unknown machine ids with machine-not-found', async () => {
     const { manager, transport } = boot()
     await expect(manager.connect(MachineId('ghost'))).rejects.toMatchObject({ code: 'machine-not-found' })
@@ -441,13 +468,18 @@ describe('sshManager', () => {
       markProbeStarted?.()
       return gate.then(() => ({ code: 0, stdout: '200', stderr: '' }))
     }
-    const { manager } = boot({ sessionFactory: () => session })
+    const { manager, events } = boot({ sessionFactory: () => session })
     const pending = manager.connect(MachineId('m1'))
     await probeStarted
     await manager.disconnect(MachineId('m1'))
     releaseProbe!()
     await expect(pending).rejects.toMatchObject({ code: 'machine-connect-failed', message: /cancelled by disconnect/ })
     expect(manager.status(MachineId('m1')).state).toBe('disconnected')
+    // The bootstrap itself had settled ready (its own success terminal);
+    // the cancelled connect adds no failure terminal afterwards.
+    const terminals = terminalsOf(events)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]).toMatchObject({ stage: 'ready', terminal: 'success' })
   })
 
   it('cancels an in-flight connect that disconnects during tunnel opening', async () => {
@@ -806,15 +838,25 @@ describe('sshManager install', () => {
     session.exec = (command, options) => command.includes('trap cleanup EXIT')
       ? Promise.resolve({ code: 1, stdout: '', stderr: 'pnpm: not found' })
       : original(command, options)
-    const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
-    await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({
-      code: 'machine-install-failed',
-      message: /pnpm: not found/,
-    })
+    const { manager, events } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
+    // Capture the rejection: toMatchObject silently ignores message regexes,
+    // so the message is asserted on the caught error directly.
+    const failure = await manager.install(MachineId('m1')).then(
+      () => { throw new Error('expected a rejection') },
+      error => error as SshError,
+    )
+    expect(failure.code).toBe('machine-install-failed')
+    // No streaming tap answered, so the failure keeps the exit stderr.
+    expect(failure.message).toMatch(/install failed on remote \(exit 1\): pnpm: not found/)
     const status = manager.status(MachineId('m1'))
     expect(status.state).toBe('disconnected')
     expect(status.progress).toBeUndefined()
     expect(session.closed).toBe(true)
+    // The script's own failure settles the stream exactly once.
+    const terminals = terminalsOf(events)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]).toMatchObject({ stage: 'failed', terminal: 'failed', line: 'install 失败' })
+    expect(terminals[0]?.reason).toContain('pnpm: not found')
   })
 
   it('carries the installer output tail in a failed-install error', async () => {
@@ -832,11 +874,84 @@ describe('sshManager install', () => {
       }
       return original(command, options)
     }
+    const { manager, events } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
+    const failure = await manager.install(MachineId('m1')).then(
+      () => { throw new Error('expected a rejection') },
+      error => error as SshError,
+    )
+    expect(failure.code).toBe('machine-install-failed')
+    // The streamed log wins over the collected stdout/stderr.
+    expect(failure.message).toMatch(/install failed on remote \(exit 11\): ==> downloading node \| fatal: checksum mismatch/)
+    expect(terminalsOf(events)).toHaveLength(1)
+  })
+
+  it('keeps the collected stdout tail when the transport has no streaming tap', async () => {
+    const session = new FakeSession(() => false)
+    session.missingResult = 'node\n'
+    const original = session.exec.bind(session)
+    session.exec = (command, _options) => command.includes('trap cleanup EXIT')
+      // A tap-less transport: markers only in the collected stdout.
+      ? Promise.resolve({ code: 10, stdout: '::dsh failed 所有下载源均失败: node.tar.gz', stderr: '' })
+      : original(command, undefined)
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
-    await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({
-      code: 'machine-install-failed',
-      message: /installer output tail: ==> downloading node \| fatal: checksum mismatch/,
+    const failure = await manager.install(MachineId('m1')).then(
+      () => { throw new Error('expected a rejection') },
+      error => error as SshError,
+    )
+    expect(failure.message).toMatch(/install failed on remote \(exit 10\): .*所有下载源均失败/)
+  })
+
+  it('settles the install stream when the platform probe fails', async () => {
+    const session = new FakeSession(() => false)
+    const original = session.exec.bind(session)
+    session.exec = (command, options) => command === 'uname -srm'
+      ? Promise.resolve({ code: 1, stdout: '', stderr: 'denied' })
+      : original(command, options)
+    const { manager, events } = boot({ sessionFactory: () => session })
+    const failure = await manager.install(MachineId('m1')).then(
+      () => { throw new Error('expected a rejection') },
+      error => error as SshError,
+    )
+    expect(failure.code).toBe('machine-install-failed')
+    expect(failure.message).toContain('cannot probe remote platform')
+    const terminals = terminalsOf(events)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]).toMatchObject({ stage: 'failed', terminal: 'failed' })
+    expect(terminals[0]?.reason).toContain('cannot probe remote platform')
+  })
+
+  it('settles the install stream when the planner rejects the platform', async () => {
+    const session = new FakeSession(() => false)
+    const { manager, events } = boot({
+      sessionFactory: () => session,
+      planInstall: () => Promise.reject(new Error('REMOTE_PLATFORM_UNSUPPORTED: mingw/x64 outside the asset matrix')),
     })
+    await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-install-failed' })
+    const terminals = terminalsOf(events)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]?.reason).toContain('REMOTE_PLATFORM_UNSUPPORTED')
+  })
+
+  it('settles the install stream when the install exec rejects (transport timeout)', async () => {
+    const session = new FakeSession(() => false)
+    session.missingResult = 'node\n'
+    const original = session.exec.bind(session)
+    session.exec = (command, options) => command.includes('trap cleanup EXIT')
+      ? Promise.reject(new Error('install exec timed out after 60000ms'))
+      : original(command, options)
+    const { manager, events } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
+    const failure = await manager.install(MachineId('m1')).then(
+      () => { throw new Error('expected a rejection') },
+      error => error as SshError,
+    )
+    expect(failure.code).toBe('machine-install-failed')
+    expect(failure.message).toContain('timed out')
+    // The timeout bypasses the script's own settling path — the catch must
+    // close the stream so S4 sees the install as failed, not still running.
+    const terminals = terminalsOf(events)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]).toMatchObject({ stage: 'failed', terminal: 'failed', line: 'install 失败' })
+    expect(terminals[0]?.reason).toContain('timed out')
   })
 
   it('fails loud with machine-connect-failed when the install connection fails', async () => {
@@ -922,7 +1037,7 @@ describe('sshManager install', () => {
     const session = new FakeSession(() => false, undefined, undefined, new Error('pnpm: not found'))
     session.missingResult = 'node\n'
     session.execGate = command => command.includes('trap cleanup EXIT') ? installGate : undefined
-    const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
+    const { manager, events } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const pending = manager.install(MachineId('m1'))
     await new Promise<void>((resolve) => {
       const timer = setInterval(() => {
@@ -934,9 +1049,17 @@ describe('sshManager install', () => {
     })
     await manager.disconnect(MachineId('m1'))
     releaseInstall!()
-    await expect(pending).rejects.toMatchObject({ code: 'machine-install-failed', message: /dsh install failed/ })
+    const failure = await pending.then(
+      () => { throw new Error('expected a rejection') },
+      error => error as SshError,
+    )
+    expect(failure.code).toBe('machine-install-failed')
+    expect(failure.message).toMatch(/install failed on remote/)
     expect(manager.status(MachineId('m1')).lastError).toBeUndefined()
     expect(manager.status(MachineId('m1')).progress).toBeUndefined()
+    // The script's own settling event fired inside the shared executor
+    // before the supersede was noticed; the catch must not add a second.
+    expect(terminalsOf(events)).toHaveLength(1)
   })
 
   it('fails loud when the install finished but the entry is not present', async () => {
@@ -951,11 +1074,16 @@ describe('sshManager install', () => {
         return Promise.resolve({ code: 1, stdout: '', stderr: '' })
       return Promise.resolve({ code: 0, stdout: '', stderr: '' })
     }
-    const { manager } = boot({ sessionFactory: () => session })
+    const { manager, events } = boot({ sessionFactory: () => session })
     await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({
       code: 'machine-dsh-missing',
       message: /entry .* is not present/,
     })
+    // The exception path (SshError, not a script exit) settles the stream too.
+    const terminals = terminalsOf(events)
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]).toMatchObject({ stage: 'failed', terminal: 'failed' })
+    expect(terminals[0]?.reason).toContain('is not present')
   })
 
   it('clears dshMissing after a successful install and reconnects', async () => {
@@ -991,7 +1119,7 @@ describe('sshManager install', () => {
     const session = new FakeSession(() => false)
     session.missingResult = 'node\n'
     session.execGate = command => command.includes('trap cleanup EXIT') ? installGate : undefined
-    const { manager, transport } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
+    const { manager, transport, events } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const pending = manager.install(MachineId('m1'))
     const installIndex = await new Promise<number>((resolve) => {
       const timer = setInterval(() => {
@@ -1011,6 +1139,9 @@ describe('sshManager install', () => {
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(transport.connectCalls).toBe(1)
     expect(manager.status(MachineId('m1')).progress).toBeUndefined()
+    // Cancellation by an explicit disconnect is the documented no-terminal
+    // case: the superseded attempt never publishes, not even a settle.
+    expect(terminalsOf(events)).toHaveLength(0)
   })
 
   it('returns the install result without connecting once a disconnect superseded the finish', async () => {

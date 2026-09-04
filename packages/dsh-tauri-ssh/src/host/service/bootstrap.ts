@@ -559,20 +559,26 @@ export function readEnvCredentials(path: string): EnvCredentials {
 }
 
 /**
- * Write credentials into the remote `~/.dsh/.env` without clobbering an
- * existing key: print `copied` when the write happened, `existing` when the
- * remote already carries a key (kept untouched).
+ * Write credentials into the remote `~/.dsh/.env`: print `copied` when the
+ * write happened, `existing` when the remote already carries a key (kept
+ * untouched). The write merges instead of replacing — only the keys being
+ * written are filtered out of an existing document, so remote-set variables
+ * (including a remote `DEEPSEEK_BASE_URL` when the local env carries none)
+ * survive — and it lands through a temp file + `mv`, so a failed write can
+ * never truncate the existing document.
  * @param credentials - the credentials to write (apiKey required).
  * @returns the shell command line.
  */
 export function credentialsCopyCommand(credentials: EnvCredentials & { apiKey: string }): string {
-  const lines = [`printf 'DEEPSEEK_API_KEY=%s\\n' ${shQuote(credentials.apiKey)}`]
-  if (credentials.baseUrl !== undefined) {
-    lines.push(`printf 'DEEPSEEK_BASE_URL=%s\\n' ${shQuote(credentials.baseUrl)}`)
-  }
+  // Only the keys this write owns are filtered from the existing document.
+  const managed = ['DEEPSEEK_API_KEY', ...(credentials.baseUrl === undefined ? [] : ['DEEPSEEK_BASE_URL'])]
+  const writes = [`printf 'DEEPSEEK_API_KEY=%s\\n' ${shQuote(credentials.apiKey)}`]
+  if (credentials.baseUrl !== undefined)
+    writes.push(`printf 'DEEPSEEK_BASE_URL=%s\\n' ${shQuote(credentials.baseUrl)}`)
+  const filter = managed.map(key => `^${key}=`).join('|')
   return [
     `mkdir -p "$HOME/.dsh"`,
-    `if grep -q '^DEEPSEEK_API_KEY=' "$HOME/.dsh/.env" 2>/dev/null; then echo existing; else umask 077 && { ${lines.join('; ')}; } > "$HOME/.dsh/.env" && echo copied; fi`,
+    `if grep -q '^DEEPSEEK_API_KEY=' "$HOME/.dsh/.env" 2>/dev/null; then echo existing; else umask 077 && { grep -v -E '${filter}' "$HOME/.dsh/.env" 2>/dev/null || true; ${writes.join('; ')}; } > "$HOME/.dsh/.env.new" && mv -f "$HOME/.dsh/.env.new" "$HOME/.dsh/.env" && echo copied; fi`,
   ].join(' && ')
 }
 
@@ -597,27 +603,63 @@ export function firstLineOf(stdout: string): string {
   return ''
 }
 
+/** Marker the readiness probes report when the remote has neither curl nor wget. */
+export const REMOTE_PROBE_NO_DOWNLOADER = 'REMOTE_PROBE_NO_DOWNLOADER'
+
+/**
+ * Wrap one probe's fetch arms with the downloader selection the install
+ * script's `fetch()` uses: curl when present, wget next, and a loud
+ * `REMOTE_PROBE_NO_DOWNLOADER` marker (exit 1) when neither exists — a
+ * wget-only remote must not install fine and then fail readiness forever.
+ * `command -v` runs inside a command substitution so the probes never
+ * contain a `/dev/null` redirect (the legacy verdict probe is told apart
+ * by exactly that token).
+ * @param curlArm - the curl invocation.
+ * @param wgetArm - the wget invocation.
+ */
+function withDownloaderFallback(curlArm: string, wgetArm: string): string {
+  return [
+    `if [ -n "$(command -v curl)" ]; then ${curlArm}`,
+    `elif [ -n "$(command -v wget)" ]; then ${wgetArm}`,
+    `else echo "${REMOTE_PROBE_NO_DOWNLOADER}: 远端缺少 curl 与 wget，无法探测就绪状态" >&2; exit 1; fi`,
+  ].join('; ')
+}
+
 /**
  * The root-page probe: fetch the instance's boot HTML. Any HTTP response
- * (including 404) exits 0 — the body decides; a refused connection exits
- * nonzero.
+ * (including 401/404) exits 0 — the body decides; a connection-level
+ * failure exits nonzero. The wget arm normalizes GNU wget's exit codes to
+ * curl's any-response-answers semantics: 6 is an authentication challenge
+ * (the auth fence's 401), 8 a server error status — both are answers
+ * (verified live: GNU Wget 1.21.2 gives 6 on 401, 8 on 404, 4 on refused).
+ * busybox wget collapses every failure to 1 and lands on the not-ready
+ * side of that split.
  * @param remotePort - the instance's loopback port.
- * @param timeoutMs - per-probe curl deadline.
+ * @param timeoutMs - per-probe downloader deadline.
  */
 export function rootProbeCommand(remotePort: number, timeoutMs: number): string {
   const seconds = Math.max(1, Math.ceil(timeoutMs / 1000))
-  return `curl -s -m ${seconds} http://127.0.0.1:${remotePort}/`
+  return withDownloaderFallback(
+    `curl -s -m ${seconds} http://127.0.0.1:${remotePort}/`,
+    `wget -q -T ${seconds} -O - http://127.0.0.1:${remotePort}/; case $? in 0|6|8) ;; *) exit 1 ;; esac`,
+  )
 }
 
 /**
  * The client-bundle probe: fetch one boot-manifest URL, printing the body
- * followed by the numeric status code on its last line.
+ * followed by the numeric status code on its last line. wget cannot append
+ * a status line, so its arm synthesizes one: a completed fetch (exit 0) IS
+ * a 2xx answer; anything else — connection failure or a server error
+ * status (exit 8) — reports status 0, which never passes readiness.
  * @param url - the absolute loopback URL to fetch.
- * @param timeoutMs - per-probe curl deadline.
+ * @param timeoutMs - per-probe downloader deadline.
  */
 export function bundleProbeCommand(url: string, timeoutMs: number): string {
   const seconds = Math.max(1, Math.ceil(timeoutMs / 1000))
-  return `curl -s -m ${seconds} -w '\\n%{http_code}' ${shQuote(url)}`
+  return withDownloaderFallback(
+    `curl -s -m ${seconds} -w '\\n%{http_code}' ${shQuote(url)}`,
+    `wget -q -T ${seconds} -O - ${shQuote(url)} && printf '\\n200\\n' || printf '\\n0\\n'`,
+  )
 }
 
 /**
@@ -720,7 +762,7 @@ export async function ensureRemoteInstance(
   let skips: string[] = []
   if (missing.length > 0) {
     onEvent?.('probe', `缺失组件: ${missing.join(', ')}`)
-    skips = await runInstallScript(session, plan, bootstrap, hooks)
+    skips = await runInstallScript(session, plan, bootstrap.config.installTimeoutMs, hooks)
   }
   else {
     onEvent?.('probe', '三件套已就绪，跳过安装')
@@ -780,9 +822,31 @@ async function judgeReadiness(session: SshSession, profile: MachineProfile, boot
   return undefined
 }
 
+/**
+ * The legacy any-response probe command: the status code on stdout, exit
+ * nonzero only when nothing answered. curl prints the real code; the wget
+ * arm normalizes GNU wget's exit codes — 0 is a 2xx answer, 6/8 are server
+ * answers (auth challenge / error status, code unknown → `4xx/5xx`), and
+ * the rest are connection-level failures. The no-downloader marker rides
+ * stdout so the failure message says why instead of a misleading "no
+ * answer".
+ * @param remotePort - the instance's loopback port.
+ * @param timeoutMs - per-probe downloader deadline.
+ */
+export function legacyProbeCommand(remotePort: number, timeoutMs: number): string {
+  const seconds = Math.max(1, Math.ceil(timeoutMs / 1000))
+  return [
+    `if [ -n "$(command -v curl)" ]; then curl -s -o /dev/null -m ${seconds} -w '%{http_code}' http://127.0.0.1:${remotePort}/`,
+    `elif [ -n "$(command -v wget)" ]; then wget -q -T ${seconds} -O /dev/null http://127.0.0.1:${remotePort}/; case $? in 0) echo 200 ;; 6|8) echo 4xx/5xx ;; *) exit 1 ;; esac`,
+    `else echo ${REMOTE_PROBE_NO_DOWNLOADER}; fi`,
+  ].join('; ')
+}
+
 /** The legacy any-response verdict, with the observed status code attached. */
 async function legacyRootVerdict(session: SshSession, profile: MachineProfile, bootstrap: BootstrapConfig): Promise<string> {
-  const probe = await session.exec(`curl -s -o /dev/null -m ${Math.max(1, Math.ceil(bootstrap.healthCheckTimeoutMs / 1000))} -w '%{http_code}' http://127.0.0.1:${profile.remotePort}/`)
+  const probe = await session.exec(legacyProbeCommand(profile.remotePort, bootstrap.healthCheckTimeoutMs))
+  if (probe.stdout.includes(REMOTE_PROBE_NO_DOWNLOADER))
+    return `no downloader (${REMOTE_PROBE_NO_DOWNLOADER}: 远端缺少 curl 与 wget，无法探测就绪状态)`
   return probe.code === 0 ? `root answered ${probe.stdout.trim() || '?'}` : 'no answer'
 }
 
@@ -790,10 +854,25 @@ async function legacyRootVerdict(session: SshSession, profile: MachineProfile, b
  * Run the generated install script, streaming its stage-tagged output
  * line-buffered (SSH chunks may split mid-line). Returns the verify-stage
  * lines that recorded a skipped check, for the settling event's summary.
+ * The single install executor for both the connect-time bootstrap and the
+ * manager's install operation — the caller injects its event adapter
+ * through {@link BootstrapHooks.onEvent}, so the two flows can never drift.
+ * @param session - the authenticated session.
+ * @param plan - the resolved install plan.
+ * @param installTimeoutMs - the install exec deadline, when configured.
+ * @param hooks - progress and event reporting.
+ * @param failureLine - the settling failure event's display line.
+ * @returns the verify-stage lines that recorded a skipped check.
+ * @throws {Error} with the output tail when the script exits nonzero.
  */
-async function runInstallScript(session: SshSession, plan: RemoteInstallPlan, bootstrap: BootstrapConfig, hooks: BootstrapHooks): Promise<string[]> {
+export async function runInstallScript(
+  session: SshSession,
+  plan: RemoteInstallPlan,
+  installTimeoutMs: number | undefined,
+  hooks: BootstrapHooks,
+  failureLine = 'bootstrap 失败',
+): Promise<string[]> {
   const { onEvent, onProgress } = hooks
-  const installTimeoutMs = bootstrap.config.installTimeoutMs
   let log = ''
   const skips: string[] = []
   const dispatch = createBootstrapLineDispatcher((line) => {
@@ -813,10 +892,13 @@ async function runInstallScript(session: SshSession, plan: RemoteInstallPlan, bo
   dispatch.flush()
   if (result.code !== 0) {
     // Prefer the streamed log (the transport taps stdout live); transports
-    // without the tap still surface the markers through the collected stdout.
-    const stream = log.trim() === '' ? result.stdout.trim() : log.trim()
+    // without the tap still surface the markers through the collected
+    // stdout, and a totally silent failure keeps its exit stderr.
+    const streamed = log.trim()
+    const collected = streamed !== '' ? streamed : result.stdout.trim()
+    const stream = collected !== '' ? collected : result.stderr.trim()
     const tail = stream === '' ? '(no output captured)' : stream.split('\n').slice(-5).join(' | ')
-    failBootstrap(onEvent, `install failed on remote (exit ${result.code ?? '?'}): ${tail}`)
+    failBootstrap(onEvent, `install failed on remote (exit ${result.code ?? '?'}): ${tail}`, failureLine)
   }
   return skips
 }
@@ -837,9 +919,15 @@ function emitReady(
   onEvent?.('ready', `${base}${skipSummary}`, { terminal: 'success' })
 }
 
-/** Record the terminal failure and build the thrown error. */
-function failBootstrap(onEvent: BootstrapHooks['onEvent'], reason: string): never {
-  onEvent?.('failed', 'bootstrap 失败', { terminal: 'failed', reason })
+/**
+ * Record the terminal failure and build the thrown error.
+ * @param onEvent - the event hook receiving the settling event.
+ * @param reason - the operator-facing failure reason.
+ * @param line - the settling event's display line (the install operation
+ * passes its own wording; the default matches the connect-time bootstrap).
+ */
+function failBootstrap(onEvent: BootstrapHooks['onEvent'], reason: string, line = 'bootstrap 失败'): never {
+  onEvent?.('failed', line, { terminal: 'failed', reason })
   throw new Error(reason)
 }
 

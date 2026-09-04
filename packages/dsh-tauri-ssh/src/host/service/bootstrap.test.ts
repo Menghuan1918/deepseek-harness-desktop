@@ -4,7 +4,7 @@ import type { SshExecOptions, SshExecResult, SshSession } from './transport.js'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import { join } from 'pathe'
@@ -19,11 +19,13 @@ import {
   describeExecFailure,
   ensureRemoteInstance,
   firstLineOf,
+  legacyProbeCommand,
   missingComponentsOf,
   normalizeNpmIntegrity,
   parseBootstrapLine,
   planRemoteInstall,
   readEnvCredentials,
+  REMOTE_PROBE_NO_DOWNLOADER,
   REMOTE_ROOT,
   rootProbeCommand,
   skippedVerificationSummary,
@@ -561,10 +563,17 @@ describe('component probe and launch commands', () => {
 })
 
 describe('health probes', () => {
-  it('builds the root probe and the bundle probe', () => {
-    expect(rootProbeCommand(3080, 2500)).toBe('curl -s -m 3 http://127.0.0.1:3080/')
-    expect(bundleProbeCommand('http://127.0.0.1:3080/plugins/x/client.js', 2500))
-      .toBe('curl -s -m 3 -w \'\\n%{http_code}\' \'http://127.0.0.1:3080/plugins/x/client.js\'')
+  it('builds the root probe and the bundle probe with the wget fallback', () => {
+    expect(rootProbeCommand(3080, 2500)).toBe(
+      'if [ -n "$(command -v curl)" ]; then curl -s -m 3 http://127.0.0.1:3080/; '
+      + 'elif [ -n "$(command -v wget)" ]; then wget -q -T 3 -O - http://127.0.0.1:3080/; case $? in 0|6|8) ;; *) exit 1 ;; esac; '
+      + 'else echo "REMOTE_PROBE_NO_DOWNLOADER: 远端缺少 curl 与 wget，无法探测就绪状态" >&2; exit 1; fi',
+    )
+    expect(bundleProbeCommand('http://127.0.0.1:3080/plugins/x/client.js', 2500)).toBe(
+      'if [ -n "$(command -v curl)" ]; then curl -s -m 3 -w \'\\n%{http_code}\' \'http://127.0.0.1:3080/plugins/x/client.js\'; '
+      + 'elif [ -n "$(command -v wget)" ]; then wget -q -T 3 -O - \'http://127.0.0.1:3080/plugins/x/client.js\' && printf \'\\n200\\n\' || printf \'\\n0\\n\'; '
+      + 'else echo "REMOTE_PROBE_NO_DOWNLOADER: 远端缺少 curl 与 wget，无法探测就绪状态" >&2; exit 1; fi',
+    )
   })
 
   it('splits a bundle probe answer into body and status', () => {
@@ -572,6 +581,104 @@ describe('health probes', () => {
     expect(splitBundleProbeStdout('404\n')).toEqual({ body: '', status: 404 })
     expect(splitBundleProbeStdout('<!doctype html>\n200')).toEqual({ body: '<!doctype html>', status: 200 })
     expect(splitBundleProbeStdout('garbage')).toEqual({ body: 'garbage', status: 0 })
+  })
+})
+
+describe('probe execution (real POSIX sh)', () => {
+  /**
+   * Run one generated probe under the real `sh` with a curated tool PATH:
+   * the downloader selection must actually work, not just look right.
+   */
+  function runProbe(command: string, sandbox: string, tools: Record<string, string>): Promise<{ code: number, stdout: string, stderr: string }> {
+    const binDir = join(sandbox, 'bin')
+    mkdirSync(binDir, { recursive: true })
+    for (const [name, body] of Object.entries(tools)) {
+      writeFileSync(join(binDir, name), body)
+      chmodSync(join(binDir, name), 0o755)
+    }
+    const scriptPath = join(sandbox, 'probe.sh')
+    writeFileSync(scriptPath, command)
+    // /bin/sh by absolute path: PATH holds only the sandbox bin dir, so
+    // `command -v` sees exactly the fakes this case installs (the probe
+    // itself needs nothing but shell builtins besides the downloader).
+    const run = promisify(execFile)
+    return run('/bin/sh', [scriptPath], { env: { ...process.env, HOME: sandbox, PATH: binDir } }).then(
+      ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+      (error: { code?: number, stdout?: string, stderr?: string }) =>
+        ({ code: error.code ?? -1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }),
+    )
+  }
+
+  // The fake curl serves a fixed body and honors `-w` (expanded to the
+  // emulated status) like the real one, so the bundle probe parses cleanly.
+  const CURL = [
+    '#!/bin/sh',
+    'printf \'curl-body\'',
+    'prev=""',
+    'for arg in "$@"; do',
+    '  if [ "$prev" = "-w" ]; then printf \'\\n200\\n\'; fi',
+    '  prev="$arg"',
+    'done',
+  ].join('\n')
+  const WGET = '#!/bin/sh\nprintf \'wget-body\'\n'
+  // Real GNU wget semantics (verified live on GNU Wget 1.21.2): a 401 auth
+  // challenge exits 6, a 404/5xx server error exits 8, a connection-level
+  // failure (refused/timeout) exits 4.
+  const WGET_AUTH_CHALLENGE = '#!/bin/sh\nexit 6\n'
+  const WGET_SERVER_ERROR = '#!/bin/sh\nexit 8\n'
+  const WGET_REFUSED = '#!/bin/sh\nexit 4\n'
+
+  it('root probe answers from curl and falls back to wget when curl is absent', async () => {
+    const withCurl = await runProbe(rootProbeCommand(3080, 2500), tempDir(), { curl: CURL, wget: WGET })
+    expect(withCurl).toMatchObject({ code: 0, stdout: 'curl-body' })
+    const withWgetOnly = await runProbe(rootProbeCommand(3080, 2500), tempDir(), { wget: WGET })
+    expect(withWgetOnly).toMatchObject({ code: 0, stdout: 'wget-body' })
+  })
+
+  it('root probe counts wget server answers (401→6, 404→8) as answered, a refused connection as not ready', async () => {
+    // curl exits 0 on any HTTP response; wget answers with 6/8 there. The
+    // probe must normalize, or an auth-fence instance never becomes ready
+    // on wget-only remotes (verified live against a real 401 instance).
+    for (const fake of [WGET_AUTH_CHALLENGE, WGET_SERVER_ERROR]) {
+      const answered = await runProbe(rootProbeCommand(3080, 2500), tempDir(), { wget: fake })
+      expect(answered.code).toBe(0)
+      expect(answered.stdout).toBe('')
+    }
+    const refused = await runProbe(rootProbeCommand(3080, 2500), tempDir(), { wget: WGET_REFUSED })
+    expect(refused.code).not.toBe(0)
+  })
+
+  it('root probe fails loud with the marker when neither downloader exists', async () => {
+    const neither = await runProbe(rootProbeCommand(3080, 2500), tempDir(), {})
+    expect(neither.code).not.toBe(0)
+    expect(neither.stderr).toContain('REMOTE_PROBE_NO_DOWNLOADER')
+  })
+
+  it('bundle probe appends the real status under curl and synthesizes 200/0 under wget', async () => {
+    const url = 'http://127.0.0.1:3080/plugins/x/client.js'
+    const withCurl = await runProbe(bundleProbeCommand(url, 2500), tempDir(), { curl: CURL })
+    expect(withCurl.code).toBe(0)
+    expect(splitBundleProbeStdout(withCurl.stdout)).toEqual({ body: 'curl-body', status: 200 })
+    const withWget = await runProbe(bundleProbeCommand(url, 2500), tempDir(), { wget: WGET })
+    expect(withWget.code).toBe(0)
+    expect(splitBundleProbeStdout(withWget.stdout)).toEqual({ body: 'wget-body', status: 200 })
+    // Server answers (6/8) and connection failures (4) all report status 0
+    // — never a healthy manifest.
+    for (const fake of [WGET_AUTH_CHALLENGE, WGET_SERVER_ERROR, WGET_REFUSED]) {
+      const failing = await runProbe(bundleProbeCommand(url, 2500), tempDir(), { wget: fake })
+      expect(splitBundleProbeStdout(failing.stdout)).toEqual({ body: '', status: 0 })
+    }
+  })
+
+  it('legacy verdict probe: wget 6/8 answer 4xx/5xx, exit 4 is no answer', async () => {
+    for (const fake of [WGET_AUTH_CHALLENGE, WGET_SERVER_ERROR]) {
+      const answered = await runProbe(legacyProbeCommand(3080, 2500), tempDir(), { wget: fake })
+      expect(answered).toMatchObject({ code: 0, stdout: '4xx/5xx\n' })
+    }
+    const refused = await runProbe(legacyProbeCommand(3080, 2500), tempDir(), { wget: WGET_REFUSED })
+    expect(refused.code).not.toBe(0)
+    const healthy = await runProbe(legacyProbeCommand(3080, 2500), tempDir(), { wget: '#!/bin/sh\nexit 0\n' })
+    expect(healthy).toMatchObject({ code: 0, stdout: '200\n' })
   })
 })
 
@@ -605,6 +712,73 @@ describe('credentials', () => {
     expect(command).toContain('echo copied')
     expect(command).toContain('echo existing')
     expect(command).toContain('umask 077')
+    // The write merges: only the keys being written are filtered out of an
+    // existing document, and it lands through the temp file + mv.
+    expect(command).toContain(`grep -v -E '^DEEPSEEK_API_KEY=|^DEEPSEEK_BASE_URL='`)
+    expect(command).toContain('"$HOME/.dsh/.env.new"')
+    expect(command).toContain('mv -f "$HOME/.dsh/.env.new" "$HOME/.dsh/.env"')
+  })
+})
+
+describe('credentials copy execution (real POSIX sh)', () => {
+  /** Run one generated command under the real `sh` inside a sandboxed HOME. */
+  function runCommand(command: string, sandbox: string): Promise<{ code: number, stdout: string, stderr: string }> {
+    const scriptPath = join(sandbox, 'cmd.sh')
+    writeFileSync(scriptPath, command)
+    const run = promisify(execFile)
+    return run('sh', [scriptPath], { env: { ...process.env, HOME: sandbox } }).then(
+      ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+      (error: { code?: number, stdout?: string, stderr?: string }) =>
+        ({ code: error.code ?? -1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }),
+    )
+  }
+
+  it('merges into an existing remote .env, keeping unrelated variables and replacing managed keys', async () => {
+    const sandbox = tempDir()
+    mkdirSync(join(sandbox, '.dsh'), { recursive: true })
+    writeFileSync(join(sandbox, '.dsh', '.env'), 'OTHER_TOOL=1\nDEEPSEEK_BASE_URL=https://remote.example.com\n')
+    const outcome = await runCommand(credentialsCopyCommand({ apiKey: 'sk-new', baseUrl: 'https://local.example.com' }), sandbox)
+    expect(outcome.code).toBe(0)
+    expect(outcome.stdout.trim()).toBe('copied')
+    const env = readFileSync(join(sandbox, '.dsh', '.env'), 'utf8')
+    expect(env).toContain('OTHER_TOOL=1')
+    expect(env).toContain('DEEPSEEK_API_KEY=sk-new')
+    expect(env).toContain('DEEPSEEK_BASE_URL=https://local.example.com')
+    expect(env).not.toContain('remote.example.com')
+    // umask 077 → the merged document stays owner-only; no temp file leaks.
+    expect(statSync(join(sandbox, '.dsh', '.env')).mode & 0o777).toBe(0o600)
+    expect(existsSync(join(sandbox, '.dsh', '.env.new'))).toBe(false)
+  })
+
+  it('keeps a remote-set DEEPSEEK_BASE_URL when the local env carries none', async () => {
+    const sandbox = tempDir()
+    mkdirSync(join(sandbox, '.dsh'), { recursive: true })
+    writeFileSync(join(sandbox, '.dsh', '.env'), 'DEEPSEEK_BASE_URL=https://remote.example.com\nOTHER=2\n')
+    const outcome = await runCommand(credentialsCopyCommand({ apiKey: 'sk-new' }), sandbox)
+    expect(outcome.code).toBe(0)
+    const env = readFileSync(join(sandbox, '.dsh', '.env'), 'utf8')
+    expect(env).toContain('DEEPSEEK_API_KEY=sk-new')
+    expect(env).toContain('DEEPSEEK_BASE_URL=https://remote.example.com')
+    expect(env).toContain('OTHER=2')
+  })
+
+  it('creates the document from nothing when the remote has no .env yet', async () => {
+    const sandbox = tempDir()
+    const outcome = await runCommand(credentialsCopyCommand({ apiKey: 'sk-fresh' }), sandbox)
+    expect(outcome.code).toBe(0)
+    expect(outcome.stdout.trim()).toBe('copied')
+    expect(readFileSync(join(sandbox, '.dsh', '.env'), 'utf8')).toBe('DEEPSEEK_API_KEY=sk-fresh\n')
+  })
+
+  it('reports existing and leaves the document untouched when the remote already has a key', async () => {
+    const sandbox = tempDir()
+    mkdirSync(join(sandbox, '.dsh'), { recursive: true })
+    const before = 'DEEPSEEK_API_KEY=sk-remote\nOTHER=7\n'
+    writeFileSync(join(sandbox, '.dsh', '.env'), before)
+    const outcome = await runCommand(credentialsCopyCommand({ apiKey: 'sk-new' }), sandbox)
+    expect(outcome.code).toBe(0)
+    expect(outcome.stdout.trim()).toBe('existing')
+    expect(readFileSync(join(sandbox, '.dsh', '.env'), 'utf8')).toBe(before)
   })
 })
 
@@ -780,6 +954,37 @@ describe('ensureRemoteInstance', () => {
       },
     }, plannerOf(plan))).rejects.toThrow(/did not become ready.*fallback probe: root no answer.*err2 \| err3 \| err4 \| err5 \| err6/)
     expect(failures[0]?.terminal).toBe('failed')
+  })
+
+  it('says the remote has no downloader instead of a misleading not-ready', async () => {
+    const plan = await planRemoteInstall('Linux 6.8.0-45-generic x86_64', {}, healthyFetchers())
+    const session = new FakeSession((command) => {
+      if (command === 'uname -srm')
+        return { code: 0, stdout: 'Linux 6.8.0-45-generic x86_64\n', stderr: '' }
+      if (command.includes('echo node'))
+        return { code: 0, stdout: '', stderr: '' }
+      if (command.includes('dsh-remote.pid'))
+        return { code: 0, stdout: '远端实例已拉起', stderr: '' }
+      if (command.includes('tail'))
+        return { code: 0, stdout: 'instance log line\n', stderr: '' }
+      if (command.includes('/dev/null'))
+        // The legacy verdict probe: this remote has neither curl nor wget,
+        // so its else-arm prints the marker on stdout.
+        return { code: 0, stdout: REMOTE_PROBE_NO_DOWNLOADER, stderr: '' }
+      // The root/bundle probes fail (their else-arm exits 1) — not ready.
+      return { code: 1, stdout: '', stderr: '' }
+    })
+    const failures: string[] = []
+    await expect(ensureRemoteInstance(session, profile, {
+      ...BOOTSTRAP,
+      healthPollAttempts: 1,
+    }, {
+      onEvent: (_stage, _line, options) => {
+        if (options?.terminal === 'failed')
+          failures.push(options.reason ?? '')
+      },
+    }, plannerOf(plan))).rejects.toThrow(/no downloader/)
+    expect(failures[0]).toContain('REMOTE_PROBE_NO_DOWNLOADER')
   })
 
   it('surfaces REMOTE_NOT_INSTALLED when the launch finds an incomplete runtime', async () => {

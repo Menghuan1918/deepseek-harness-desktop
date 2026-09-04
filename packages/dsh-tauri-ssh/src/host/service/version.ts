@@ -84,8 +84,12 @@ export function parseGitHubRepo(value: string): string | undefined {
 
 /**
  * Parse the DSH semver out of a packaged release tag: `dsh-0.1.2-rc.1-<build>`
- * (the trailing build id is dropped), `dsh-src-0.1.2-alpha.1-<build>`, and
- * bare `dsh-0.1.2-rc.1` all yield the version.
+ * (the trailing build id is dropped) and `dsh-src-0.1.2-alpha.1-<build>`
+ * yield the version with its prerelease segment intact. A bare dsh-prefixed
+ * tag still loses its last dash segment — the build-id convention applied
+ * unconditionally, matching the retired Rust parser — so bare
+ * `dsh-0.1.2-rc.1` yields `0.1.2` (the `rc.1` segment is dropped); only a
+ * bare `src-<version>` tag passes through as-is.
  * @param tag - the release tag.
  * @returns the version string, or undefined when the tag carries none.
  */

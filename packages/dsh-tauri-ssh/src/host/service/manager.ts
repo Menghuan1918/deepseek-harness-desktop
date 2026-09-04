@@ -9,6 +9,7 @@ import type { Config } from '../storage/index.js'
  */
 
 import type { MachineId, MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStatus, SshProgress, SshTestResult } from '../types/index.js'
+import type { BootstrapHooks } from './bootstrap.js'
 import type { SshMachineEvents } from './events.js'
 import type { KnownHostsStore } from './host-keys.js'
 import type { SshSession, SshTransport, SshTunnelHandle } from './transport.js'
@@ -16,7 +17,7 @@ import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { SshError } from '../types/index.js'
-import { buildInstallScript, checkMissingCommand, createBootstrapLineDispatcher, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, parseBootstrapLine, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, skippedVerificationSummary } from './bootstrap.js'
+import { checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, runInstallScript, skippedVerificationSummary } from './bootstrap.js'
 import { fingerprintHostKey } from './host-keys.js'
 
 /** One machine's live connection state. */
@@ -41,8 +42,6 @@ interface MachineState {
   dshMissing?: boolean
   /** Live progress of the in-flight operation. */
   progress?: SshProgress
-  /** Ring buffer of the in-flight install's streaming output (newest last). */
-  installLog?: string[]
 }
 
 /** Manager dependencies (all transport seams injectable for tests). */
@@ -206,7 +205,6 @@ export class SshManager {
     delete state.lastError
     delete state.dshMissing
     delete state.progress
-    delete state.installLog
     const tunnel = state.tunnel
     const session = state.session
     delete state.tunnel
@@ -262,10 +260,25 @@ export class SshManager {
    * One full connection attempt. Publishes exactly one terminal transition
    * (connected or disconnected) unless a disconnect superseded the attempt —
    * a superseded attempt closes its session and throws without publishing.
+   * The bootstrap event stream likewise settles on every failure (its own
+   * settling events, or the catch for transport exceptions that bypass
+   * them), except a superseded attempt: cancellation by an explicit
+   * disconnect is the documented no-terminal case.
    */
   private async performConnect(machineId: MachineId, profile: MachineProfile, signal?: AbortSignal): Promise<SshLink> {
     const state = this.ensureState(machineId)
     const generation = state.generation
+    // The settling guard: remembers whether this attempt's bootstrap already
+    // settled the event stream (failBootstrap/emitReady fire their own
+    // terminal events), so the catch below settles only the gaps — transport
+    // exceptions such as exec timeouts or a dropped session, which bypass
+    // the bootstrap's own failure reporting.
+    let bootstrapSettled = false
+    const onEvent: NonNullable<BootstrapHooks['onEvent']> = (stage, line, options) => {
+      if (options?.terminal !== undefined)
+        bootstrapSettled = true
+      this.deps.events.append(machineId, stage, line, options)
+    }
     let session: SshSession
     try {
       session = await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
@@ -296,9 +309,7 @@ export class SshManager {
               this.emit(machineId)
             }
           },
-          onEvent: (stage, line, options) => {
-            this.deps.events.append(machineId, stage, line, options)
-          },
+          onEvent,
         },
         this.deps.planInstall,
       )
@@ -339,9 +350,14 @@ export class SshManager {
       if (error instanceof AttemptCancelled) {
         throw new SshError('machine-connect-failed', machineId, 'connection cancelled by disconnect')
       }
+      // The locally captured message: a superseded attempt must not read
+      // state.lastError back — that slot may already belong to a newer try.
+      const message = error instanceof Error ? error.message : String(error)
+      if (generation === state.generation && !bootstrapSettled) {
+        onEvent('failed', 'bootstrap 失败', { terminal: 'failed', reason: message })
+      }
       if (generation === state.generation) {
         delete state.progress
-        const message = error instanceof Error ? error.message : String(error)
         state.lastError = message
         // The start script's own "not installed" verdict keeps the UI's
         // install hint alive (the auto-bootstrap could not complete).
@@ -350,7 +366,7 @@ export class SshManager {
         state.phase = 'disconnected'
         this.emit(machineId)
       }
-      throw new SshError('machine-bootstrap-failed', machineId, state.lastError ?? 'remote instance bootstrap failed')
+      throw new SshError('machine-bootstrap-failed', machineId, message)
     }
   }
 
@@ -385,11 +401,25 @@ export class SshManager {
    * One full install attempt. Publishes the terminal transition unless a
    * disconnect superseded the attempt; a successful install hands off to
    * {@link connect} (fire-and-forget — its outcome lands in the status).
+   * The event stream settles on every failure — the install script's own
+   * terminal event, or the catch for exception failures (probe, planner,
+   * transport rejects, missing entry) that bypass it. A superseded attempt
+   * (cancellation by an explicit disconnect) is the documented no-terminal
+   * case.
    */
   private async performInstall(machineId: MachineId, profile: MachineProfile, signal?: AbortSignal): Promise<SshInstallResult> {
     const state = this.ensureState(machineId)
     const generation = state.generation
     const events = this.deps.events
+    // The settling guard mirrors the connect path: the install script's own
+    // failure path (and the success line below) settle the stream exactly
+    // once; the catch below covers the exception failures that bypass them.
+    let settled = false
+    const onEvent: NonNullable<BootstrapHooks['onEvent']> = (stage, line, options) => {
+      if (options?.terminal !== undefined)
+        settled = true
+      events.append(machineId, stage, line, options)
+    }
     let session: SshSession
     try {
       session = await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
@@ -405,50 +435,36 @@ export class SshManager {
     }
     try {
       const installTimeoutMs = this.deps.config.installTimeoutMs
-      events.append(machineId, 'probe', '探测远端平台 (uname -srm)')
+      onEvent('probe', '探测远端平台 (uname -srm)')
       const uname = await session.exec('uname -srm')
       if (uname.code !== 0) {
         throw new Error(`cannot probe remote platform: ${describeExecFailure(uname.code, uname.stderr)}`)
       }
       const plan = await (this.deps.planInstall ?? planRemoteInstall)(uname.stdout, this.deps.config)
-      events.append(machineId, 'probe', `远端平台 ${plan.os}/${plan.arch}，安装源 ${plan.repo}${plan.dsh.kind === 'pkg-zip' ? ` tag ${plan.dsh.tag}` : ` npm ${plan.dsh.version}`}`)
+      onEvent('probe', `远端平台 ${plan.os}/${plan.arch}，安装源 ${plan.repo}${plan.dsh.kind === 'pkg-zip' ? ` tag ${plan.dsh.tag}` : ` npm ${plan.dsh.version}`}`)
       for (const note of plan.notes)
-        events.append(machineId, 'probe', note)
+        onEvent('probe', note)
       const missing = missingComponentsOf((await session.exec(checkMissingCommand())).stdout)
       const skips: string[] = []
       if (missing.length > 0) {
-        events.append(machineId, 'probe', `缺失组件: ${missing.join(', ')}`)
-        let log = ''
-        const dispatch = createBootstrapLineDispatcher((line) => {
-          const parsed = parseBootstrapLine(line)
-          if (parsed.stage === 'verify' && parsed.line.includes('跳过'))
-            skips.push(parsed.line)
-          events.append(machineId, parsed.stage, parsed.line)
-        })
-        const result = await session.exec(buildInstallScript(plan), {
-          ...installTimeoutMs === undefined ? {} : { timeoutMs: installTimeoutMs },
-          onData: (chunk) => {
+        onEvent('probe', `缺失组件: ${missing.join(', ')}`)
+        // The single install executor (shared with the connect-time
+        // bootstrap): line-buffered stage streaming, the collected-stdout
+        // fallback for tap-less transports, and its own settling failure.
+        skips.push(...await runInstallScript(session, plan, installTimeoutMs, {
+          onEvent,
+          onProgress: (progress) => {
             if (generation !== state.generation)
               return
-            log = `${log}${chunk}`.slice(-2000)
-            dispatch.push(chunk)
-            state.progress = { phase: 'installing', log }
+            state.progress = progress
             this.emit(machineId)
           },
-        })
-        dispatch.flush()
-        if (result.code !== 0) {
-          const tail = log.trim() === '' ? '(no output captured)' : log.trim().split('\n').slice(-5).join(' | ')
-          events.append(machineId, 'failed', 'install failed', { terminal: 'failed', reason: tail })
-          throw new Error(
-            `dsh install failed on "${profile.host}": ${describeExecFailure(result.code, result.stderr)}; installer output tail: ${tail}`,
-          )
-        }
+        }, 'install 失败'))
         if (generation !== state.generation)
           throw new AttemptCancelled()
       }
       else {
-        events.append(machineId, 'probe', '三件套已就绪，跳过安装')
+        onEvent('probe', '三件套已就绪，跳过安装')
       }
       // The entry check doubles as $HOME expansion: the shell prints the
       // absolute path the type contract promises (never a literal `$HOME`).
@@ -475,12 +491,11 @@ export class SshManager {
       // that follows: S4 can tell "installed, connect pending" from a failed
       // install purely from the channel's terminal event. Skipped
       // verifications (fail-open checks) ride the settling line.
-      events.append(machineId, 'install', `dsh 安装成功 (${dshRef})${skippedVerificationSummary(plan.notes, skips)}`, { terminal: 'success' })
+      onEvent('install', `dsh 安装成功 (${dshRef})${skippedVerificationSummary(plan.notes, skips)}`, { terminal: 'success' })
       await session.close().catch(() => undefined)
       if (generation === state.generation) {
         delete state.progress
         delete state.dshMissing
-        delete state.installLog
         delete state.lastError
         state.phase = 'disconnected'
         this.emit(machineId)
@@ -502,16 +517,26 @@ export class SshManager {
       if (error instanceof AttemptCancelled) {
         throw new SshError('machine-install-failed', machineId, 'install cancelled by disconnect')
       }
+      // The locally captured message: a superseded attempt must not read
+      // state.lastError back — that slot may already belong to a newer try.
+      const message = error instanceof Error ? error.message : String(error)
+      // Exception failures (platform probe, planner rejects such as
+      // REMOTE_PLATFORM_UNSUPPORTED, transport exec rejects including the
+      // install timeout, the missing entry) never reach the script's own
+      // settling path: settle the channel here so S4 can tell a failed
+      // install from a still-running one purely from the stream.
+      if (generation === state.generation && !settled) {
+        onEvent('failed', 'install 失败', { terminal: 'failed', reason: message })
+      }
       if (generation === state.generation) {
         delete state.progress
-        delete state.installLog
-        state.lastError = error instanceof Error ? error.message : String(error)
+        state.lastError = message
         state.phase = 'disconnected'
         this.emit(machineId)
       }
       if (error instanceof SshError)
         throw error
-      throw new SshError('machine-install-failed', machineId, state.lastError ?? 'dsh install failed')
+      throw new SshError('machine-install-failed', machineId, message)
     }
   }
 
