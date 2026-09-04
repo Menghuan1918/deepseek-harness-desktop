@@ -71,60 +71,62 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
                   </Pill>
                 ))}
               </div>
-              {preview === null || state.sync.status === 'loading'
-                ? <p className={css.hint}>{t('loading')}</p>
-                : (
-                    <div className={css.syncGroups}>
-                      <div className={css.syncGroup}>
-                        <span className={css.fieldLabel}>{t('sync.plugins')}</span>
-                        {preview.plugins.length === 0
-                          ? <p className={css.hint}>{t('sync.noPlugins')}</p>
-                          : (
-                              <ul className={css.syncItems}>
-                                {preview.plugins.map(plugin => (
-                                  <li key={`plugin:${plugin.spec}`} className={css.syncItem}>
-                                    <Pill
-                                      active={selected.has(`plugin:${plugin.spec}`)}
-                                      disabled={!plugin.syncable}
-                                      title={plugin.syncable ? undefined : plugin.reason}
-                                      aria-pressed={selected.has(`plugin:${plugin.spec}`)}
-                                      data-testid={`sync-plugin-${plugin.name}`}
-                                      onClick={() => setSelected(current => toggleSelection(current, `plugin:${plugin.spec}`))}
-                                    >
-                                      {plugin.name}
-                                    </Pill>
-                                    {!plugin.syncable && plugin.reason !== undefined
-                                      ? <span className={css.syncReason}>{plugin.reason}</span>
-                                      : null}
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
+              {state.sync.status === 'error'
+                ? null
+                : preview === null || state.sync.status === 'loading'
+                  ? <p className={css.hint}>{t('loading')}</p>
+                  : (
+                      <div className={css.syncGroups}>
+                        <div className={css.syncGroup}>
+                          <span className={css.fieldLabel}>{t('sync.plugins')}</span>
+                          {preview.plugins.length === 0
+                            ? <p className={css.hint}>{t('sync.noPlugins')}</p>
+                            : (
+                                <ul className={css.syncItems}>
+                                  {preview.plugins.map(plugin => (
+                                    <li key={`plugin:${plugin.spec}`} className={css.syncItem}>
+                                      <Pill
+                                        active={selected.has(`plugin:${plugin.spec}`)}
+                                        disabled={!plugin.syncable}
+                                        title={plugin.syncable ? undefined : plugin.reason}
+                                        aria-pressed={selected.has(`plugin:${plugin.spec}`)}
+                                        data-testid={`sync-plugin-${plugin.name}`}
+                                        onClick={() => setSelected(current => toggleSelection(current, `plugin:${plugin.spec}`))}
+                                      >
+                                        {plugin.name}
+                                      </Pill>
+                                      {!plugin.syncable && plugin.reason !== undefined
+                                        ? <span className={css.syncReason}>{plugin.reason}</span>
+                                        : null}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                        </div>
+                        <div className={css.syncGroup}>
+                          <span className={css.fieldLabel}>{t('sync.skills')}</span>
+                          {preview.skills.length === 0
+                            ? <p className={css.hint}>{t('sync.noSkills')}</p>
+                            : (
+                                <ul className={css.syncItems}>
+                                  {preview.skills.map(skill => (
+                                    <li key={`skill:${skill.root}:${skill.name}`} className={css.syncItem}>
+                                      <Pill
+                                        active={selected.has(`skill:${skill.root}:${skill.name}`)}
+                                        aria-pressed={selected.has(`skill:${skill.root}:${skill.name}`)}
+                                        data-testid={`sync-skill-${skill.root}-${skill.name}`}
+                                        onClick={() => setSelected(current => toggleSelection(current, `skill:${skill.root}:${skill.name}`))}
+                                      >
+                                        {skill.name}
+                                        <span className={css.syncRoot}>{skill.root}</span>
+                                      </Pill>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                        </div>
                       </div>
-                      <div className={css.syncGroup}>
-                        <span className={css.fieldLabel}>{t('sync.skills')}</span>
-                        {preview.skills.length === 0
-                          ? <p className={css.hint}>{t('sync.noSkills')}</p>
-                          : (
-                              <ul className={css.syncItems}>
-                                {preview.skills.map(skill => (
-                                  <li key={`skill:${skill.root}:${skill.name}`} className={css.syncItem}>
-                                    <Pill
-                                      active={selected.has(`skill:${skill.root}:${skill.name}`)}
-                                      aria-pressed={selected.has(`skill:${skill.root}:${skill.name}`)}
-                                      data-testid={`sync-skill-${skill.root}-${skill.name}`}
-                                      onClick={() => setSelected(current => toggleSelection(current, `skill:${skill.root}:${skill.name}`))}
-                                    >
-                                      {skill.name}
-                                      <span className={css.syncRoot}>{skill.root}</span>
-                                    </Pill>
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
-                      </div>
-                    </div>
-                  )}
+                    )}
               <div className={css.syncActions}>
                 <Button variant="primary" size="sm" disabled={!canApply} data-testid="sync-apply" onClick={apply}>
                   {state.sync.applying ? t('sync.applying') : t('sync.apply')}
