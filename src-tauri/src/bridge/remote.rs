@@ -59,6 +59,20 @@ pub fn remote_bridge_ping() -> String {
     "ok".to_string()
 }
 
+/// 校验弹窗入参并生成 (label, url)；抽成纯函数便于单测。
+fn open_window_args(machine_id: &str, url: &str) -> Result<(String, tauri::Url), String> {
+    if machine_id.trim().is_empty() {
+        return Err("REMOTE_WINDOW_FAILED: machineId must not be empty".to_string());
+    }
+    let parsed_url = validate_loopback_http_url(url)?;
+    let label = format!(
+        "{}{}",
+        REMOTE_WINDOW_LABEL_PREFIX,
+        sanitize_label_part(machine_id)
+    );
+    Ok((label, parsed_url))
+}
+
 /// 打开（已开则聚焦）`remote-<machineId>` 弹窗窗口，加载隧道 URL。
 ///
 /// 壳不自存机器状态：URL 由插件随调用传入，此处只做回环校验。重复调用
@@ -70,15 +84,7 @@ pub fn remote_open_window(
     machine_id: String,
     url: String,
 ) -> Result<(), String> {
-    if machine_id.trim().is_empty() {
-        return Err("REMOTE_URL_INVALID: machineId must not be empty".to_string());
-    }
-    let parsed_url = validate_loopback_http_url(&url)?;
-    let label = format!(
-        "{}{}",
-        REMOTE_WINDOW_LABEL_PREFIX,
-        sanitize_label_part(&machine_id)
-    );
+    let (label, parsed_url) = open_window_args(&machine_id, &url)?;
     // 已有窗口：聚焦即可（再次「打开」同一机器的语义）。
     if let Some(existing) = app_handle.get_webview_window(&label) {
         let _ = existing.set_focus();
@@ -142,5 +148,14 @@ mod tests {
                 "error should carry the protocol prefix: {err}"
             );
         }
+    }
+
+    #[test]
+    fn empty_machine_id_is_rejected_before_url_validation() {
+        // 空白 machineId 直接拒绝（label 无法生成），错误前缀与窗口失败族一致
+        let err = super::open_window_args("  ", "http://127.0.0.1:3080")
+            .err()
+            .expect("blank machineId should be rejected");
+        assert!(err.starts_with("REMOTE_WINDOW_FAILED:"));
     }
 }

@@ -61,6 +61,10 @@ export const remote = defineStore({
       this.booted = true
       void this.refresh()
       pollTimer = setInterval(() => {
+        // 窗口隐藏时跳过本轮（平台 WebView 报告可见性才生效；恢复可见由
+        // 组件侧 visibilitychange 触发的即时刷新兜底）
+        if (typeof document !== 'undefined' && document.hidden)
+          return
         void this.refresh()
       }, POLL_INTERVAL_MS)
     },
