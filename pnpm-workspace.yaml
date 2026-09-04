@@ -1,8 +1,10 @@
 allowBuilds:
   '@tailwindcss/oxide': true
+  cpu-features: false
   edgedriver: false
   esbuild: true
   geckodriver: false
+  ssh2: false
 
 catalogMode: prefer
 
@@ -32,6 +34,8 @@ catalog:
   '@tauri-apps/plugin-os': ^2.3.2
   '@tauri-apps/plugin-store': ^2.4.4
   h3: 2.0.1-rc.31
+  anser: ^2.3.5
+  shiki: ^1.29.2
   valtio: ^2.3.2
 
 catalogs:
@@ -102,8 +106,11 @@ catalogs:
     '@tauri-apps/cli': ^2.11.4
     '@tauri-apps/plugin-http': ^2.6.0
   testing:
+    '@testing-library/dom': ^10.4.0
+    '@testing-library/react': ^16.3.0
     '@vitest/coverage-v8': ^4.1.11
     '@wdio/tauri-service': ^1.4.0
+    jsdom: ^26.1.0
     playwright: ^1.63.0
     vitest: ^4.1.11
     webdriverio: ^9.31.9
@@ -114,11 +121,14 @@ catalogs:
     '@types/react': ^19.2.18
     '@types/react-dom': ^19.2.4
     '@types/semver': ^7.8.0
+    '@types/ssh2': ^1.15.4
   ui:
     '@css-render/plugin-bem': ^0.15.7
     css-render: ^0.15.14
     dompurify: ^3.4.13
+    lightningcss: ^1.32.0
     marked: ^18.0.10
+    schemastery: ^3.18.0
   utils:
     '@hairy/utils': ^1.52.0
     citty: ^0.2.2
@@ -130,6 +140,7 @@ catalogs:
     lodash-es: ^4.18.1
     ofetch: ^1.5.1
     pathe: ^2.0.3
+    ssh2: ^1.17.0
     simple-git: ^3.36.0
     smol-toml: ^1.3.1
     tinyexec: ^1.3.0

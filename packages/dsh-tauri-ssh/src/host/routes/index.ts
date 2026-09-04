@@ -1,0 +1,245 @@
+/**
+ * The plugin's own HTTP API, mounted by the plugin on `ctx.webServer` under
+ * `/api-ssh` (same-origin with the web UI; no upstream gateway changes).
+ * Loopback-only by construction: non-loopback peers are refused before any
+ * dispatch. The protocol is a minimal JSON envelope:
+ *
+ *   POST /api-ssh  { "method": "machine.list", "payload": {} }
+ *   → 200          { "ok": true, "value": ... } | { "ok": false, "error": { "code", "message" } }
+ *
+ * Machines are stored in the `ssh-machines` settings namespace; this API only
+ * serves the connection plane (list/test/connect/disconnect) and the CRUD
+ * writes (save/remove), which is exactly what the settings page cannot do
+ * through the settings domain.
+ * @module dsh-tauri-ssh/host/routes
+ */
+
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { MachineSaveRow, MachineSecretWrite, MachineView, SshInstallResult, SshMachineStatus, SshTestResult } from '../types/index.js'
+import { Buffer } from 'node:buffer'
+import { MachineId, SshError } from '../types/index.js'
+
+/** One request envelope. */
+export interface SshApiRequest {
+  method: string
+  payload?: unknown
+}
+
+/** One response envelope. */
+export type SshApiResponse
+  = | { ok: true, value: unknown }
+    | { ok: false, error: { code: string, message: string } }
+
+/**
+ * The connection-plane method set (CRUD lives here too: the settings RPC only
+ *  serves an upstream allowlist, so the page writes through this route).
+ */
+export type SshApiMethod
+  = | 'machine.list'
+    | 'machine.test'
+    | 'machine.connect'
+    | 'machine.disconnect'
+    | 'machine.install'
+    | 'machine.save'
+    | 'machine.remove'
+
+/** A machine list row: the redacted profile plus its live status. */
+export interface SshMachineListItem extends MachineView {
+  state: SshMachineStatus['state']
+  tunnelBaseUrl?: string
+  lastError?: string
+  dshMissing?: boolean
+}
+
+/** The manager face this API needs (the plugin's service). */
+export interface SshApiHost {
+  profileViews: () => MachineView[]
+  /** The read-only `~/.ssh/config` alias machines (awaits the config read). */
+  discoveredViews: () => Promise<MachineView[]>
+  status: (machineId: MachineId) => SshMachineStatus
+  test: (machineId: MachineId, signal?: AbortSignal) => Promise<SshTestResult>
+  connect: (machineId: MachineId, signal?: AbortSignal) => Promise<{ tunnelBaseUrl: string }>
+  disconnect: (machineId: MachineId) => Promise<void>
+  /** One-shot remote dsh install; a successful install auto-connects. */
+  install: (machineId: MachineId, signal?: AbortSignal) => Promise<SshInstallResult>
+  save: (machineId: MachineId, row: MachineSaveRow, secrets?: MachineSecretWrite) => Promise<void>
+  remove: (machineId: MachineId) => Promise<void>
+}
+
+/** Whether a socket peer is loopback (the only allowed caller of this API). */
+export function isLoopbackPeer(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+/** Map one business failure onto the envelope. */
+function failureOf(error: unknown): { code: string, message: string } {
+  if (error instanceof SshError) {
+    return { code: error.code, message: error.message }
+  }
+  return { code: 'internal', message: error instanceof Error ? error.message : String(error) }
+}
+
+/** Read and parse the request body (bounded). */
+async function readBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer
+    size += buffer.length
+    if (size > 64 * 1024)
+      throw new Error('request body too large')
+    chunks.push(buffer)
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+}
+
+/**
+ * Build the `/api-ssh` request handler over one service.
+ * @param host - the manager-backed service face.
+ * @returns the node:http handler (owns the full response lifecycle).
+ */
+export function createSshApiHandler(host: SshApiHost): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return async (req, res) => {
+    const respond = (status: number, body: SshApiResponse): void => {
+      res.writeHead(status, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }
+    if (!isLoopbackPeer(req.socket.remoteAddress)) {
+      respond(403, { ok: false, error: { code: 'forbidden', message: 'this API is loopback-only' } })
+      return
+    }
+    if (req.method !== 'POST') {
+      respond(405, { ok: false, error: { code: 'method-not-allowed', message: 'POST only' } })
+      return
+    }
+    let request: SshApiRequest
+    try {
+      request = await readBody(req) as SshApiRequest
+    }
+    catch {
+      respond(400, { ok: false, error: { code: 'bad-request', message: 'malformed JSON body' } })
+      return
+    }
+    if (typeof request.method !== 'string' || request.method === '') {
+      respond(400, { ok: false, error: { code: 'bad-request', message: 'missing method' } })
+      return
+    }
+    const payload = (request.payload ?? {}) as Record<string, unknown>
+    try {
+      switch (request.method as SshApiMethod) {
+        case 'machine.list': {
+          const items: SshMachineListItem[] = host.profileViews().map(view => listItemOf(host, view))
+          const discovered: SshMachineListItem[] = (await host.discoveredViews()).map(view => listItemOf(host, view))
+          respond(200, { ok: true, value: { items, discovered } })
+          return
+        }
+        case 'machine.test': {
+          const value = await host.test(machineIdOf(payload), new AbortController().signal)
+          respond(200, { ok: true, value })
+          return
+        }
+        case 'machine.connect': {
+          const link = await host.connect(machineIdOf(payload), new AbortController().signal)
+          respond(200, { ok: true, value: { tunnelBaseUrl: link.tunnelBaseUrl } })
+          return
+        }
+        case 'machine.disconnect': {
+          await host.disconnect(machineIdOf(payload))
+          respond(200, { ok: true, value: {} })
+          return
+        }
+        case 'machine.install': {
+          const value = await host.install(machineIdOf(payload), new AbortController().signal)
+          respond(200, { ok: true, value })
+          return
+        }
+        case 'machine.save': {
+          const machineId = machineIdOf(payload)
+          const row = saveRowOf(payload)
+          const secrets = secretsOf(payload)
+          await host.save(machineId, row, secrets)
+          respond(200, { ok: true, value: {} })
+          return
+        }
+        case 'machine.remove': {
+          const machineId = machineIdOf(payload)
+          await host.remove(machineId)
+          respond(200, { ok: true, value: {} })
+          return
+        }
+        default:
+          respond(404, { ok: false, error: { code: 'unknown-method', message: `unknown method "${request.method}"` } })
+      }
+    }
+    catch (error) {
+      respond(200, { ok: false, error: failureOf(error) })
+    }
+  }
+}
+
+/** Read the machineId payload field; missing payloads fail loud. */
+function machineIdOf(payload: Record<string, unknown>): MachineId {
+  if (typeof payload.machineId !== 'string' || payload.machineId === '') {
+    throw new Error('missing machineId')
+  }
+  return MachineId(payload.machineId)
+}
+
+/** One list row: the redacted view plus its live status. */
+function listItemOf(host: SshApiHost, view: MachineView): SshMachineListItem {
+  const status = host.status(view.id)
+  return {
+    ...view,
+    state: status.state,
+    ...status.tunnelBaseUrl === undefined ? {} : { tunnelBaseUrl: status.tunnelBaseUrl },
+    ...status.lastError === undefined ? {} : { lastError: status.lastError },
+    ...status.dshMissing === true ? { dshMissing: true } : {},
+    ...status.progress === undefined ? {} : { progress: status.progress },
+  }
+}
+
+/** Validate one machine.save config row; defaults mirror the schema. */
+function saveRowOf(payload: Record<string, unknown>): MachineSaveRow {
+  const row = payload.row
+  if (typeof row !== 'object' || row === null)
+    throw new Error('missing row')
+  const value = row as Record<string, unknown>
+  if (typeof value.name !== 'string' || value.name === '')
+    throw new Error('invalid row: name')
+  if (typeof value.host !== 'string' || value.host === '')
+    throw new Error('invalid row: host')
+  if (typeof value.user !== 'string')
+    throw new Error('invalid row: user')
+  const port = typeof value.port === 'number' ? value.port : 22
+  const remotePort = typeof value.remotePort === 'number' ? value.remotePort : 3080
+  const startCommand = typeof value.startCommand === 'string' && value.startCommand !== ''
+    ? value.startCommand
+    : undefined
+  const color = typeof value.color === 'string' && value.color !== '' ? value.color : undefined
+  return {
+    name: value.name,
+    host: value.host,
+    port,
+    user: value.user,
+    remotePort,
+    ...startCommand === undefined ? {} : { startCommand },
+    ...color === undefined ? {} : { color },
+    ...value.tintBorder === true ? { tintBorder: true } : {},
+  }
+}
+
+/** Validate the write-only secret block; absent or empty fields are dropped. */
+function secretsOf(payload: Record<string, unknown>): MachineSecretWrite | undefined {
+  const secrets = payload.secrets
+  if (secrets === undefined)
+    return undefined
+  if (typeof secrets !== 'object' || secrets === null)
+    throw new Error('invalid secrets')
+  const value = secrets as Record<string, unknown>
+  const out: MachineSecretWrite = {}
+  if (typeof value.password === 'string' && value.password !== '')
+    out.password = value.password
+  if (typeof value.passphrase === 'string' && value.passphrase !== '')
+    out.passphrase = value.passphrase
+  return out
+}

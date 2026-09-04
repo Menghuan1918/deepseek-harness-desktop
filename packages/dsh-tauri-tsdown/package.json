@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "lightningcss": "catalog:ui",
     "tsdown": "catalog:cli",
     "typescript": "catalog:cli"
   }
