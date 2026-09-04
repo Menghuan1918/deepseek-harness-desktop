@@ -8,5 +8,5 @@
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["src/**/*.ts", "../../types/**/*.d.ts"]
+  "include": ["src/**/*.ts", "e2e/**/*.ts", "e2e.vitest.config.ts", "../../types/**/*.d.ts"]
 }

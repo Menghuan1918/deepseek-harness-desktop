@@ -47,7 +47,8 @@
     "dev": "tsdown --watch",
     "prepublishOnly": "nr build",
     "test": "vitest run",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "test:e2e": "vitest run --config e2e.vitest.config.ts"
   },
   "dependencies": {
     "pathe": "catalog:utils",
