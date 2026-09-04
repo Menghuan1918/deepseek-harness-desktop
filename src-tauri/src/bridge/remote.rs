@@ -28,8 +28,10 @@ fn sanitize_label_part(raw: &str) -> String {
         .collect()
 }
 
-/// 校验隧道 URL：仅接受回环 host 的明文 http（隧道由引擎建在
-/// `127.0.0.1:<port>`，见插件 `SshLink`；非回环/非 http 一律拒绝）。
+/// 校验隧道 URL：仅接受 `127.0.0.1` host 的明文 http（隧道由引擎建在
+/// `127.0.0.1:<port>`，见插件 `SshLink`；与 capability `remote.urls`
+/// `http://127.0.0.1:*` 精确对齐——`localhost`/`[::1]` 过守卫却命不中
+/// capability，弹窗会静默退化为无 IPC 的纯 web，故在命令侧一并拒绝）。
 fn validate_loopback_http_url(raw: &str) -> Result<tauri::Url, String> {
     let url: tauri::Url = raw
         .parse()
@@ -40,13 +42,9 @@ fn validate_loopback_http_url(raw: &str) -> Result<tauri::Url, String> {
             url.scheme()
         ));
     }
-    // url::Url 的 host_str 对 IPv6 保留方括号（"[::1]"），比较前先剥掉。
-    let host = url.host_str().unwrap_or("");
-    let bare_host = host.trim_start_matches('[').trim_end_matches(']');
-    let is_loopback = matches!(bare_host, "127.0.0.1" | "::1" | "localhost");
-    if !is_loopback {
+    if url.host_str() != Some("127.0.0.1") {
         return Err(format!(
-            "REMOTE_URL_INVALID: only loopback hosts are allowed, got {:?}",
+            "REMOTE_URL_INVALID: only http://127.0.0.1:<port> tunnel URLs are allowed, got {:?}",
             url.host_str()
         ));
     }
@@ -121,8 +119,6 @@ mod tests {
         for raw in [
             "http://127.0.0.1:3080",
             "http://127.0.0.1:49152/",
-            "http://localhost:3080",
-            "http://[::1]:3080",
         ] {
             let url = validate_loopback_http_url(raw)
                 .unwrap_or_else(|err| panic!("{raw} should pass: {err}"));
@@ -136,6 +132,8 @@ mod tests {
             "https://127.0.0.1:3080",   // https 不允许（隧道是明文回环）
             "http://192.168.1.5:3080",  // 非回环
             "http://example.com",       // 公网域名
+            "http://localhost:3080",    // 命不中 capability remote.urls，命令侧一并拒绝
+            "http://[::1]:3080",        // 同上：与 127.0.0.1 精确对齐
             "file:///etc/passwd",       // 非 http scheme
             "not a url",                // 解析失败
             "",                         // 空

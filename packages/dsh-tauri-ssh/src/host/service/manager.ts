@@ -203,6 +203,10 @@ export class SshManager {
    */
   async openSession(machineId: MachineId, signal?: AbortSignal): Promise<SshSession> {
     const profile = this.requireProfile(machineId)
+    // 与 connect/install 一致：重连窗口拥有机器时拒绝新会话（S3 的在途操
+    // 作一致性语义——sync 引擎经此开专用会话，裸 /api-ssh 调用方同样拿到
+    // 可区分的 machine-reconnecting 而非并行建连）。
+    this.refuseWhileReconnecting(machineId, this.ensureState(machineId))
     return await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
   }
 
@@ -534,7 +538,9 @@ export class SshManager {
       }
       // The locally captured message: a superseded attempt must not read
       // state.lastError back — that slot may already belong to a newer try.
-      const message = error instanceof Error ? error.message : String(error)
+      // 与其它失败路径对称地过脱敏（纵深防御：安装错误源今天不含 secret，
+      // 但不留给未来调用方）。
+      const message = this.redacted(machineId, error instanceof Error ? error.message : String(error))
       // Exception failures (platform probe, planner rejects such as
       // REMOTE_PLATFORM_UNSUPPORTED, transport exec rejects including the
       // install timeout, the missing entry) never reach the script's own

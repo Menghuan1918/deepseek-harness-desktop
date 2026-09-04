@@ -227,7 +227,7 @@ describe('ssh-remote plugin', () => {
       user: 'root',
       remotePort: 3080,
     }, { password: 'sekrit', passphrase: 'PHRASE' })
-    expect(settings.update).toHaveBeenCalledWith({
+    expect(settings.replace).toHaveBeenCalledWith({
       machines: {
         a: {
           id: 'a',
@@ -259,6 +259,34 @@ describe('ssh-remote plugin', () => {
     })
     const views = service.profileViews()
     expect(views[0]).toMatchObject({ name: 'alpha-2', hasPassword: true })
+  })
+
+  it('clears optional appearance fields on save and keeps sibling machines intact', async () => {
+    const settings = scriptedSettings()
+    settings.set(String(MACHINES_NAMESPACE), {
+      machines: {
+        a: { ...machine('a'), color: '#ff0000', tintBorder: true, startCommand: 'custom dsh web' },
+        b: machine('b'),
+      },
+    })
+    const { service } = boot({ settings })
+    await service.save('a' as never, {
+      name: 'alpha-3',
+      host: '10.0.0.1',
+      port: 22,
+      user: 'root',
+      remotePort: 3080,
+    })
+    const viewA = service.profileViews().find(view => view.id === 'a')
+    // 清除方向：color/tintBorder/startCommand 的空/关形态（row 缺位）必须真
+    // 清除——save 走整节 replace 精确写；若退回 update 深合并，已存层会把
+    // 这三个字段复活（回归守护）。
+    expect(viewA).not.toHaveProperty('color')
+    expect(viewA).not.toHaveProperty('tintBorder')
+    expect(viewA).not.toHaveProperty('startCommand')
+    expect(settings.update).not.toHaveBeenCalled()
+    // 精确写重述全表：同表其他机器原样保留
+    expect(service.profileViews().find(view => view.id === 'b')).toMatchObject({ name: 'machine-b', hasPassword: true })
   })
 
   it('keeps stored secrets on save and stores the start command', async () => {

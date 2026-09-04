@@ -107,7 +107,8 @@ function skillNamesOf(dir: string): string[] {
  */
 export function tarPacker(): (dir: string, names: readonly string[]) => Promise<Buffer> {
   return async (dir, names) => {
-    const { stdout, stderr } = await execFileAsync('tar', ['-cf', '-', '-C', dir, ...names], {
+    // `--` 分隔符：防止以 `-` 开头的 skill 目录名被 tar 当作选项。
+    const { stdout, stderr } = await execFileAsync('tar', ['-cf', '-', '-C', dir, '--', ...names], {
       maxBuffer: MAX_TAR_BYTES,
       windowsHide: true,
       encoding: 'buffer',

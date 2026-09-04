@@ -220,8 +220,10 @@ export class SshRemoteService implements SshApiHost {
   /**
    * Upsert one machine profile: merge the config row and any freshly typed
    * secrets into the stored profile (secrets omitted keep the stored value).
-   * The scope write validates the whole section; the watch refreshes the
-   * manager automatically.
+   * Optional fields absent from the row are *cleared* — the write restates
+   * the full machine table through `replace` (exact), because `update`'s
+   * deep merge would resurrect cleared fields from the stored layer. The
+   * watch refreshes the manager automatically.
    * @param machineId - the profile id (the settings dict key).
    * @param row - the config fields as the settings page edited them.
    * @param secrets - write-only secret values; absent fields keep stored ones.
@@ -255,7 +257,11 @@ export class SshRemoteService implements SshApiHost {
       if (secrets.passphrase !== undefined && secrets.passphrase !== '')
         next.passphrase = secrets.passphrase
     }
-    await this.scope.update({ machines: { [machineId]: next } })
+    // 精确写：像 remove() 一样整节 replace 重述全量机器表。`update` 是深合
+    // 并——被清除的可选字段（color/tintBorder/startCommand 的空/关形态在
+    // next 中缺位）会从已存层复活，导致「清除」静默失效。
+    machines.set(machineId, next)
+    await this.scope.replace({ machines: Object.fromEntries(machines) })
   }
 
   /**
