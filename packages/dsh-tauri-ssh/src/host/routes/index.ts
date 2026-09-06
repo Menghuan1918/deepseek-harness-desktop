@@ -103,18 +103,57 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /**
+ * The origins the desktop shell's webview may cross-origin read this API from:
+ * the Tauri 2 shell schemes (macOS/Linux `tauri://localhost`, Windows
+ * `http://tauri.localhost`) and the dev-shell Vite origin. The embedded web UI
+ * itself is same-origin and needs none of this; without these headers the
+ * shell's switcher poll (`fetch` from the webview) is CORS-blocked with a bare
+ * "Load failed". Any other origin stays blocked, so a rogue local page cannot
+ * read (or preflight into) the API.
+ */
+const SHELL_ORIGINS = new Set([
+  'tauri://localhost',
+  'http://tauri.localhost',
+  'http://localhost:1420',
+])
+
+/** CORS headers for one request's Origin, or none when the origin is not a shell origin. */
+function shellCorsHeaders(origin: string | undefined): Record<string, string> {
+  if (origin === undefined || !SHELL_ORIGINS.has(origin))
+    return {}
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-methods': 'POST, OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'access-control-max-age': '86400',
+    vary: 'Origin',
+  }
+}
+
+/**
  * Build the `/api-ssh` request handler over one service.
  * @param host - the manager-backed service face.
  * @returns the node:http handler (owns the full response lifecycle).
  */
 export function createSshApiHandler(host: SshApiHost): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
+    const cors = shellCorsHeaders(req.headers.origin)
     const respond = (status: number, body: SshApiResponse): void => {
-      res.writeHead(status, { 'content-type': 'application/json' })
+      res.writeHead(status, { 'content-type': 'application/json', ...cors })
       res.end(JSON.stringify(body))
     }
     if (!isLoopbackPeer(req.socket.remoteAddress)) {
       respond(403, { ok: false, error: { code: 'forbidden', message: 'this API is loopback-only' } })
+      return
+    }
+    // CORS preflight from the shell webview: answer without touching the body.
+    if (req.method === 'OPTIONS') {
+      if (cors['access-control-allow-origin'] === undefined) {
+        respond(403, { ok: false, error: { code: 'forbidden', message: 'origin not allowed' } })
+        return
+      }
+      res.writeHead(204, cors)
+      res.end()
       return
     }
     if (req.method !== 'POST') {

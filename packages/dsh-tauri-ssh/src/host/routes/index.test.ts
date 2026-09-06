@@ -47,17 +47,21 @@ function fakeHost(overrides: Partial<SshApiHost> = {}): SshApiHost {
 async function call(
   host: SshApiHost,
   body: string,
-  options: { method?: string, address?: string } = {},
-): Promise<{ status: number, body: SshApiResponse }> {
+  options: { method?: string, address?: string, origin?: string } = {},
+): Promise<{ status: number, body: SshApiResponse, headers: Record<string, unknown> }> {
   const socket = new Socket()
   Object.defineProperty(socket, 'remoteAddress', { value: options.address ?? '127.0.0.1', configurable: true })
   const req = new IncomingMessage(socket)
   req.method = options.method ?? 'POST'
+  if (options.origin !== undefined)
+    req.headers.origin = options.origin
   const res = new ServerResponse(req)
   let status = 0
   let payload = ''
-  res.writeHead = ((code: number) => {
+  let headers: Record<string, unknown> = {}
+  res.writeHead = ((code: number, head?: Record<string, unknown>) => {
     status = code
+    headers = head ?? {}
     return res
   }) as typeof res.writeHead
   res.end = ((chunk?: unknown) => {
@@ -68,7 +72,8 @@ async function call(
   req.push(Buffer.from(body))
   req.push(null)
   await createSshApiHandler(host)(req, res)
-  return { status, body: JSON.parse(payload) as SshApiResponse }
+  // 204 preflight responses carry no body; parse only actual JSON payloads.
+  return { status, body: (payload === '' ? {} : JSON.parse(payload)) as SshApiResponse, headers }
 }
 
 describe('isLoopbackPeer', () => {
@@ -82,6 +87,37 @@ describe('isLoopbackPeer', () => {
 })
 
 describe('/api-ssh handler', () => {
+  it('answers the shell webview\'s CORS preflight and echoes its origin', async () => {
+    const { status, headers } = await call(fakeHost(), '', { method: 'OPTIONS', origin: 'http://localhost:1420' })
+    expect(status).toBe(204)
+    expect(headers['access-control-allow-origin']).toBe('http://localhost:1420')
+    expect(headers['access-control-allow-methods']).toBe('POST, OPTIONS')
+  })
+
+  it('allows every Tauri shell scheme origin on preflight', async () => {
+    for (const origin of ['tauri://localhost', 'http://tauri.localhost']) {
+      const { status, headers } = await call(fakeHost(), '', { method: 'OPTIONS', origin })
+      expect(status).toBe(204)
+      expect(headers['access-control-allow-origin']).toBe(origin)
+    }
+  })
+
+  it('refuses preflight from a non-shell origin', async () => {
+    const { status, body, headers } = await call(fakeHost(), '', { method: 'OPTIONS', origin: 'http://evil.example' })
+    expect(status).toBe(403)
+    expect(body).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(headers['access-control-allow-origin']).toBeUndefined()
+  })
+
+  it('carries the CORS headers on cross-origin POST responses for shell origins only', async () => {
+    const allowed = await call(fakeHost(), JSON.stringify({ method: 'machine.list' }), { origin: 'tauri://localhost' })
+    expect(allowed.status).toBe(200)
+    expect(allowed.headers['access-control-allow-origin']).toBe('tauri://localhost')
+    const rogue = await call(fakeHost(), JSON.stringify({ method: 'machine.list' }), { origin: 'http://evil.example' })
+    expect(rogue.status).toBe(200)
+    expect(rogue.headers['access-control-allow-origin']).toBeUndefined()
+  })
+
   it('refuses non-loopback peers', async () => {
     const { status, body } = await call(fakeHost(), JSON.stringify({ method: 'machine.list' }), { address: '10.0.0.9' })
     expect(status).toBe(403)
