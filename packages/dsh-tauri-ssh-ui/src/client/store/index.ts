@@ -9,8 +9,8 @@
  * @module dsh-tauri-ssh-ui/client/store
  */
 
-import type { MachineLifecycleState, SshMachineEvent, SyncApplyResult, SyncItemResult, SyncPreview } from '../types/index'
 import type { SshKey } from '../locales/index'
+import type { MachineLifecycleState, SshMachineEvent, SyncApplyResult, SyncItemResult, SyncPreview } from '../types/index'
 import { SSH_API_PATH } from '../constants/index'
 import { isLifecycleState } from '../types/index'
 

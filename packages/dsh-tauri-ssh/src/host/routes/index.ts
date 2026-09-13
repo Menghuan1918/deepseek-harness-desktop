@@ -126,7 +126,7 @@ function shellCorsHeaders(origin: string | undefined): Record<string, string> {
     'access-control-allow-methods': 'POST, OPTIONS',
     'access-control-allow-headers': 'content-type',
     'access-control-max-age': '86400',
-    vary: 'Origin',
+    'vary': 'Origin',
   }
 }
 

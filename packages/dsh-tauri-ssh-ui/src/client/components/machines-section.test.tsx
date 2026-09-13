@@ -9,7 +9,6 @@ import { en } from '../locales/index'
 import { MachinesStore } from '../store/index'
 import { MachinesSection } from './machines-section'
 
-
 // dsh-tauri-ui/client 的 dist bundle 以 ModuleLoader 工厂包裹，脱离宿主加载器
 // 无法在 node 求值；mock 到同一 cssr 实例的源文件（与 dsh-tauri-panel 同款做法），
 // 组件渲染只消费 cls 字符串，不需要真实样式。
