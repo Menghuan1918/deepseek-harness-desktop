@@ -1,13 +1,13 @@
 import type z from 'schemastery'
-import type { Config as SshRemoteConfig } from './storage/index.js'
-import type { SshHostContext } from './types/index.js'
+import type { Config as SshRemoteConfig } from './storage/index'
+import type { SshHostContext } from './types/index'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { apply, inject, name, SshRemoteService } from './apply.js'
-import { MACHINES_NAMESPACE } from './storage/index.js'
-import { MachineId } from './types/index.js'
+import { apply, inject, name, SshRemoteService } from './apply'
+import { MACHINES_NAMESPACE } from './storage/index'
+import { MachineId } from './types/index'
 
 /** Scripted settings scope double. */
 function scriptedSettings() {
@@ -158,7 +158,7 @@ describe('ssh-remote plugin', () => {
   })
 
   it('ships the cordis plugin descriptor as the default export', async () => {
-    const descriptor = (await import('./apply.js')).default
+    const descriptor = (await import('./apply')).default
     expect(descriptor).toMatchObject({
       name: 'dsh-tauri-ssh',
       inject: ['settings', 'webServer'],

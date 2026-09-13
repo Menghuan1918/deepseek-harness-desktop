@@ -7,7 +7,7 @@
  * @module dsh-tauri-ssh/host/service/events
  */
 
-import type { MachineId, SshMachineEvent, SshMachineEventsPage, SshMachineStage, SshMachineTerminal } from '../types/index.js'
+import type { MachineId, SshMachineEvent, SshMachineEventsPage, SshMachineStage, SshMachineTerminal } from '../types/index'
 
 export type { SshMachineEvent, SshMachineEventsPage, SshMachineStage, SshMachineTerminal }
 

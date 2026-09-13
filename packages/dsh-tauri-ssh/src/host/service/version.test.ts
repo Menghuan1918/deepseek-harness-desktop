@@ -9,7 +9,7 @@ import {
   pickReleaseTag,
   pkgRepoOf,
   RECOMMENDED_DSH_VERSION,
-} from './version.js'
+} from './version'
 
 /** A realistic newest-first release list (test tags republishing included). */
 const RELEASES = [

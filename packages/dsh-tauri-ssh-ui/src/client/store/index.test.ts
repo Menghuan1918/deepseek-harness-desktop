@@ -1,6 +1,6 @@
-import type { FetchFn, MachineRow, SshApiResponse } from './index.js'
+import type { FetchFn, MachineRow, SshApiResponse } from './index'
 import { describe, expect, it, vi } from 'vitest'
-import { machineEventsOf, machineRowOf, MachinesStore, savePayloadOf, toggleSelection } from './index.js'
+import { machineEventsOf, machineRowOf, MachinesStore, savePayloadOf, toggleSelection } from './index'
 
 type FetchMock = ReturnType<typeof vi.fn<FetchFn>>
 

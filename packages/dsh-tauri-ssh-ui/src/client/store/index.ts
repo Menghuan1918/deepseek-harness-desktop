@@ -9,9 +9,9 @@
  * @module dsh-tauri-ssh-ui/client/store
  */
 
-import type { MachineLifecycleState, SshMachineEvent, SyncApplyResult, SyncItemResult, SyncPreview } from '../types/index.js'
-import { SSH_API_PATH } from '../constants/index.js'
-import { isLifecycleState } from '../types/index.js'
+import type { MachineLifecycleState, SshMachineEvent, SyncApplyResult, SyncItemResult, SyncPreview } from '../types/index'
+import { SSH_API_PATH } from '../constants/index'
+import { isLifecycleState } from '../types/index'
 
 /** One redacted machine row (secret fields live only in the form). */
 export interface MachineRow {

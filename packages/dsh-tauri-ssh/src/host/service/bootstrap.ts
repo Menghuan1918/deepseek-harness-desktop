@@ -13,16 +13,16 @@
  * @module dsh-tauri-ssh/host/service/bootstrap
  */
 
-import type { Config } from '../storage/index.js'
-import type { MachineProfile, SshMachineStage, SshMachineTerminal, SshProgress } from '../types/index.js'
-import type { RemoteArch, RemoteAssetMatrix, RemoteOs } from './assets.js'
-import type { SshSession } from './transport.js'
+import type { Config } from '../storage/index'
+import type { MachineProfile, SshMachineStage, SshMachineTerminal, SshProgress } from '../types/index'
+import type { RemoteArch, RemoteAssetMatrix, RemoteOs } from './assets'
+import type { SshSession } from './transport'
 import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
-import { assetMatrixFor, dshNpmTarballUrls, dshZipDownloadUrls, nodeDownloadUrls, nodeFilenameFor, nodeShasumUrls, parsePlatform, PNPM_SHA256, PNPM_VERSION, pnpmDownloadUrls } from './assets.js'
-import { clientUrlsFromBootHtml, looksLikePluginBundle } from './boot-html.js'
-import { shQuote } from './transport.js'
-import { listGithubAssets, listGithubReleases, npmDistMetadata, parseGitHubRepo, pickReleaseTag, pkgRepoOf } from './version.js'
+import { assetMatrixFor, dshNpmTarballUrls, dshZipDownloadUrls, nodeDownloadUrls, nodeFilenameFor, nodeShasumUrls, parsePlatform, PNPM_SHA256, PNPM_VERSION, pnpmDownloadUrls } from './assets'
+import { clientUrlsFromBootHtml, looksLikePluginBundle } from './boot-html'
+import { shQuote } from './transport'
+import { listGithubAssets, listGithubReleases, npmDistMetadata, parseGitHubRepo, pickReleaseTag, pkgRepoOf } from './version'
 
 /** Log file of the auto-started remote instance, under the remote home. */
 export const REMOTE_WEB_LOG = '.dsh/dsh-remote-web.log'

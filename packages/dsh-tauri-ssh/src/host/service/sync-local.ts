@@ -7,7 +7,7 @@
  */
 
 import type { Buffer } from 'node:buffer'
-import type { SyncSkillRoot } from '../types/index.js'
+import type { SyncSkillRoot } from '../types/index'
 import { execFile } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'

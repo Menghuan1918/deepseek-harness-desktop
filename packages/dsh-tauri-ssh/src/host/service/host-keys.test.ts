@@ -4,8 +4,8 @@ import * as fsPromises from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MachineId } from '../types/index.js'
-import { fingerprintHostKey, KnownHostsStore } from './host-keys.js'
+import { MachineId } from '../types/index'
+import { fingerprintHostKey, KnownHostsStore } from './host-keys'
 
 // Wrap the real fs/promises so one test can force an atomic-rename failure;
 // every other call passes through to the actual implementation.

@@ -12,10 +12,10 @@
  * @module dsh-tauri-ssh/e2e/reconnect-drop
  */
 
-import type { MachineProfile } from '../src/host/types/index.js'
+import type { MachineProfile } from '../src/host/types/index'
 import { execSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { bootHarness, id, waitFor } from './helpers.js'
+import { bootHarness, id, waitFor } from './helpers'
 
 const REMOTE_PORT = 3100
 

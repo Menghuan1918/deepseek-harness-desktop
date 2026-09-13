@@ -7,9 +7,9 @@
  * @module dsh-tauri-ssh/host/storage
  */
 
-import type { MachineProfile } from '../types/index.js'
+import type { MachineProfile } from '../types/index'
 import z from 'schemastery'
-import { MachineId } from '../types/index.js'
+import { MachineId } from '../types/index'
 
 /** One settings-namespace key (the harness brands these; the wire treats them as strings). */
 export type SettingsNamespace = string & { readonly __namespace: unique symbol }

@@ -8,17 +8,17 @@
  */
 
 import type { Connection, Server as SshServer } from 'ssh2'
-import type { MachineProfile } from '../src/host/types/index.js'
+import type { MachineProfile } from '../src/host/types/index'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, connect as tcpConnect } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { Server } from 'ssh2'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { SshConfigResolver } from '../src/host/service/ssh-config.js'
-import { Ssh2Transport } from '../src/host/service/transport.js'
-import { MachineId } from '../src/host/types/index.js'
-import { freshRsaPem } from './helpers.js'
+import { SshConfigResolver } from '../src/host/service/ssh-config'
+import { Ssh2Transport } from '../src/host/service/transport'
+import { MachineId } from '../src/host/types/index'
+import { freshRsaPem } from './helpers'
 
 const PASSWORD = 'e2e-watchdog'
 const KEEPALIVE_INTERVAL_MS = 1_000

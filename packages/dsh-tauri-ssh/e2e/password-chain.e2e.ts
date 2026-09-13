@@ -15,14 +15,14 @@
  */
 
 import type { Connection, Server as SshServer } from 'ssh2'
-import type { MachineProfile } from '../src/host/types/index.js'
+import type { MachineProfile } from '../src/host/types/index'
 import { generateKeyPairSync } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { Server } from 'ssh2'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { bootHarness, id } from './helpers.js'
+import { bootHarness, id } from './helpers'
 
 const PASSWORD = 'e2e-trustno1'
 

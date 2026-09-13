@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { en, zh } from './index.js'
+import { en, zh } from './index'
 
 describe('locales', () => {
   it('en covers every zh key with no extras', () => {

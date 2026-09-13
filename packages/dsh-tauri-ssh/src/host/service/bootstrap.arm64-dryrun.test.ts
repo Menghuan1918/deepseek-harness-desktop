@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { buildInstallScript, planRemoteInstall } from './bootstrap.js'
+import { buildInstallScript, planRemoteInstall } from './bootstrap'
 
 const RUN = process.env.DSH_SSH_ARM64_DRYRUN === '1'
 

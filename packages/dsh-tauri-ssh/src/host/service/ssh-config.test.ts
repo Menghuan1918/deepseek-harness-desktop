@@ -5,12 +5,12 @@
  * read.
  */
 
-import type { MachineProfile } from '../types/index.js'
+import type { MachineProfile } from '../types/index'
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { MachineId } from '../types/index.js'
+import { MachineId } from '../types/index'
 import {
   DEFAULT_IDENTITY_FILES,
   discoverableHosts,
@@ -21,7 +21,7 @@ import {
   lookupSshConfig,
   parseSshConfig,
   SshConfigResolver,
-} from './ssh-config.js'
+} from './ssh-config'
 
 const FIXTURES = join(import.meta.dirname, 'fixtures')
 

@@ -12,13 +12,13 @@
  */
 
 import type { ReactNode } from 'react'
-import type { SshKey } from '../locales/index.js'
-import type { MachineRow, MachinesStore } from '../store/index.js'
-import type { SyncItemResult } from '../types/index.js'
+import type { SshKey } from '../locales/index'
+import type { MachineRow, MachinesStore } from '../store/index'
+import type { SyncItemResult } from '../types/index'
 import { Button, Pill, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { toggleSelection } from '../store/index.js'
-import css from './machines-section.module.css'
+import { toggleSelection } from '../store/index'
+import { cls } from '../styles'
 
 /** The panel props: the framework `t` seat plus the injected store. */
 export interface SyncPanelProps {
@@ -51,15 +51,15 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
   }
 
   return (
-    <section className={css.syncPanel} data-testid="sync-panel">
-      <h3 className={css.groupTitle}>{t('sync.title')}</h3>
-      <p className={css.groupHint}>{t('sync.desc')}</p>
+    <section className={cls.syncPanel} data-testid="sync-panel">
+      <h3 className={cls.groupTitle}>{t('sync.title')}</h3>
+      <p className={cls.groupHint}>{t('sync.desc')}</p>
       {connected.length === 0
-        ? <p className={css.hint}>{t('sync.notConnected')}</p>
+        ? <p className={cls.hint}>{t('sync.notConnected')}</p>
         : (
             <>
-              <div className={css.syncTargets}>
-                <span className={css.fieldLabel}>{t('sync.target')}</span>
+              <div className={cls.syncTargets}>
+                <span className={cls.fieldLabel}>{t('sync.target')}</span>
                 {connected.map(machine => (
                   <Pill
                     key={machine.id}
@@ -74,17 +74,17 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
               {state.sync.status === 'error'
                 ? null
                 : preview === null || state.sync.status === 'loading'
-                  ? <p className={css.hint}>{t('loading')}</p>
+                  ? <p className={cls.hint}>{t('loading')}</p>
                   : (
-                      <div className={css.syncGroups}>
-                        <div className={css.syncGroup}>
-                          <span className={css.fieldLabel}>{t('sync.plugins')}</span>
+                      <div className={cls.syncGroups}>
+                        <div className={cls.syncGroup}>
+                          <span className={cls.fieldLabel}>{t('sync.plugins')}</span>
                           {preview.plugins.length === 0
-                            ? <p className={css.hint}>{t('sync.noPlugins')}</p>
+                            ? <p className={cls.hint}>{t('sync.noPlugins')}</p>
                             : (
-                                <ul className={css.syncItems}>
+                                <ul className={cls.syncItems}>
                                   {preview.plugins.map(plugin => (
-                                    <li key={`plugin:${plugin.spec}`} className={css.syncItem}>
+                                    <li key={`plugin:${plugin.spec}`} className={cls.syncItem}>
                                       <Pill
                                         active={selected.has(`plugin:${plugin.spec}`)}
                                         disabled={!plugin.syncable}
@@ -96,21 +96,21 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
                                         {plugin.name}
                                       </Pill>
                                       {!plugin.syncable && plugin.reason !== undefined
-                                        ? <span className={css.syncReason}>{plugin.reason}</span>
+                                        ? <span className={cls.syncReason}>{plugin.reason}</span>
                                         : null}
                                     </li>
                                   ))}
                                 </ul>
                               )}
                         </div>
-                        <div className={css.syncGroup}>
-                          <span className={css.fieldLabel}>{t('sync.skills')}</span>
+                        <div className={cls.syncGroup}>
+                          <span className={cls.fieldLabel}>{t('sync.skills')}</span>
                           {preview.skills.length === 0
-                            ? <p className={css.hint}>{t('sync.noSkills')}</p>
+                            ? <p className={cls.hint}>{t('sync.noSkills')}</p>
                             : (
-                                <ul className={css.syncItems}>
+                                <ul className={cls.syncItems}>
                                   {preview.skills.map(skill => (
-                                    <li key={`skill:${skill.root}:${skill.name}`} className={css.syncItem}>
+                                    <li key={`skill:${skill.root}:${skill.name}`} className={cls.syncItem}>
                                       <Pill
                                         active={selected.has(`skill:${skill.root}:${skill.name}`)}
                                         aria-pressed={selected.has(`skill:${skill.root}:${skill.name}`)}
@@ -118,7 +118,7 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
                                         onClick={() => setSelected(current => toggleSelection(current, `skill:${skill.root}:${skill.name}`))}
                                       >
                                         {skill.name}
-                                        <span className={css.syncRoot}>{skill.root}</span>
+                                        <span className={cls.syncRoot}>{skill.root}</span>
                                       </Pill>
                                     </li>
                                   ))}
@@ -127,7 +127,7 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
                         </div>
                       </div>
                     )}
-              <div className={css.syncActions}>
+              <div className={cls.syncActions}>
                 <Button variant="primary" size="sm" disabled={!canApply} data-testid="sync-apply" onClick={apply}>
                   {state.sync.applying ? t('sync.applying') : t('sync.apply')}
                 </Button>
@@ -139,7 +139,7 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
           )}
       {state.sync.status === 'error'
         ? (
-            <p className={css.error} role="alert">
+            <p className={cls.error} role="alert">
               {t('sync.loadFailed')}
               {state.sync.error}
             </p>
@@ -147,7 +147,7 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
         : null}
       {state.sync.error !== null && state.sync.status !== 'error'
         ? (
-            <p className={css.error} role="alert">
+            <p className={cls.error} role="alert">
               {t('sync.applyFailed')}
               {state.sync.error}
             </p>
@@ -164,25 +164,25 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
 function SyncResults({ results, t }: { results: SyncItemResult[], t: (key: SshKey) => string }): ReactNode {
   const okCount = results.filter(item => item.ok).length
   return (
-    <div className={css.syncResults} data-testid="sync-results">
-      <p className={css.syncSummary}>{t('sync.done').replace('{ok}', String(okCount)).replace('{total}', String(results.length))}</p>
-      <ul className={css.syncItems}>
+    <div className={cls.syncResults} data-testid="sync-results">
+      <p className={cls.syncSummary}>{t('sync.done').replace('{ok}', String(okCount)).replace('{total}', String(results.length))}</p>
+      <ul className={cls.syncItems}>
         {results.map(item => (
           <li
             key={`${item.kind}:${item.root ?? ''}:${item.name}`}
-            className={css.syncResult}
+            className={cls.syncResult}
             data-testid={`sync-result-${item.name}`}
             data-ok={item.ok}
           >
             <StateDot state={item.ok ? 'done' : 'error'} size={8} />
-            <span className={css.syncResultName}>
+            <span className={cls.syncResultName}>
               {item.name}
               {item.root !== undefined ? ` (${item.root})` : ''}
             </span>
             {item.ok
-              ? <span className={css.syncOk}>{t('sync.itemOk')}</span>
+              ? <span className={cls.syncOk}>{t('sync.itemOk')}</span>
               : (
-                  <span className={css.statusError} role="alert">
+                  <span className={cls.statusError} role="alert">
                     {t('sync.itemFailed')}
                     {item.error === undefined ? '' : `：${item.error}`}
                   </span>

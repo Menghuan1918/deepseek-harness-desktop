@@ -1,4 +1,4 @@
-import type { MachineProfile } from '../types/index.js'
+import type { MachineProfile } from '../types/index'
 /**
  * The host's own `~/.ssh` as the credential source: `ssh_config` parsing
  * (Host blocks, HostName/User/Port/IdentityFile, Include expansion), the

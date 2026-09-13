@@ -1,12 +1,12 @@
 import type { AddressInfo } from 'node:net'
-import type { MachineProfile } from '../types/index.js'
+import type { MachineProfile } from '../types/index'
 import { Buffer } from 'node:buffer'
 import { EventEmitter } from 'node:events'
 import { Server, connect as tcpConnect } from 'node:net'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
-import { MachineId } from '../types/index.js'
-import { classifyConnectFailure, describeConnectFailure, loginShell, shQuote, Ssh2Transport } from './transport.js'
+import { MachineId } from '../types/index'
+import { classifyConnectFailure, describeConnectFailure, loginShell, shQuote, Ssh2Transport } from './transport'
 
 const profile: MachineProfile = {
   id: MachineId('m1'),

@@ -9,7 +9,7 @@ import {
   parsePlatform,
   pnpmDownloadUrls,
   UnsupportedRemotePlatformError,
-} from './assets.js'
+} from './assets'
 
 describe('parsePlatform', () => {
   it('maps uname output onto repo identifiers (amd64/aarch64 aliases included)', () => {

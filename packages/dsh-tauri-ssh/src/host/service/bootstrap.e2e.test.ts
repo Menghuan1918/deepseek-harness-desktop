@@ -15,18 +15,18 @@
  */
 
 /* eslint-disable no-console -- the run's console output IS the recorded evidence */
-import type { MachineProfile, SshLink } from '../types/index.js'
-import type { SshTransport } from './transport.js'
+import type { MachineProfile, SshLink } from '../types/index'
+import type { SshTransport } from './transport'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { MachineId } from '../types/index.js'
-import { SshMachineEvents } from './events.js'
-import { KnownHostsStore } from './host-keys.js'
-import { SshManager } from './manager.js'
-import { SshConfigResolver } from './ssh-config.js'
-import { Ssh2Transport } from './transport.js'
+import { MachineId } from '../types/index'
+import { SshMachineEvents } from './events'
+import { KnownHostsStore } from './host-keys'
+import { SshManager } from './manager'
+import { SshConfigResolver } from './ssh-config'
+import { Ssh2Transport } from './transport'
 
 /** The shared dev machine alias from `~/.ssh/config` (key auth). */
 const HOST = process.env.DSH_SSH_E2E_HOST

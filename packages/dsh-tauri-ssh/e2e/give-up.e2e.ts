@@ -6,9 +6,9 @@
  * @module dsh-tauri-ssh/e2e/give-up
  */
 
-import type { MachineProfile } from '../src/host/types/index.js'
+import type { MachineProfile } from '../src/host/types/index'
 import { describe, expect, it } from 'vitest'
-import { bootHarness, id, waitFor } from './helpers.js'
+import { bootHarness, id, waitFor } from './helpers'
 
 const profile: MachineProfile = {
   id: id('unreachable'),

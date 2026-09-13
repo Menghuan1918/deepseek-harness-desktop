@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MachineId } from '../types/index.js'
-import { EVENT_RING_CAPACITY, SshMachineEvents } from './events.js'
+import { MachineId } from '../types/index'
+import { EVENT_RING_CAPACITY, SshMachineEvents } from './events'
 
 const m1 = MachineId('m1')
 const m2 = MachineId('m2')

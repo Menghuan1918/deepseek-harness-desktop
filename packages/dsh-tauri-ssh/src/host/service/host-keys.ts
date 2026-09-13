@@ -10,7 +10,7 @@
  */
 
 import type { Buffer } from 'node:buffer'
-import type { MachineId } from '../types/index.js'
+import type { MachineId } from '../types/index'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'pathe'

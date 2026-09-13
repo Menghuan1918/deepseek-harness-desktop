@@ -1,16 +1,24 @@
-import type { UiContext } from './types/index.js'
+import type { UiContext } from './types/index'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apply as hostApply } from '../index.js'
+import { apply as hostApply } from '../index'
 import { MachinesSection } from './components/machines-section.tsx'
-import { apply, inject } from './index.js'
-import { en, zh } from './locales/index.js'
-import { desktopBridge } from './service/bridge.js'
-import { MachinesStore } from './store/index.js'
+import { apply, inject } from './index'
+import { en, zh } from './locales/index'
+import { desktopBridge } from './service/bridge'
+import { MachinesStore } from './store/index'
 
 // The desktop invoke bridge resolves through the runtime module table, which
 // does not exist under vitest; the registrant tests only need its shape.
 // (vitest hoists vi.mock above the imports, so placement here is safe.)
-vi.mock('dsh-tauri/client', () => ({ invokeBridgedTauri: vi.fn(async () => undefined) }))
+vi.mock('dsh-tauri/client', () => ({ invoke: vi.fn(async () => undefined) }))
+
+// dsh-tauri-ui/client 的 dist bundle 以 ModuleLoader 工厂包裹，脱离宿主加载器
+// 无法在 node 求值；样式挂载只需要一个可观察的 mountStyle 桩，cssr 用源文件
+// 实例（与 dsh-tauri-panel 的 cssr 测试同款做法）。
+vi.mock('dsh-tauri-ui/client', async () => {
+  const mod = await import('../../../dsh-tauri-ui/src/client/utils/cssr.ts')
+  return { cssr: mod.cssr, mountStyle: vi.fn(() => () => {}) }
+})
 
 function scriptedCtx(): {
   ctx: UiContext
@@ -48,7 +56,7 @@ describe('ui-ssh client plugin', () => {
   it('registers the ssh dictionaries on activation', () => {
     const { ctx, locale, effects } = scriptedCtx()
     apply(ctx)
-    expect(effects).toHaveLength(1)
+    expect(effects).toHaveLength(2)
     effects[0]?.()
     expect(locale.register).toHaveBeenCalledWith('ssh', { zh, en })
     expect(locale.bind).toHaveBeenCalledWith('ssh')

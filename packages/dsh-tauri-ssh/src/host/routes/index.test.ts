@@ -1,12 +1,12 @@
-import type { MachineView, SshTestResult } from '../types/index.js'
-import type { SshApiHost, SshApiResponse } from './index.js'
+import type { MachineView, SshTestResult } from '../types/index'
+import type { SshApiHost, SshApiResponse } from './index'
 import { Buffer } from 'node:buffer'
 import { IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
-import { SshMachineEvents } from '../service/events.js'
-import { MachineId, SshError } from '../types/index.js'
-import { createSshApiHandler, isLoopbackPeer } from './index.js'
+import { SshMachineEvents } from '../service/events'
+import { MachineId, SshError } from '../types/index'
+import { createSshApiHandler, isLoopbackPeer } from './index'
 
 const view: MachineView = {
   id: MachineId('m1'),

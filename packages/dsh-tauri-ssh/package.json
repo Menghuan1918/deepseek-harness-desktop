@@ -24,10 +24,7 @@
   ],
   "sideEffects": false,
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
+    ".": "./dist/index.js",
     "./package.json": "./package.json"
   },
   "main": "./dist/index.js",
@@ -46,6 +43,7 @@
     "build": "tsdown",
     "dev": "tsdown --watch",
     "prepublishOnly": "nr build",
+    "start": "tsx src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc",
     "test:e2e": "vitest run --config e2e.vitest.config.ts"

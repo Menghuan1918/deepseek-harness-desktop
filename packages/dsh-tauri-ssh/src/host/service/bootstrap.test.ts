@@ -1,6 +1,6 @@
-import type { MachineProfile } from '../types/index.js'
-import type { RemoteInstallPlan } from './bootstrap.js'
-import type { SshExecOptions, SshExecResult, SshSession } from './transport.js'
+import type { MachineProfile } from '../types/index'
+import type { RemoteInstallPlan } from './bootstrap'
+import type { SshExecOptions, SshExecResult, SshSession } from './transport'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
-import { MachineId } from '../types/index.js'
+import { MachineId } from '../types/index'
 import {
   buildInstallScript,
   bundleProbeCommand,
@@ -31,7 +31,7 @@ import {
   skippedVerificationSummary,
   splitBundleProbeStdout,
   startCommandFor,
-} from './bootstrap.js'
+} from './bootstrap'
 
 const profile: MachineProfile = {
   id: MachineId('m1'),

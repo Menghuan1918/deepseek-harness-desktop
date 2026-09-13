@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clientUrlsFromBootHtml, decodeHtmlAttribute, isClientBundlePath, looksLikePluginBundle } from './boot-html.js'
+import { clientUrlsFromBootHtml, decodeHtmlAttribute, isClientBundlePath, looksLikePluginBundle } from './boot-html'
 
 /** A realistic rc-line boot page: combo preload script + entries graph. */
 const BOOT_HTML = [

@@ -1,5 +1,5 @@
 import type { Buffer } from 'node:buffer'
-import type { Config } from '../storage/index.js'
+import type { Config } from '../storage/index'
 /**
  * Per-machine connection manager: profile map, the disconnected/connecting/
  * connected state machine, TOFU host-key gating, remote-instance assurance,
@@ -8,17 +8,17 @@ import type { Config } from '../storage/index.js'
  * @module dsh-tauri-ssh/host/service/manager
  */
 
-import type { MachineId, MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStatus, SshProgress, SshTestResult } from '../types/index.js'
-import type { BootstrapHooks } from './bootstrap.js'
-import type { SshMachineEvents } from './events.js'
-import type { KnownHostsStore } from './host-keys.js'
-import type { SshSession, SshTransport, SshTunnelHandle } from './transport.js'
+import type { MachineId, MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStatus, SshProgress, SshTestResult } from '../types/index'
+import type { BootstrapHooks } from './bootstrap'
+import type { SshMachineEvents } from './events'
+import type { KnownHostsStore } from './host-keys'
+import type { SshSession, SshTransport, SshTunnelHandle } from './transport'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
-import { SshError } from '../types/index.js'
-import { checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, runInstallScript, skippedVerificationSummary } from './bootstrap.js'
-import { fingerprintHostKey } from './host-keys.js'
+import { SshError } from '../types/index'
+import { checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, runInstallScript, skippedVerificationSummary } from './bootstrap'
+import { fingerprintHostKey } from './host-keys'
 
 /** One machine's live connection state. */
 interface MachineState {
@@ -52,7 +52,7 @@ export interface SshManagerDeps {
   /** The machine event channel (C-EVENT): bootstrap log/progress events. */
   events: SshMachineEvents
   /** The install-plan resolver (overridable so tests never touch the network). */
-  planInstall?: (unameOut: string, config: Pick<Config, 'installRepo' | 'installRef'>) => Promise<import('./bootstrap.js').RemoteInstallPlan>
+  planInstall?: (unameOut: string, config: Pick<Config, 'installRepo' | 'installRef'>) => Promise<import('./bootstrap').RemoteInstallPlan>
   /** Publish one machine's status change (the service emits the seam event). */
   emitStatus: (machineId: MachineId, status: SshMachineStatus) => void
   /** Local dsh `.env` credentials to copy after an install (defaults to the host's own). */

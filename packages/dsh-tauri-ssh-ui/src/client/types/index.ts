@@ -48,5 +48,5 @@ export type {
   SyncPluginItem,
   SyncPreview,
   SyncSkillItem,
-} from './sync.js'
-export { isLifecycleState } from './sync.js'
+} from './sync'
+export { isLifecycleState } from './sync'

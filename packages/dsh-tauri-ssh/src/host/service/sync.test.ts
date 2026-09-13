@@ -1,8 +1,8 @@
-import type { SshExecResult, SshSession } from './transport.js'
+import type { SshExecResult, SshSession } from './transport'
 import { Buffer } from 'node:buffer'
 import { describe, expect, it, vi } from 'vitest'
-import { MachineId } from '../types/index.js'
-import { buildPreview, classifySpec, pluginAddCommand, skillExtractCommand, SyncEngine } from './sync.js'
+import { MachineId } from '../types/index'
+import { buildPreview, classifySpec, pluginAddCommand, skillExtractCommand, SyncEngine } from './sync'
 
 /** A scripted SSH session: commands dispatched by order or by matcher. */
 function fakeSession(respond: (command: string, options?: { stdinData?: Buffer }) => SshExecResult): SshSession & { execSpy: ReturnType<typeof vi.fn>, closed: () => boolean } {
