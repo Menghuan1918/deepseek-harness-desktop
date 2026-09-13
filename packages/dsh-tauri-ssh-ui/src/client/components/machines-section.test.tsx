@@ -75,25 +75,48 @@ describe('machinesSection', () => {
     expect(fetchFn).toHaveBeenCalledWith('/api-ssh', expect.objectContaining({ method: 'POST' }))
   })
 
-  it('shows the empty state and adds a machine draft', async () => {
-    mount()
+  it('opens the add dialog and saves the new machine immediately', async () => {
+    const { fetchFn } = mount()
     await waitFor(() => expect(screen.getByText(/No SSH machines yet/)).toBeTruthy())
     fireEvent.click(screen.getByText('Add machine'))
-    expect(screen.getByTestId('machine-')).toBeTruthy()
-    const idInput = screen.getByLabelText('ID')
-    fireEvent.change(idInput, { target: { value: 'n1' } })
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'newton' } })
-    fireEvent.change(screen.getByLabelText('Host or config alias'), { target: { value: '10.1.1.1' } })
-    fireEvent.change(screen.getByLabelText('User (optional)'), { target: { value: 'ops' } })
-    expect(screen.getByText('Save').closest('button')?.hasAttribute('disabled')).toBe(false)
+    // 表单在弹窗里：ID 由主机自动派生，提交即落盘（不需要再点 Save）
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Add machine' })).toBeTruthy())
+    const dialog = within(screen.getByRole('dialog', { name: 'Add machine' }))
+    fireEvent.change(dialog.getByLabelText('Host or config alias'), { target: { value: 'ops@10.1.1.1' } })
+    fireEvent.change(dialog.getByLabelText('Name'), { target: { value: 'newton' } })
+    fireEvent.change(dialog.getByLabelText('User (optional)'), { target: { value: 'ops' } })
+    expect(dialog.getByLabelText('ID')).toHaveProperty('value', '10-1-1-1')
+    fireEvent.click(dialog.getByText('Add & save'))
+    await waitFor(() => expect(saveCalls(fetchFn)).toHaveLength(1))
+    const payload = saveCalls(fetchFn)[0] as { machineId: string, row: Record<string, unknown> }
+    expect(payload.machineId).toBe('10-1-1-1')
+    expect(payload.row).toMatchObject({ name: 'newton', host: 'ops@10.1.1.1', user: 'ops' })
+    await waitFor(() => expect(screen.getByTestId('machine-10-1-1-1')).toBeTruthy())
   })
 
-  it('blocks saving while a draft is incomplete', async () => {
+  it('derives a unique auto id and validates taken ids inline', async () => {
+    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } } })
+    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    fireEvent.click(screen.getByText('Add machine'))
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Add machine' })).toBeTruthy())
+    const dialog = within(screen.getByRole('dialog', { name: 'Add machine' }))
+    // 自动 ID 从主机派生
+    fireEvent.change(dialog.getByLabelText('Host or config alias'), { target: { value: 'alpha.internal' } })
+    expect(dialog.getByLabelText('ID')).toHaveProperty('value', 'alpha-internal')
+    // 手改 ID 撞已有：内联报错且提交禁用
+    fireEvent.change(dialog.getByLabelText('ID'), { target: { value: 'a' } })
+    await waitFor(() => expect(dialog.getByText('ID already in use')).toBeTruthy())
+    expect(dialog.getByText('Add & save').closest('button')?.hasAttribute('disabled')).toBe(true)
+  })
+
+  it('blocks submit while the host is empty', async () => {
     mount()
     await waitFor(() => expect(screen.getByText(/No SSH machines yet/)).toBeTruthy())
     fireEvent.click(screen.getByText('Add machine'))
-    expect(screen.getByText(/Fill in the machine ID, name, and host/)).toBeTruthy()
-    expect(screen.getByText('Save').closest('button')?.hasAttribute('disabled')).toBe(true)
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Add machine' })).toBeTruthy())
+    const dialog = within(screen.getByRole('dialog', { name: 'Add machine' }))
+    expect(dialog.getByText('Host is required')).toBeTruthy()
+    expect(dialog.getByText('Add & save').closest('button')?.hasAttribute('disabled')).toBe(true)
   })
 
   it('persists edits through the store', async () => {
@@ -108,7 +131,7 @@ describe('machinesSection', () => {
     expect(payload.secrets).toMatchObject({ password: 'sekrit' })
   })
 
-  it('removes a draft through the confirmation modal and removes the machine on save', async () => {
+  it('removes a machine immediately through the confirmation modal', async () => {
     const { fetchFn } = mount({
       envelope: {
         ok: true,
@@ -125,10 +148,10 @@ describe('machinesSection', () => {
     fireEvent.click(withinButton(betaCard, 'Remove'))
     await waitFor(() => expect(screen.getByText('Remove it')).toBeTruthy())
     fireEvent.click(screen.getByText('Remove it'))
-    await waitFor(() => expect(screen.queryByTestId('machine-b')).toBeNull())
-    fireEvent.click(screen.getByText('Save'))
+    // 确认即删除：无需再点保存
     await waitFor(() => expect(removeCalls(fetchFn)).toHaveLength(1))
     expect(removeCalls(fetchFn)[0]).toEqual({ method: 'machine.remove', payload: { machineId: 'b' } })
+    await waitFor(() => expect(screen.queryByTestId('machine-b')).toBeNull())
   })
 
   it('tests, connects, opens through the desktop bridge, and disconnects a machine', async () => {

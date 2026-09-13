@@ -479,8 +479,9 @@ export class MachinesStore {
    * keep the stored value) and machine.remove for ids that vanished.
    * @param machines - the form's machine rows (id is the dict key).
    * @param secrets - secret values the operator typed, keyed by machine id.
+   * @returns whether every write landed (failures surface as `state.error`).
    */
-  async persist(machines: MachineRow[], secrets: Record<string, SecretValues>): Promise<void> {
+  async persist(machines: MachineRow[], secrets: Record<string, SecretValues>): Promise<boolean> {
     const previous = this.store.getSnapshot().machines
     const previousIds = new Set(previous.map(row => row.id))
     try {
@@ -496,11 +497,31 @@ export class MachinesStore {
         state.error = null
       })
       await this.load()
+      return true
     }
     catch (error) {
       this.store.update((state) => {
         state.error = messageOf(error)
       })
+      return false
+    }
+  }
+
+  /** Remove one machine immediately (config + secrets); returns success. */
+  async remove(id: string): Promise<boolean> {
+    try {
+      await this.callApi<Record<string, never>>('machine.remove', { machineId: id })
+      this.store.update((state) => {
+        state.error = null
+      })
+      await this.load()
+      return true
+    }
+    catch (error) {
+      this.store.update((state) => {
+        state.error = messageOf(error)
+      })
+      return false
     }
   }
 

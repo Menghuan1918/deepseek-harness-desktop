@@ -40,7 +40,7 @@ export interface MachinesSectionProps extends MachinesSectionInjected {
   t: (key: SshKey) => string
 }
 
-/** One editable draft row (a `new-…` key marks an unsaved machine). */
+/** One editable draft row (key is the machine id; rows always mirror saved machines). */
 interface Draft {
   key: string
   row: MachineRow
@@ -64,6 +64,31 @@ interface RemoveTarget {
 
 const DEFAULT_PORT = 22
 const DEFAULT_REMOTE_PORT = 3080
+
+/** Derive the machine id from a host: lowercase alnum-dash slug of the first label. */
+function slugOf(host: string): string {
+  return host
+    .trim()
+    .toLowerCase()
+    .replace(/^.*@/u, '')
+    .replace(/[^a-z0-9-]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+}
+
+/** The first free id: the slug itself, else slug-2, slug-3, … */
+function freeIdOf(base: string, taken: ReadonlySet<string>): string {
+  if (base !== '' && !taken.has(base))
+    return base
+  const stem = base === '' ? 'machine' : base
+  for (let n = 2;; n += 1) {
+    const candidate = `${stem}-${n}`
+    if (!taken.has(candidate))
+      return candidate
+  }
+}
+
+/** The id vocabulary (starts lowercase alnum; dashes allowed inside). */
+const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/u
 
 /** The identity-color palette (fits the DSH status hue family). */
 const COLOR_CHOICES = [
@@ -158,7 +183,7 @@ export function MachineCard(
             <Input
               className={moduleClass(css.fieldInput)}
               value={row.id}
-              disabled={!draft.key.startsWith('new-')}
+              disabled
               onChange={event => onChange(draft.key, { id: event.target.value })}
             />
           </Field>
@@ -551,6 +576,107 @@ function messageOf(error: unknown): string {
 }
 
 /**
+ * The add-machine dialog: one focused form, saved immediately on submit
+ * (the parent appends the row to the store). The id auto-derives from the
+ * host until the operator touches the field. Remount per open (the parent
+ * keys it by the open flag) so every open starts from a clean form.
+ */
+function AddMachineDialog({ t, saving, takenIds, onSubmit, onClose }: {
+  t: (key: SshKey) => string
+  saving: boolean
+  /** Ids the new machine must not collide with. */
+  takenIds: ReadonlySet<string>
+  onSubmit: (row: MachineRow) => void
+  onClose: () => void
+}): ReactNode {
+  const [host, setHost] = useState('')
+  const [name, setName] = useState('')
+  const [id, setId] = useState('')
+  const [idTouched, setIdTouched] = useState(false)
+  const [port, setPort] = useState(String(DEFAULT_PORT))
+  const [user, setUser] = useState('')
+  const [remotePort, setRemotePort] = useState(String(DEFAULT_REMOTE_PORT))
+
+  const slug = slugOf(host)
+  const effectiveId = idTouched ? id.trim() : (slug === '' ? '' : freeIdOf(slug, takenIds))
+  const trimmedHost = host.trim()
+  const errorKey: SshKey | null
+    = trimmedHost === '' ? 'add.host_required'
+      : !ID_PATTERN.test(effectiveId) ? 'add.id_invalid'
+        : takenIds.has(effectiveId) ? 'add.id_taken'
+          : null
+
+  function submit(): void {
+    if (errorKey !== null || saving)
+      return
+    onSubmit({
+      id: effectiveId,
+      name: name.trim() === '' ? effectiveId : name.trim(),
+      host: trimmedHost,
+      port: numberOf(port, DEFAULT_PORT),
+      user: user.trim(),
+      hasPassword: false,
+      hasPassphrase: false,
+      remotePort: numberOf(remotePort, DEFAULT_REMOTE_PORT),
+    })
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t('add.title')}
+      closeLabel={t('add.cancel')}
+      footer={(
+        <>
+          <Button variant="ghost" disabled={saving} onClick={onClose}>{t('add.cancel')}</Button>
+          <Button variant="primary" disabled={saving || errorKey !== null} onClick={submit}>{t('add.submit')}</Button>
+        </>
+      )}
+    >
+      <div className={cls.grid}>
+        <Field label={t('field.host')}>
+          <Input
+            className={cls.fieldInput}
+            value={host}
+            autoFocus
+            disabled={saving}
+            onChange={event => setHost(event.target.value)}
+          />
+        </Field>
+        <Field label={t('field.name')}>
+          <Input className={cls.fieldInput} value={name} disabled={saving} onChange={event => setName(event.target.value)} />
+        </Field>
+        <Field label={t('field.id')}>
+          <Input
+            className={cls.fieldInput}
+            value={idTouched ? id : effectiveId}
+            placeholder={t('add.id_auto')}
+            disabled={saving}
+            onChange={(event) => {
+              setIdTouched(true)
+              setId(event.target.value)
+            }}
+          />
+        </Field>
+        <Field label={t('field.user')}>
+          <Input className={cls.fieldInput} value={user} disabled={saving} onChange={event => setUser(event.target.value)} />
+        </Field>
+        <Field label={t('field.port')}>
+          <Input className={cls.fieldInput} value={port} disabled={saving} onChange={event => setPort(event.target.value)} />
+        </Field>
+        <Field label={t('field.remotePort')}>
+          <Input className={cls.fieldInput} value={remotePort} disabled={saving} onChange={event => setRemotePort(event.target.value)} />
+        </Field>
+      </div>
+      {errorKey === null
+        ? <p className={cls.hint}>{t('add.id_auto')}</p>
+        : <p className={cls.error} role="alert">{t(errorKey)}</p>}
+    </Modal>
+  )
+}
+
+/**
  * Render the SSH-machines settings page.
  * @returns the page element tree.
  */
@@ -558,7 +684,8 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
   const [dirty, setDirty] = useState<DirtySecrets>({})
-  const [addCounter, setAddCounter] = useState(0)
+  const [addOpen, setAddOpen] = useState(false)
+  const [addSaving, setAddSaving] = useState(false)
   const [initialized, setInitialized] = useState(false)
   const [availability, setAvailability] = useState<BridgeAvailability>(() => bridge?.probe === undefined ? 'web' : 'unknown')
   const [bridgeErrors, setBridgeErrors] = useState<Record<string, string>>({})
@@ -627,35 +754,40 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
   }
 
   const addMachine = (): void => {
-    const key = `new-${addCounter}`
-    setAddCounter(addCounter + 1)
-    setDrafts(previous => ({
-      ...previous,
-      [key]: {
-        key,
-        row: {
-          id: '',
-          name: '',
-          host: '',
-          port: DEFAULT_PORT,
-          user: '',
-          hasPassword: false,
-          hasPassphrase: false,
-          remotePort: DEFAULT_REMOTE_PORT,
-        },
-      },
-    }))
+    setAddOpen(true)
+  }
+
+  /** Add = create-and-save now: persist the saved set plus the new row; other
+   *  staged edits stay staged (we pass state.machines, not the drafts). */
+  const submitAdd = async (row: MachineRow): Promise<void> => {
+    setAddSaving(true)
+    const ok = await store.persist([...store.getSnapshot().machines, row], {})
+    setAddSaving(false)
+    if (!ok)
+      return
+    setDrafts(previous => ({ ...previous, [row.id]: { key: row.id, row: { ...row } } }))
+    setAddOpen(false)
   }
 
   const confirmRemove = (): void => {
     if (removeTarget === null)
       return
-    const key = removeTarget.key
+    const { key, id } = removeTarget
     setRemoveTarget(null)
-    setDrafts((previous) => {
-      const next = { ...previous }
-      delete next[key]
-      return next
+    // 删除立即生效：确认即调 machine.remove，成功后摘掉草稿与脏密钥
+    void store.remove(id).then((ok) => {
+      if (!ok)
+        return
+      setDrafts((previous) => {
+        const next = { ...previous }
+        delete next[key]
+        return next
+      })
+      setDirty((previous) => {
+        const next = { ...previous }
+        delete next[key]
+        return next
+      })
     })
   }
 
@@ -782,6 +914,20 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
         ))}
       </ul>
       <SyncPanel store={store} t={t} />
+      {addOpen
+        ? (
+            <AddMachineDialog
+              t={t}
+              saving={addSaving}
+              takenIds={new Set([...state.machines.map(row => row.id), ...Object.values(drafts).map(draft => draft.row.id)])}
+              onSubmit={row => void submitAdd(row)}
+              onClose={() => {
+                if (!addSaving)
+                  setAddOpen(false)
+              }}
+            />
+          )
+        : null}
       <Modal
         open={removeTarget !== null}
         onClose={() => setRemoveTarget(null)}
