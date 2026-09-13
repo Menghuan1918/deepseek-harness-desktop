@@ -203,6 +203,22 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByTestId('bridge-error-a').textContent).toContain('window refused'))
   })
 
+  it('shows an in-flight opening state and settles back afterwards', async () => {
+    let release: () => void = () => {}
+    const openWindow = vi.fn(() => new Promise<void>((resolve) => {
+      release = resolve
+    }))
+    mount({
+      bridge: desktopBridge(openWindow),
+      envelope: { ok: true, value: { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:49152' }] } },
+    })
+    fireEvent.click(await screen.findByText('Open'))
+    // 在飞：按钮换「Opening…」并禁用，杜绝连点
+    await waitFor(() => expect(screen.getByText('Opening…').closest('button')?.hasAttribute('disabled')).toBe(true))
+    act(() => release())
+    await waitFor(() => expect(withinButton(screen.getByTestId('machine-a'), 'Open')).toBeTruthy())
+  })
+
   it('renders the connecting state with the connect action disabled', async () => {
     mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'connecting' }] } } })
     await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
