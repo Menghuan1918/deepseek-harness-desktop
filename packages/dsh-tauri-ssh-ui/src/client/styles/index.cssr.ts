@@ -59,6 +59,11 @@ export default c([
     borderStyle: 'dashed',
   }),
 
+  /* Dirty form: ring the Save button so the staged-but-unsaved state is visible. */
+  c('.dshp-ssh-save-dirty', {
+    boxShadow: '0 0 0 2px var(--dsw-alias-state-warning-primary, #d48806)',
+  }),
+
   /* The machine list: one hairline card per machine. */
   c('.dshp-ssh-rows', {
     listStyle: 'none',

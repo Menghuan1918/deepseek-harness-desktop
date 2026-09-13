@@ -24,7 +24,7 @@ import { toast } from '@/utils/toast'
 export function RemoteSwitcher() {
   const { t } = useTranslation()
   useRemoteMachines()
-  const { machines, activeId, available } = useStore(store.remote)
+  const { machines, activeId, available, pendingId } = useStore(store.remote)
 
   const activeMachine = machines.find(machine => machine.id === activeId)
   const activeColor = activeMachine?.color
@@ -85,7 +85,7 @@ export function RemoteSwitcher() {
               className="rounded-md"
               id={`remote-${machine.id}`}
               textValue={machine.name}
-              isDisabled={!available}
+              isDisabled={!available || pendingId !== null}
               onAction={() => { store.remote.switchTo(machine.id) }}
             >
               <span
@@ -101,7 +101,11 @@ export function RemoteSwitcher() {
                   style={dotStyleOf(machine)}
                 />
                 <Label className="min-w-0 truncate">{machine.name}</Label>
-                <Description className="ml-auto shrink-0">{t(`remote.state.${machine.state}`)}</Description>
+                {/* 待切换的机器在首轮轮询回报前尚无 connecting 状态：由
+                     pendingId 立即给出「连接中」反馈，避免点了没反应 */}
+                <Description className={cn('ml-auto shrink-0', pendingId === machine.id && 'text-warning')}>
+                  {pendingId === machine.id ? t('remote.state.connecting') : t(`remote.state.${machine.state}`)}
+                </Description>
               </span>
             </Dropdown.Item>
           ))}

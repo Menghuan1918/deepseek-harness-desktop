@@ -235,7 +235,7 @@ describe('machinesStore', () => {
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: true, banner: 'Linux alpha' } }) } as unknown as Response)
     await store.test('a')
     const state = store.getSnapshot()
-    expect(state.notice).toBe('Linux alpha')
+    expect(state.notice).toEqual({ kind: 'text', text: 'Linux alpha' })
     expect(state.busy).toEqual({})
     const [, init] = fetchFn.mock.calls[1] as [string, RequestInit]
     expect(JSON.parse(String(init.body))).toEqual({ method: 'machine.test', payload: { machineId: 'a' } })
@@ -246,11 +246,11 @@ describe('machinesStore', () => {
     await store.load()
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: true } }) } as unknown as Response)
     await store.test('a')
-    expect(store.getSnapshot().notice).toBe('ok')
+    expect(store.getSnapshot().notice).toEqual({ kind: 'key', key: 'notice.probe_ok' })
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: false } }) } as unknown as Response)
     await store.test('a')
     const state = store.getSnapshot()
-    expect(state.notice).toBe('failed')
+    expect(state.notice).toEqual({ kind: 'key', key: 'notice.probe_failed' })
     expect(state.statuses.a).toEqual({ state: 'disconnected', lastError: 'failed' })
   })
 
@@ -260,8 +260,25 @@ describe('machinesStore', () => {
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: false, message: 'auth failed' } }) } as unknown as Response)
     await store.test('a')
     const state = store.getSnapshot()
-    expect(state.notice).toBe('auth failed')
+    expect(state.notice).toEqual({ kind: 'text', text: 'auth failed' })
     expect(state.statuses.a).toEqual({ state: 'disconnected', lastError: 'auth failed' })
+  })
+
+  it('never downgrades a live connection after a probe (regression)', async () => {
+    // 探测是旁路健康检查，不触碰连接面：已连接的机器被点「测试」后必须
+    // 保持 connected/tunnelBaseUrl，否则 UI 会把一条活连接显示成断开。
+    const { store, fetchFn } = boot()
+    await store.load()
+    fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { tunnelBaseUrl: 'http://127.0.0.1:49152' } }) } as unknown as Response)
+    await store.connect('a')
+    fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: true, banner: 'Linux alpha' } }) } as unknown as Response)
+    await store.test('a')
+    expect(store.getSnapshot().statuses.a).toEqual({ state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:49152' })
+    fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: false, message: 'auth failed' } }) } as unknown as Response)
+    await store.test('a')
+    const state = store.getSnapshot()
+    expect(state.statuses.a?.state).toBe('connected')
+    expect(state.statuses.a?.lastError).toBe('auth failed')
   })
 
   it('connects, disconnects, and tracks busy state', async () => {
@@ -273,7 +290,7 @@ describe('machinesStore', () => {
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: {} }) } as unknown as Response)
     await store.disconnect('a')
     expect(store.getSnapshot().statuses.a).toEqual({ state: 'disconnected' })
-    expect(store.getSnapshot().notice).toBe('disconnected')
+    expect(store.getSnapshot().notice).toEqual({ kind: 'key', key: 'notice.disconnected' })
   })
 
   it('marks a machine busy while a connection-plane op is in flight', async () => {

@@ -26,6 +26,7 @@ export const cls = {
   chrome: 'dshp-ssh-chrome',
   dangerAction: 'dshp-ssh-danger-action',
   addAction: 'dshp-ssh-add-action',
+  saveDirty: 'dshp-ssh-save-dirty',
   rows: 'dshp-ssh-rows',
   group: 'dshp-ssh-group',
   groupTitle: 'dshp-ssh-group-title',

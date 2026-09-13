@@ -10,8 +10,18 @@
  */
 
 import type { MachineLifecycleState, SshMachineEvent, SyncApplyResult, SyncItemResult, SyncPreview } from '../types/index'
+import type { SshKey } from '../locales/index'
 import { SSH_API_PATH } from '../constants/index'
 import { isLifecycleState } from '../types/index'
+
+/**
+ * A published notice: `text` carries host-provided words verbatim (banner /
+ * failure message); `key` is a store-generated literal rendered through the
+ * locale table (params folded by `{name}` replacement at render time).
+ */
+export type MachinesNotice
+  = | { kind: 'text', text: string }
+    | { kind: 'key', key: SshKey, params?: Record<string, string> }
 
 /** One redacted machine row (secret fields live only in the form). */
 export interface MachineRow {
@@ -92,7 +102,7 @@ export interface MachinesPageState {
   /** One in-flight connection-plane op per machine id. */
   busy: Record<string, 'test' | 'connect' | 'disconnect' | 'install'>
   /** The latest connection-plane outcome, shown in the banner. */
-  notice: string | null
+  notice: MachinesNotice | null
   /** The latest install outcome per machine id (shown under the card). */
   installResults: Record<string, InstallResult>
   /** The sync-to-remote panel state. */
@@ -522,14 +532,25 @@ export class MachinesStore {
       const result = await this.callApi<{ ok: boolean, banner?: string, message?: string }>('machine.test', { machineId: id })
       if (result.ok) {
         this.store.update((state) => {
-          state.notice = result.banner ?? 'ok'
-          state.statuses[id] = { state: 'disconnected' }
+          state.notice = result.banner === undefined || result.banner === ''
+            ? { kind: 'key', key: 'notice.probe_ok' }
+            : { kind: 'text', text: result.banner }
+          // 探测是旁路健康检查：只在还没有状态记录时落 disconnected，
+          // 绝不把一条已建立/进行中的连接打回断开（连接面由轮询真值维护）。
+          if (state.statuses[id] === undefined)
+            state.statuses[id] = { state: 'disconnected' }
         })
       }
       else {
         this.store.update((state) => {
-          state.notice = result.message ?? 'failed'
-          state.statuses[id] = { state: 'disconnected', lastError: result.message ?? 'failed' }
+          state.notice = result.message === undefined || result.message === ''
+            ? { kind: 'key', key: 'notice.probe_failed' }
+            : { kind: 'text', text: result.message }
+          const current = state.statuses[id]
+          // 失败只追加 lastError；已有的连接态原样保留（真断开由轮询呈现）。
+          state.statuses[id] = current === undefined || current.state === 'disconnected'
+            ? { state: 'disconnected', lastError: result.message ?? 'failed' }
+            : { ...current, lastError: result.message ?? 'failed' }
         })
       }
     })
@@ -541,7 +562,7 @@ export class MachinesStore {
       const link = await this.callApi<{ tunnelBaseUrl: string }>('machine.connect', { machineId: id })
       this.store.update((state) => {
         state.statuses[id] = { state: 'connected', tunnelBaseUrl: link.tunnelBaseUrl }
-        state.notice = link.tunnelBaseUrl
+        state.notice = { kind: 'key', key: 'notice.connected', params: { url: link.tunnelBaseUrl } }
       })
     })
   }
@@ -552,7 +573,7 @@ export class MachinesStore {
       await this.callApi<Record<string, never>>('machine.disconnect', { machineId: id })
       this.store.update((state) => {
         state.statuses[id] = { state: 'disconnected' }
-        state.notice = 'disconnected'
+        state.notice = { kind: 'key', key: 'notice.disconnected' }
       })
     })
   }
