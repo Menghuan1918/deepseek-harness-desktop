@@ -59,6 +59,32 @@ export default c([
     borderStyle: 'dashed',
   }),
 
+  /* The step rail: compact phase chips of the in-flight operation. */
+  c('.dshp-ssh-step-rail', {
+    display: 'inline-flex',
+    gap: '4px',
+    margin: '0 0 0 8px',
+    padding: 0,
+    listStyle: 'none',
+    verticalAlign: 'middle',
+  }),
+  c('.dshp-ssh-step-done', {
+    fontSize: '11px',
+    lineHeight: '16px',
+    padding: '0 6px',
+    borderRadius: '999px',
+    color: 'var(--dsw-alias-label-tertiary)',
+    border: '1px solid var(--dsw-alias-line-secondary, currentColor)',
+  }),
+  c('.dshp-ssh-step-current', {
+    fontSize: '11px',
+    lineHeight: '16px',
+    padding: '0 6px',
+    borderRadius: '999px',
+    color: 'var(--dsw-alias-state-warning-primary, #d48806)',
+    border: '1px solid currentColor',
+  }),
+
   /* Dirty form: ring the Save button so the staged-but-unsaved state is visible. */
   c('.dshp-ssh-save-dirty', {
     boxShadow: '0 0 0 2px var(--dsw-alias-state-warning-primary, #d48806)',

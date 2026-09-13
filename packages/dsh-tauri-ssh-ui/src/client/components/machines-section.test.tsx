@@ -306,6 +306,29 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Connecting over SSH'))
   })
 
+  it('renders the step rail with the observed phases, latest highlighted', async () => {
+    const { store, fetchFn } = mount({
+      envelope: { ok: true, value: { items: [{ ...machineA, state: 'connecting', progress: { phase: 'handshake' } }] } },
+    })
+    await waitFor(() => expect(screen.getByTestId('step-rail').textContent).toBe('Handshake'))
+    fetchFn.mockResolvedValueOnce({
+      json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'connecting', progress: { phase: 'probing', attempt: 1, total: 3 } }] } }),
+    } as unknown as Response)
+    await act(async () => {
+      await store.poll()
+    })
+    // install 未出现就不在轨上；最新阶段收尾
+    await waitFor(() => expect(screen.getByTestId('step-rail').textContent).toBe('HandshakeProbe'))
+    // 操作落定（progress 消失）步骤条收起
+    fetchFn.mockResolvedValueOnce({
+      json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:1' }] } }),
+    } as unknown as Response)
+    await act(async () => {
+      await store.poll()
+    })
+    await waitFor(() => expect(screen.queryByTestId('step-rail')).toBeNull())
+  })
+
   it('falls back to question marks when probing progress has no numbers', async () => {
     mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'connecting', progress: { phase: 'probing' } }] } } })
     await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Health check ?/?'))
