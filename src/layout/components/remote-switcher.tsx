@@ -9,6 +9,24 @@ import { store } from '@/store'
 import { dotClassOf, dotStyleOf } from '@/store/modules/remote'
 import { toast } from '@/utils/toast'
 
+/** 机器行的状态描述：pending 立即「连接中」；重连带倒计时；已知凭据类型缀后。 */
+function stateTextOf(
+  machine: { state: string, nextRetryAt?: number, authMethod?: 'agent' | 'key' | 'password' },
+  pending: boolean,
+  t: (key: string, params?: Record<string, unknown>) => string,
+): string {
+  if (pending)
+    return t('remote.state.connecting')
+  let text = t(`remote.state.${machine.state}`)
+  if (machine.state === 'reconnecting' && machine.nextRetryAt !== undefined) {
+    const seconds = Math.max(0, Math.ceil((machine.nextRetryAt - Date.now()) / 1000))
+    text += t('remote.retry_in', { seconds })
+  }
+  if (machine.authMethod !== undefined)
+    text += ` · ${t(`remote.auth.${machine.authMethod}`)}`
+  return text
+}
+
 /**
  * 导航栏远端机器切换器：本地实例 ↔ 各远端机器。
  *
@@ -97,18 +115,32 @@ export function RemoteSwitcher() {
               >
                 <span
                   aria-hidden="true"
-                  className={cn('size-1.5 shrink-0 rounded-full', dotClassOf(machine))}
-                  style={dotStyleOf(machine)}
+                  className={cn('size-1.5 shrink-0 rounded-full', machine.id === activeId ? 'bg-success' : dotClassOf(machine))}
+                  style={machine.id === activeId ? undefined : dotStyleOf(machine)}
                 />
                 <Label className="min-w-0 truncate">{machine.name}</Label>
                 {/* 待切换的机器在首轮轮询回报前尚无 connecting 状态：由
                      pendingId 立即给出「连接中」反馈，避免点了没反应 */}
                 <Description className={cn('ml-auto shrink-0', pendingId === machine.id && 'text-warning')}>
-                  {pendingId === machine.id ? t('remote.state.connecting') : t(`remote.state.${machine.state}`)}
+                  {stateTextOf(machine, pendingId === machine.id, t)}
                 </Description>
               </span>
             </Dropdown.Item>
           ))}
+          {/* 活动远端连接的一键断开（视图先回本地，再向引擎发断开） */}
+          <If cond={activeId !== null}>
+            <Dropdown.Item
+              className="rounded-md"
+              id="remote-disconnect-active"
+              textValue={t('remote.disconnect_active')}
+              onAction={() => {
+                if (activeId !== null)
+                  void store.remote.disconnect(activeId)
+              }}
+            >
+              <Label className="text-warning">{t('remote.disconnect_active')}</Label>
+            </Dropdown.Item>
+          </If>
           <Dropdown.Item
             className="rounded-md"
             id="remote-manage"

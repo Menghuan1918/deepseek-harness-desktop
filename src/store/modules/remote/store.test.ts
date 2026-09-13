@@ -186,4 +186,22 @@ describe('remote store 切换语义', () => {
     remote.switchTo('m1')
     expect(remote.pendingId).toBeNull()
   })
+
+  it('disconnect：活动机器先回本地视图再向引擎发断开，随后 refresh 落定', async () => {
+    const disconnectSpy = vi.fn(async () => undefined)
+    bindSshApiForTests({
+      listMachines: vi.fn(async () => [machineOf({ id: 'm1', state: 'disconnected' })]),
+      connect: vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:4001' })),
+      disconnect: disconnectSpy,
+    })
+    remote.machines = [machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })]
+    remote.activeId = 'm1'
+    remote.activeTunnelUrl = 'http://127.0.0.1:4001'
+    await remote.disconnect('m1')
+    expect(disconnectSpy).toHaveBeenCalledWith('m1')
+    // 视图立即回本地（不等 refresh），refresh 后引擎落定 disconnected
+    expect(remote.activeId).toBeNull()
+    expect(remote.activeTunnelUrl).toBe('')
+    expect(remote.machines[0]?.state).toBe('disconnected')
+  })
 })

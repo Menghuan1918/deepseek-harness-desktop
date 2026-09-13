@@ -30,6 +30,8 @@ export interface SshMachineRow {
   lastError?: string
   /** 下次重连重试时间（epoch ms，reconnecting 时出现）。 */
   nextRetryAt?: number
+  /** 当前（或最近一次成功）连接使用的凭据类型。 */
+  authMethod?: 'agent' | 'key' | 'password'
 }
 
 /** `machine.list` 的应答信封（items = 手动机器，discovered = ~/.ssh/config 别名）。 */

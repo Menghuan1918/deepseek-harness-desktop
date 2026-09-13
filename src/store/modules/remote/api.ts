@@ -58,6 +58,9 @@ function machineRowOf(raw: unknown): SshMachineRow | undefined {
     ...typeof value.tunnelBaseUrl === 'string' ? { tunnelBaseUrl: value.tunnelBaseUrl } : {},
     ...typeof value.lastError === 'string' ? { lastError: value.lastError } : {},
     ...typeof value.nextRetryAt === 'number' ? { nextRetryAt: value.nextRetryAt } : {},
+    ...value.authMethod === 'agent' || value.authMethod === 'key' || value.authMethod === 'password'
+      ? { authMethod: value.authMethod }
+      : {},
   }
 }
 

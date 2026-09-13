@@ -148,6 +148,23 @@ export const remote = defineStore({
       this.activeTunnelUrl = ''
       this.pendingId = null
     },
+
+    /** 断开一台机器：活动机器先退回本地视图，再向引擎发断开。 */
+    async disconnect(machineId: string) {
+      if (this.activeId === machineId)
+        this.backToLocal()
+      if (this.pendingId === machineId)
+        this.pendingId = null
+      try {
+        await api.disconnect(machineId)
+      }
+      catch (err) {
+        console.warn('[remote] disconnect failed:', err)
+      }
+      finally {
+        void this.refresh()
+      }
+    },
   },
 })
 

@@ -32,7 +32,10 @@ let engineMachines: SshMachineRow[] = []
 /** 是否模拟本地实例不可达（/api-ssh 抛错 → 降级态）。 */
 let engineUnreachable = false
 
+let disconnectSpy = vi.fn(async () => undefined)
+
 function bindEngine() {
+  disconnectSpy = vi.fn(async () => undefined)
   bindSshApiForTests({
     listMachines: vi.fn(async () => {
       if (engineUnreachable)
@@ -40,7 +43,7 @@ function bindEngine() {
       return engineMachines
     }),
     connect: vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:4001' })),
-    disconnect: vi.fn(async () => undefined),
+    disconnect: disconnectSpy,
   })
 }
 
@@ -180,5 +183,45 @@ describe('remoteSwitcher 交互与降级', () => {
     await vi.waitFor(() => {
       expect(screen.queryByText('remote.degraded')).toBeNull()
     })
+  })
+})
+
+describe('remoteSwitcher 增强（4.4）', () => {
+  it('活动机器：状态点强制绿色 + 底部「断开当前连接」一键断开并回本地', async () => {
+    seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
+    remote.activeId = 'm1'
+    remote.activeTunnelUrl = 'http://127.0.0.1:4001'
+    render(<RemoteSwitcher />)
+    const menu = await openMenu()
+
+    const dot = within(menu).getByText('alpha').closest('[class*="flex"]')?.querySelector('span')
+    expect(dot?.className).toContain('bg-success')
+
+    fireEvent.click(within(menu).getByText('remote.disconnect_active'))
+    await waitFor(() => {
+      expect(disconnectSpy).toHaveBeenCalledWith('m1')
+    })
+    expect(remote.activeId).toBeNull()
+    expect(remote.activeTunnelUrl).toBe('')
+  })
+
+  it('无活动机器时不出现断开项', async () => {
+    seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
+    render(<RemoteSwitcher />)
+    const menu = await openMenu()
+    expect(within(menu).queryByText('remote.disconnect_active')).toBeNull()
+  })
+
+  it('重连机器显示重试倒计时；已知凭据类型缀在状态后', async () => {
+    seedMachines([
+      machineOf({ id: 'm1', name: 'alpha', state: 'reconnecting', nextRetryAt: Date.now() + 42_000 }),
+      machineOf({ id: 'm2', name: 'beta', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4002', authMethod: 'key' }),
+    ])
+    render(<RemoteSwitcher />)
+    const menu = await openMenu()
+    const alpha = within(menu).getByText('alpha').closest('[class*="flex"]')
+    expect(alpha?.textContent).toContain('remote.retry_in')
+    const beta = within(menu).getByText('beta').closest('[class*="flex"]')
+    expect(beta?.textContent).toContain('remote.auth.key')
   })
 })

@@ -11,7 +11,7 @@ function fakeFetch(envelope: unknown, status = 200): SshFetchFn {
 const listValue: SshMachineListValue = {
   items: [
     { id: 'b', name: 'beta', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4002', color: '#123456', tintBorder: true },
-    { id: 'a', name: 'alpha', state: 'disconnected', lastError: 'boom' },
+    { id: 'a', name: 'alpha', state: 'disconnected', lastError: 'boom', authMethod: 'key', nextRetryAt: 1725000000000 },
   ],
   discovered: [
     { id: 'alias', name: 'alias-host', state: 'disconnected' },
@@ -32,6 +32,8 @@ describe('createSshApiClient', () => {
     // 按 name 排序：alias-host < alpha < beta
     expect(rows.map(row => row.id)).toEqual(['alias', 'a', 'b'])
     expect(rows[2]).toMatchObject({ color: '#123456', tintBorder: true, tunnelBaseUrl: 'http://127.0.0.1:4002' })
+    // 增量投影：authMethod 与 nextRetryAt 随行透出（切换器倒计时/凭据后缀用）
+    expect(rows[1]).toMatchObject({ authMethod: 'key', nextRetryAt: 1725000000000 })
     // 请求形状：POST /api-ssh + machine.list 信封
     expect(fetchFn).toHaveBeenCalledWith(
       'http://127.0.0.1:3081/api-ssh',
