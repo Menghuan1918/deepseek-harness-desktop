@@ -6,7 +6,8 @@ S5 验收中「数据面全旅程」「壳层命令/单测/lint」「capability�
 
 ## 准备
 
-- [ ] worktree 内 `pnpm install && pnpm build:plugins`，`pnpm tauri dev`
+- [ ] 分支 `feat/ssh-remote-machines-v14`（origin/main v0.14.1 适配）上
+      `pnpm install && pnpm build:plugins`，`pnpm tauri dev`
       （debug 端口 3081 / DSH_HOME `~/.dsh.dev`；注意 1420 端口空闲）。
 - [ ] dev 机器可在 web 设置页添加（host=dev 别名即被 ~/.ssh/config 发现）；
       如远端 home 层 pin 了 webserver 端口，机器配置里填自定义启动命令
@@ -51,21 +52,45 @@ S5 验收中「数据面全旅程」「壳层命令/单测/lint」「capability�
 
 ## E 断线自动恢复（S3 联动，GUI 观察）
 
-- [ ] 活动机器被服务端掐线（远端重启 sshd / 断网）：切换器显示「重连中」，
-      内容区保持指向该机器（隧道 URL 粘性，不出空端口）。
+- [ ] 活动机器被服务端掐线（远端重启 sshd / 断网）：切换器显示「重连中」
+      并附下次重试倒计时（如「（42s 后重试）」），内容区保持指向该机器
+      （隧道 URL 粘性，不出空端口）。
 - [ ] 恢复后自动回到「已连接」，界面随之可用（无需手动刷新）。
-- [ ] 主动断开（面板 Disconnect）：视图自动回本地，切换器状态点变灰。
+- [ ] 切换器底部「断开当前远端连接」（仅远端活动时出现）：点击后视图
+      立即回本地、机器状态点变灰。
+- [ ] 已连接/曾连接机器的状态文案后缀凭据类型（agent/密钥/密码）。
+- [ ] 点击未连接机器后、首轮轮询回报前：该项立即显示「连接中」且全部
+      远端项禁用（pending 反馈），就绪后自动切换。
 
-## F macOS 平台（如适用）
+## F 设置页交互（web 设置页 SSH 面板）
+
+- [ ] 「添加机器」打开弹窗表单：填主机后 ID 自动派生（如 `ops@10.1.1.1`
+      → `10-1-1-1`），撞名自动 -2 避让；手改 ID 后不再自动派生；
+      主机空/ID 非法/ID 占用时内联报错且提交禁用。
+- [ ] 提交即落盘：新机器卡直接出现，无需再点「保存」；其它卡片的暂存
+      编辑不受影响。
+- [ ] 删除：确认弹窗后立即生效（卡片消失），无需点「保存」。
+- [ ] 编辑任一字段或敲入密钥后：「保存」按钮出现警示色 ring（脏态高亮）。
+- [ ] 连接/安装进行中：卡片状态行旁出现步骤条（握手/安装/启动/探测，
+      只显示真实走过的阶段，当前阶段高亮）；落定后步骤条收起。
+- [ ] 探测（测试）已连接机器：状态保持「已连接」不闪回「未连接」；
+      探测失败只在状态里追加原因。
+- [ ] 已连接机器点「新窗口打开」：按钮在飞期间显示「正在打开…」并禁用，
+      落定复原；失败时卡片内联报错。
+- [ ] 桌面桥探测期间：「新窗口打开」先以禁用占位出现，探测落定后原位
+      点亮（桌面端）或移除（纯浏览器），无布局跳动。
+
+## G macOS 平台（如适用）
 
 - [ ] 弹窗窗口从 Tauri 命令创建在 macOS 正常（尺寸/聚焦/Dock 图标）。
 
-## 附：已自动化项索引
+## 附：已自动化项索引（v14 适配分支 `feat/ssh-remote-machines-v14` 复核值）
 
 | 验收点 | 证据 |
 |---|---|
-| 1 壳层验证 | `cargo test` 448 绿（含 bridge/remote 3 例 + capability 2 例）；`pnpm typecheck` 绿；`pnpm test` src 455 例绿（新增 28）；`pnpm lint` 无新增（较基线 -1） |
-| 2 数据面全旅程 | `docs/testing/s5-ssh-e2e-evidence.md`（dev 真机 ALL STEPS PASSED） |
+| 1 壳层验证 | `cargo test` 530 绿（含 bridge/remote + capability）；`pnpm typecheck` 绿；根 `pnpm test -- --run` 769 过 4 跳过（65 文件）；`pnpm lint` 0 error / 27 warning（全部上游既有文件，较基线不劣化） |
+| 2 数据面全旅程 | `docs/testing/s5-ssh-e2e-evidence.md`（dev 真机 ALL STEPS PASSED；v14 分支 2026-09-13 复跑通过，connect 5.1s、authMethod=key、事件 6 条） |
+| 3 插件套件 | `dsh-tauri-ssh` 379 过 4 跳过（根 runner）；`dsh-tauri-ssh-ui` 96 过（包内 runner，含 Modal/步骤条/在飞反馈新用例） |
 | 4 capability 复核 | `builder.rs security_tests::remote_popup_windows_are_scoped_by_glob_and_stay_loopback`；白名单仅增 `remote_bridge_ping`/`remote_open_window`；命令侧回环 http 校验单测 |
 | 5 旧概念残留 | `Setting.remotes`/`remote_machine_*`/`remote-status` 等关键词全仓 grep 零命中（仅余 git-remote 无关词） |
-| 切换器/轮询/着色/降态逻辑 | `src/store/modules/remote/*.test.ts`（22 例）+ `remote-switcher.test.tsx`（6 例） |
+| 切换器/轮询/着色/降态逻辑 | `src/store/modules/remote/*.test.ts`（23 例）+ `remote-switcher.test.tsx`（9 例） |

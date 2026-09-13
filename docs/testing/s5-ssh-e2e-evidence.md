@@ -1,6 +1,15 @@
 # S5 桌面壳集成 — 数据面全旅程 E2E 证据（dev 真机）
 
-- 日期：2026-09-04
+> **最新一次（v14 适配分支复跑）**：2026-09-13，分支 `feat/ssh-remote-machines-v14`
+> （origin/main v0.14.1 + DSH 0.1.5-rc.2 版本钉），同一驱动脚本同一 dev 机器
+> **ALL STEPS PASSED ✅**：connect 5.1s（bootstrap probe→launch→ready）、
+> list 回报 `connected + tunnelBaseUrl + authMethod=key`、隧道 GET / 通
+> （远端 401 鉴权提示）、事件 6 条（probe×3/launch/ready/auth）、
+> disconnect/remove 干净。原始输出转录于本节末尾。
+> 注：本次复跑时 `~/.dsh.dev/profiles/s5e2e` 已不存在，按下方复现步骤 2
+> 重建后执行。
+
+- 日期：2026-09-04（首轮）/ 2026-09-13（v14 适配分支复跑）
 - 本地实例：无头 `dsh web`（DSH_HOME=`~/.dsh.dev`，profile `s5e2e`，端口 3185，
   挂载本 worktree 的 `dsh-tauri-ssh` / `dsh-tauri-ssh-ui` link: 包，见下方复现步骤）
 - 远端机器：`dev`（Linux 5.4 x86_64，root + 密钥认证，`~/.ssh/config` 别名）
@@ -75,3 +84,23 @@ node scripts/e2e-ssh-data-plane.mjs \
   一等能力（逐字执行，无 `{port}` 模板替换——文档示例中的 `{port}` 占位
   笔记与实现不符，以 `bootstrap.ts startCommandFor` 为准）。
 - 断开只关隧道、不停远端实例（引擎语义），重复跑前需第 5 步清理。
+
+## 附录：v14 适配分支复跑原始输出（2026-09-13）
+
+```text
+# S5 SSH 数据面全旅程 — 2026-09-13T16:58:27.271Z
+base=http://127.0.0.1:3185 host=dev user=root sshPort=22 remotePort=3082
+machineId=5d44371b-f013-49f3-9ac3-c7891629fdce
+
+[1] machine.save ok → name=s5-e2e-dev state=disconnected color=#7c5cff tintBorder=true (discovered aliases: 5)
+
+[2] machine.connect …（bootstrap/健康探测可能需要数十秒）
+    connect ok in 5.1s tunnelBaseUrl=http://127.0.0.1:50324
+[3] machine.list → state=connected tunnelBaseUrl=http://127.0.0.1:50324 authMethod=key
+[4] tunnel GET / → HTTP 401（远端实例鉴权提示，隧道传输已通）body head: dsh web authentication required; reopen the URL printed by d
+[5] machine.events → 6 条 (1:probe 2:probe 3:probe 4:launch 5:ready 6:auth)
+[6] machine.disconnect ok → state=disconnected
+[7] machine.remove ok → items=0（目标机器已从列表消失，discovered 别名不受影响：5）
+
+ALL STEPS PASSED ✅
+```
