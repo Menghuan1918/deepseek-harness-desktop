@@ -94,8 +94,8 @@ export interface Config {
    */
   installRepo?: string
   /**
-   * DSH version pin for the binary install: a semver (`0.1.2-rc.1`) or a full
-   * release tag (`dsh-0.1.2-rc.1-33729514615`). Defaults to the recommended
+   * DSH version pin for the binary install: a semver (`0.1.5-rc.2`) or a full
+   * release tag (`dsh-0.1.5-rc.2-34495473237`). Defaults to the recommended
    * version; unresolvable pins fall back to the latest stable release.
    */
   installRef?: string

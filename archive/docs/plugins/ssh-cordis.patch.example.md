@@ -30,11 +30,14 @@
         # remotePort: 3080  # 可选：未覆盖机器的默认远端 dsh web 端口
         # startCommand: '$HOME/.local/bin/dsh web --host 127.0.0.1 --port {port}'
         #   # 可选：默认启动命令模板（{port} 替换）；远端 PATH 无 dsh 时填绝对路径
-        # installRepo: 'https://git.example.com/team/dsh.git'
-        #   # 可选：一键安装克隆的 git 仓库（远端执行 clone，需远端可访问；
-        #   # 官方 deepseek-harness 仓库尚未创建，请填你自己的仓库地址）
-        # installRef: 'main'
-        #   # 可选：一键安装检出的分支/tag（默认仓库默认分支）
+        # installRepo: 'dsh-tauri-desk/deepseek-harness-pkg'
+        #   # 可选：一键安装的发行仓（owner/name 或 GitHub URL）：远端安装走
+        #   # 二进制分发——从该仓 releases 下载打包运行时（Node + DSH，
+        #   # SHA-256 校验）；默认即官方发行仓，自有镜像/镜像仓填这里
+        # installRef: '0.1.5-rc.2'
+        #   # 可选：版本钉（semver 或完整 release tag，如
+        #   # 'dsh-0.1.5-rc.2-34495473237'；默认取推荐版本，解析失败回退
+        #   # 最新稳定 release）
         # installTimeoutMs: 1800000  # 可选：一次远端安装的截止时间（毫秒）
 
     # 设置页：浏览器插件注册表行（dsh.client 声明在包内 package.json）。
@@ -76,7 +79,9 @@
 6. `dsh web` → 设置 → SSH 机器。
 
 > 版本要求：`dsh-tauri-ssh-ui` 的 `dsh.client.inject` 面向
-> **dsh ≥ 0.1.2-alpha.1**（`slots` 服务由 `dsh-client-ui-renderer` 提供）。
+> **dsh ≥ 0.1.2-alpha.1**（`slots` 服务由 `dsh-client-ui-renderer` 提供），
+> 本仓库当前对齐 **0.1.5-rc.2**（远端 bootstrap 的
+> `RECOMMENDED_DSH_VERSION` 与桌面 `version-recommend.json` 同步钉定）。
 > 更早版本（≤ 0.1.1-rc.2）需把该行换回 `@deepseek-ai/dsh-client-runtime`。
 
 同时需要：

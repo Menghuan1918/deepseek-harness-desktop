@@ -31,18 +31,20 @@ export interface ResolvedDshTag {
 }
 
 /**
- * The recommended DSH version. Mirrors the desktop mainline's
- * `version-recommend.json` intent: installs pin this version instead of
- * following whatever "latest" happens to be.
+ * The recommended DSH version pinned for remote installs. Kept in lockstep
+ * with the desktop mainline's `src-tauri/resources/version-recommend.json`
+ * (both name the version this desktop generation is verified against);
+ * installs pin this version instead of following whatever "latest" happens
+ * to be.
  */
-export const RECOMMENDED_DSH_VERSION = '0.1.2-rc.1'
+export const RECOMMENDED_DSH_VERSION = '0.1.5-rc.2'
 
 /**
  * The last known-good packaged release tag, used when version resolution
  * fails (offline, rate-limited, or the recommended version vanished). A
  * concrete tag — never an unknown version.
  */
-export const FALLBACK_DSH_TAG = 'dsh-0.1.2-rc.1-33729514615'
+export const FALLBACK_DSH_TAG = 'dsh-0.1.5-rc.2-34495473237'
 
 /** The official DSH project repository (org verified on GitHub). */
 export const OFFICIAL_INSTALL_REPO = 'https://github.com/deepseek-ai/deepseek-harness.git'
