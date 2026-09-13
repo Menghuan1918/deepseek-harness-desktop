@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEventListener, useMount } from '@reause/core'
 import { store } from '@/store'
 
 /**
@@ -7,19 +7,13 @@ import { store } from '@/store'
  * store 持有（StrictMode 双挂载下 boot 只执行一次）。
  */
 export function useRemoteMachines(): void {
-  useEffect(() => {
-    store.remote.boot()
+  useMount(() => store.remote.boot())
 
-    function refreshNow() {
-      if (!document.hidden)
-        void store.remote.refresh()
-    }
+  function refreshNow() {
+    if (!document.hidden)
+      void store.remote.refresh()
+  }
 
-    window.addEventListener('focus', refreshNow)
-    document.addEventListener('visibilitychange', refreshNow)
-    return () => {
-      window.removeEventListener('focus', refreshNow)
-      document.removeEventListener('visibilitychange', refreshNow)
-    }
-  }, [])
+  useEventListener('focus', refreshNow)
+  useEventListener(document, 'visibilitychange', refreshNow)
 }
