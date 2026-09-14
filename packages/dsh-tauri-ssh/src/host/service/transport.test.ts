@@ -151,6 +151,8 @@ class FakeClient extends EventEmitter {
 
   /** The direct-tcpip targets this client was asked to reach (jump chains). */
   forwardCalls: Array<{ dstIP: string, dstPort: number }> = []
+  /** The most recent forwardOut channel (tunnel tests drive errors through it). */
+  lastChannel: PassThrough | undefined
 
   forwardOut(
     _srcIP: string,
@@ -165,7 +167,8 @@ class FakeClient extends EventEmitter {
         callback(this.forwardError)
         return
       }
-      callback(undefined, new PassThrough())
+      this.lastChannel = new PassThrough()
+      callback(undefined, this.lastChannel)
     })
     return this
   }
@@ -548,6 +551,22 @@ describe('ssh2Transport', () => {
       socket.once('connect', () => resolve())
       socket.once('error', reject)
     })
+    await new Promise<void>(resolve => socket.once('close', () => resolve()))
+    await tunnel.close()
+    await session.close()
+  })
+
+  it('swallows forwarded-channel errors instead of crashing the host process', async () => {
+    // 回归：插件寄宿在 dsh 进程内，隧道 socket/channel 未处理的 'error'
+    // 事件会把整个 dsh 拉崩（实报 ECONNRESET 杀进程）。channel 报错必须
+    // 只销毁对应连接；若仍有未处理错误，vitest worker 会直接崩溃。
+    const transport = new Ssh2Transport(15000, new StubResolver())
+    const session = await transport.connect(profile, () => true)
+    const tunnel = await session.openTunnel(3080)
+    const socket = tcpConnect(tunnel.localPort, '127.0.0.1')
+    await new Promise<void>(resolve => socket.once('connect', () => resolve()))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    lastClient().lastChannel?.emit('error', new Error('channel reset'))
     await new Promise<void>(resolve => socket.once('close', () => resolve()))
     await tunnel.close()
     await session.close()

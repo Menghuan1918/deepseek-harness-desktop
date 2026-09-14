@@ -561,11 +561,19 @@ class Ssh2Session implements SshSession {
       const server: Server = createServer((socket) => {
         sockets.add(socket)
         socket.on('close', () => sockets.delete(socket))
+        // 对端中止（浏览器取消加载、curl 超时）会给 socket 发 ECONNRESET：
+        // 本进程就是整个 dsh（插件寄宿其中），未处理的 'error' 事件会把
+        // 整个宿主进程拉崩——socket 与 channel 双侧都必须吞错销毁。
+        socket.on('error', () => {
+          sockets.delete(socket)
+          socket.destroy()
+        })
         this.client.forwardOut('127.0.0.1', 0, '127.0.0.1', remotePort, (error, channel) => {
           if (error !== undefined) {
             socket.destroy()
             return
           }
+          channel.on('error', () => socket.destroy())
           socket.pipe(channel).pipe(socket)
         })
       })
