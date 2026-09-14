@@ -534,10 +534,7 @@ export function startCommandFor(profile: MachineProfile, plan?: RemoteInstallPla
     `mkdir -p "$LOG_DIR"`,
     `export PATH="$ROOT/runtime/bin:$PATH"`,
     `export DSH_TELEMETRY_DISABLED=1 NO_COLOR=1 DSH_WEB_PORT=${profile.remotePort}`,
-    // --skip-auth：远端实例只经本插件的回环隧道可达（两端 loopback），壳层
-    // iframe 是第三方上下文、鉴权 cookie 会被浏览器拦截（实报 401）；Host/
-    // Origin 信任栏仍在。自定义 startCommand 由用户自负（token 提取兜底生效）。
-    `( sh -c 'echo $$ > "$1/.dsh-remote.pid"; exec "$2" "$3" web --host 127.0.0.1 --port "$4" --no-open --skip-auth' dsh-remote "$LOG_DIR" "$NODE" "$DSH_BIN" ${profile.remotePort} </dev/null >>"$LOG" 2>&1 & )`,
+    `( sh -c 'echo $$ > "$1/.dsh-remote.pid"; exec "$2" "$3" web --host 127.0.0.1 --port "$4" --no-open' dsh-remote "$LOG_DIR" "$NODE" "$DSH_BIN" ${profile.remotePort} </dev/null >>"$LOG" 2>&1 & )`,
     `echo "远端实例已拉起（日志: $LOG）"`,
   ].join('\n')
 }
