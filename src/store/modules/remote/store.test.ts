@@ -82,13 +82,30 @@ describe('remote store 轮询与降级', () => {
 })
 
 describe('remote store 远端弹窗启动寻址', () => {
-  it('openInitialMachine：列表为空先拉一轮，已连接机器直接切换', async () => {
+  it('openInitialMachine：登记挂起并拉一轮，已连接机器直接切换', async () => {
     const engine = bindEngine({ list: [[machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })]] })
     expect(remote.machines).toHaveLength(0)
-    await remote.openInitialMachine('m1')
+    remote.openInitialMachine('m1')
+    expect(remote.pendingBootMachineId).toBe('m1')
+    await vi.waitFor(() => expect(remote.activeTunnelUrl).toBe('http://127.0.0.1:4001'))
     expect(engine.listMachines).toHaveBeenCalled()
     expect(remote.activeId).toBe('m1')
-    expect(remote.activeTunnelUrl).toBe('http://127.0.0.1:4001')
+    expect(remote.pendingBootMachineId).toBeNull()
+  })
+
+  it('openInitialMachine：实例未就绪时不落空——后续成功轮询补切换', async () => {
+    // 首轮不可达（新窗口启动时实例健康检查常未就绪），恢复后轮询推进
+    bindEngine({ list: [] })
+    const engine = bindEngine({ list: [] })
+    engine.listMachines.mockRejectedValueOnce(new Error('SSH_API_HTTP_503'))
+    engine.listMachines.mockImplementation(async () =>
+      [machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
+    remote.openInitialMachine('m1')
+    await vi.waitFor(() => expect(remote.available).toBe(false))
+    expect(remote.activeId).toBeNull()
+    await remote.refresh()
+    await vi.waitFor(() => expect(remote.activeTunnelUrl).toBe('http://127.0.0.1:4001'))
+    expect(remote.activeId).toBe('m1')
   })
 
   it('openInitialMachine：未连接机器走标准连接流程（进度弹窗照常）', async () => {
@@ -105,17 +122,22 @@ describe('remote store 远端弹窗启动寻址', () => {
       [machineOf(connected
         ? { id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' }
         : { id: 'm1', state: 'disconnected' })])
-    await remote.openInitialMachine('m1')
-    expect(engine.connect).toHaveBeenCalledWith('m1')
+    remote.openInitialMachine('m1')
     await vi.waitFor(() => expect(remote.activeTunnelUrl).toBe('http://127.0.0.1:4001'))
+    expect(engine.connect).toHaveBeenCalledWith('m1')
     expect(remote.activeId).toBe('m1')
   })
 
   it('openInitialMachine：未知机器静默不切换（label 与列表不符的兜底）', async () => {
     bindEngine({ list: [[]] })
-    await remote.openInitialMachine('ghost')
+    remote.openInitialMachine('ghost')
+    await remote.refresh()
     expect(remote.activeId).toBeNull()
     expect(remote.activeTunnelUrl).toBe('')
+    // 挂起目标仍在（机器可能在后续轮询中出现），手动回本地即撤销
+    expect(remote.pendingBootMachineId).toBe('ghost')
+    remote.backToLocal()
+    expect(remote.pendingBootMachineId).toBeNull()
   })
 })
 

@@ -64,6 +64,8 @@ export const remote = defineStore({
     activeId: null as string | null,
     /** 点击未连接机器后待切换的目标（连接就绪后升为 activeId）。 */
     pendingId: null as string | null,
+    /** 远端弹窗启动寻址的挂起目标（refresh 成功且机器出现即切换；手动操作撤销） */
+    pendingBootMachineId: null as string | null,
     /** 活动机器最近已知的隧道 URL（重连窗口粘性保留，避免指向空端口）。 */
     activeTunnelUrl: '',
     /** `/api-ssh` 是否可达；不可达时切换器降级（禁用远端项 + 提示）。 */
@@ -112,6 +114,18 @@ export const remote = defineStore({
         this.pendingId = next.pendingId
         this.activeTunnelUrl = next.activeTunnelUrl
         this.available = true
+        // 启动寻址（远端弹窗 remote-<id>）：实例就绪前 refresh 会连续失败，
+        // 一次性「拉一轮再切」抢跑必然落空——挂起目标随每次成功轮询推进，
+        // 机器一出现即切（已连接直切/未连接发起连接），用户手动操作则撤销
+        if (this.pendingBootMachineId !== null
+          && this.machines.some(machine => machine.id === this.pendingBootMachineId)) {
+          const target = this.pendingBootMachineId
+          this.pendingBootMachineId = null
+          // 必须等本轮 refresh 收尾再切：switchTo 的连接路径
+          // （connectAndSwitch）内部会再 refresh，嵌套调用会被
+          // refreshing 重入守卫吞掉导致永不切换
+          setTimeout(() => this.switchTo(target), 0)
+        }
         await this.trackConnectProgress()
       }
       catch (err) {
@@ -177,6 +191,7 @@ export const remote = defineStore({
      * 连接（阻塞到隧道就绪，见 S1 契约——不会指向空端口）。
      */
     switchTo(machineId: string) {
+      this.pendingBootMachineId = null
       if (!this.available)
         return
       const machine = this.machines.find(item => item.id === machineId)
@@ -245,17 +260,19 @@ export const remote = defineStore({
 
     /**
      * 远端弹窗启动寻址：窗口 label 为 remote-<machineId> 时由壳层调用——
-     * 列表未载先拉一轮，随后走标准 switchTo（已连接直切；未连接发起连接，
-     * 进度弹窗照常）。幂等：重复调用以最后一次为准。
+     * 登记挂起目标并立即触发一轮拉取；机器在任一成功轮询中出现即切
+     * （已连接直切；未连接发起连接，进度弹窗照常）。挂在 refresh 成功分支
+     * 而非一次性 await：新窗口启动时实例健康检查往往尚未就绪，抢跑的
+     * refresh 只会失败落空。幂等：重复调用以最后一次为准。
      */
-    async openInitialMachine(machineId: string) {
-      if (this.machines.length === 0)
-        await this.refresh().catch(() => undefined)
-      this.switchTo(machineId)
+    openInitialMachine(machineId: string) {
+      this.pendingBootMachineId = machineId
+      void this.refresh()
     },
 
     /** 退回本地实例视图（不断开远端连接；同时撤销挂起中的切换）。 */
     backToLocal() {
+      this.pendingBootMachineId = null
       this.activeId = null
       this.activeTunnelUrl = ''
       this.pendingId = null
@@ -290,6 +307,7 @@ export function disposeRemoteForTests(): void {
   remote.machines = []
   remote.activeId = null
   remote.pendingId = null
+  remote.pendingBootMachineId = null
   remote.activeTunnelUrl = ''
   remote.available = true
   remote.refreshing = false
