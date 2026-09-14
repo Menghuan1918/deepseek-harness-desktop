@@ -1,5 +1,7 @@
-import { Globe } from '@gravity-ui/icons'
+import type { SshMachineRow } from '@/store/modules/remote'
+import { ArrowUpRightFromSquare, Gear, Globe, House, Power } from '@gravity-ui/icons'
 import { Button, Description, Dropdown, Label } from '@heroui/react'
+import { invoke } from '@tauri-apps/api/core'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { cn } from 'tailwind-variants'
@@ -27,19 +29,35 @@ function stateTextOf(
   return text
 }
 
+/** 行内副标题：`user@host:port`（信息不全时退化为已有字段）。 */
+function subtitleOf(machine: SshMachineRow): string | undefined {
+  if (machine.host === undefined)
+    return undefined
+  const target = `${machine.user !== undefined ? `${machine.user}@` : ''}${machine.host}${machine.port !== undefined ? `:${machine.port}` : ''}`
+  return target
+}
+
+/** 新窗口打开远端（复用壳层 remote_open_window 命令；聚焦已有窗口）。 */
+function openInNewWindow(machine: SshMachineRow, onError: (err: unknown) => void): void {
+  if (machine.tunnelBaseUrl === undefined)
+    return
+  invoke('remote_open_window', { machineId: machine.id, url: machine.tunnelBaseUrl })
+    .catch(onError)
+}
+
 /**
  * 导航栏远端机器切换器：本地实例 ↔ 各远端机器。
  *
  * 数据面全部来自本地实例 `/api-ssh`（`useRemoteMachines` 启动秒级轮询 +
- * 聚焦刷新）；点击已连接机器直接切换视图，点击未连接机器发起连接、就绪后
- * 自动切换；点击「本地」回到本地实例（不断开远端）。机器的增删改与断开
- * 入口在内嵌 web 设置页的 SSH 面板（本组件只提供引导）。
+ * 聚焦刷新）；点击机器行=当前窗口切换（未连接则发起连接，进度弹窗实时
+ * 呈现），行尾图标=新窗口打开（已连接机器可用）。管理入口在底部
+ * 「管理机器…」（壳层原生面板）。
  *
  * 色点语义（S3 词汇表）：机器标识色优先 → 已连接绿 → 重连/进行中琥珀 →
  * 放弃红 → 其余中性灰；未连接行整体降不透明度。本地实例不可达时进入降级
  * 态：远端项禁用 + 顶部提示，恢复后自动复原（轮询静默重试，不弹错误）。
  */
-export function RemoteSwitcher() {
+export function RemoteSwitcher({ onManage }: { onManage: () => void }) {
   const { t } = useTranslation()
   useRemoteMachines()
   const { machines, activeId, available, pendingId } = useStore(store.remote)
@@ -47,10 +65,9 @@ export function RemoteSwitcher() {
   const activeMachine = machines.find(machine => machine.id === activeId)
   const activeColor = activeMachine?.color
 
-  function handleManage() {
-    // 机器管理唯一入口 = 内嵌 web 设置页的 SSH 面板（web 应用无 URL 路由，
-    // 壳层无法深链，给出路径引导）
-    toast(t('remote.manage_hint'), {})
+  function handleOpenWindowError(err: unknown) {
+    toast(t('remote.open_window_failed'), {})
+    console.warn('[remote] open window failed:', err)
   }
 
   return (
@@ -71,84 +88,120 @@ export function RemoteSwitcher() {
           />
         </If>
       </Button>
-      <Dropdown.Popover className="rounded-md w-64!">
+      <Dropdown.Popover className="rounded-lg w-72!">
         <Dropdown.Menu>
           <If cond={!available}>
             <Dropdown.Item className="rounded-md" id="remote-degraded" isDisabled textValue={t('remote.degraded')}>
               <Description className="text-warning">{t('remote.degraded')}</Description>
             </Dropdown.Item>
           </If>
-          <Dropdown.Item
-            className="rounded-md"
-            id="remote-local"
-            textValue={t('remote.local')}
-            onAction={() => { store.remote.backToLocal() }}
-          >
-            <span className="flex w-full items-center gap-2">
-              <span
-                aria-hidden="true"
-                className={cn('size-1.5 rounded-full', activeMachine === undefined ? 'bg-success' : 'bg-line-strong')}
-              />
-              <Label>{t('remote.local')}</Label>
-            </span>
-          </Dropdown.Item>
-          <If cond={machines.length === 0}>
-            <Dropdown.Item className="rounded-md" id="remote-empty" isDisabled textValue={t('remote.empty')}>
-              <Description>{t('remote.empty')}</Description>
-            </Dropdown.Item>
-          </If>
-          {machines.map(machine => (
+          <Dropdown.Section aria-label={t('remote.section_local')}>
             <Dropdown.Item
-              key={machine.id}
               className="rounded-md"
-              id={`remote-${machine.id}`}
-              textValue={machine.name}
-              isDisabled={!available || pendingId !== null}
-              onAction={() => { store.remote.switchTo(machine.id) }}
+              id="remote-local"
+              textValue={t('remote.local')}
+              onAction={() => { store.remote.backToLocal() }}
             >
-              <span
-                title={machine.lastError}
-                className={cn(
-                  'flex w-full items-center gap-2',
-                  machine.state === 'connected' ? '' : 'opacity-60',
-                )}
-              >
+              <span className="flex w-full items-center gap-2">
                 <span
                   aria-hidden="true"
-                  className={cn('size-1.5 shrink-0 rounded-full', machine.id === activeId ? 'bg-success' : dotClassOf(machine))}
-                  style={machine.id === activeId ? undefined : dotStyleOf(machine)}
+                  className={cn('size-1.5 rounded-full', activeMachine === undefined ? 'bg-success' : 'bg-line-strong')}
                 />
-                <Label className="min-w-0 truncate">{machine.name}</Label>
-                {/* 待切换的机器在首轮轮询回报前尚无 connecting 状态：由
-                     pendingId 立即给出「连接中」反馈，避免点了没反应 */}
-                <Description className={cn('ml-auto shrink-0', pendingId === machine.id && 'text-warning')}>
-                  {stateTextOf(machine, pendingId === machine.id, t)}
-                </Description>
+                <House className="size-3.5 text-muted" />
+                <Label>{t('remote.local')}</Label>
+                <If cond={activeId === null}>
+                  <Description className="ml-auto">{t('remote.current')}</Description>
+                </If>
               </span>
             </Dropdown.Item>
-          ))}
-          {/* 活动远端连接的一键断开（视图先回本地，再向引擎发断开） */}
-          <If cond={activeId !== null}>
+          </Dropdown.Section>
+          <Dropdown.Section aria-label={t('remote.section_machines')}>
+            <If cond={machines.length === 0}>
+              <Dropdown.Item className="rounded-md" id="remote-empty" isDisabled textValue={t('remote.empty')}>
+                <Description>{t('remote.empty')}</Description>
+              </Dropdown.Item>
+            </If>
+            {machines.map((machine) => {
+              const pending = pendingId === machine.id
+              const connected = machine.state === 'connected' && machine.tunnelBaseUrl !== undefined
+              return (
+                <Dropdown.Item
+                  key={machine.id}
+                  className="rounded-md"
+                  id={`remote-${machine.id}`}
+                  textValue={machine.name}
+                  isDisabled={!available || pendingId !== null}
+                  onAction={() => { store.remote.switchTo(machine.id) }}
+                >
+                  <span
+                    title={machine.lastError}
+                    className={cn(
+                      'flex w-full items-center gap-2',
+                      connected ? '' : 'opacity-60',
+                    )}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={cn('size-1.5 shrink-0 rounded-full', machine.id === activeId ? 'bg-success' : dotClassOf(machine))}
+                      style={machine.id === activeId ? undefined : dotStyleOf(machine)}
+                    />
+                    <span className="flex min-w-0 flex-col">
+                      <Label className="truncate">{machine.name}</Label>
+                      <If cond={subtitleOf(machine) !== undefined}>
+                        <Description className="truncate text-[11px] leading-4">{subtitleOf(machine)}</Description>
+                      </If>
+                    </span>
+                    <Description className={cn('ml-auto shrink-0', pending && 'text-warning')}>
+                      {stateTextOf(machine, pending, t)}
+                    </Description>
+                    {/* 行尾双动作：行本体=当前窗口切换；图标=新窗口打开 */}
+                    <If cond={connected}>
+                      <Button
+                        isIconOnly
+                        aria-label={t('remote.open_new_window')}
+                        className="size-6 shrink-0 rounded-md text-muted hover:text-ink"
+                        size="sm"
+                        variant="ghost"
+                        onPress={() => { openInNewWindow(machine, handleOpenWindowError) }}
+                      >
+                        <ArrowUpRightFromSquare className="size-3.5" />
+                      </Button>
+                    </If>
+                  </span>
+                </Dropdown.Item>
+              )
+            })}
+          </Dropdown.Section>
+          <Dropdown.Section aria-label={t('remote.section_actions')}>
+            {/* 活动远端连接的一键断开（视图先回本地，再向引擎发断开） */}
+            <If cond={activeId !== null}>
+              <Dropdown.Item
+                className="rounded-md"
+                id="remote-disconnect-active"
+                textValue={t('remote.disconnect_active')}
+                onAction={() => {
+                  if (activeId !== null)
+                    void store.remote.disconnect(activeId)
+                }}
+              >
+                <span className="flex w-full items-center gap-2 text-warning">
+                  <Power className="size-3.5" />
+                  <Label className="text-warning">{t('remote.disconnect_active')}</Label>
+                </span>
+              </Dropdown.Item>
+            </If>
             <Dropdown.Item
               className="rounded-md"
-              id="remote-disconnect-active"
-              textValue={t('remote.disconnect_active')}
-              onAction={() => {
-                if (activeId !== null)
-                  void store.remote.disconnect(activeId)
-              }}
+              id="remote-manage"
+              textValue={t('remote.manage')}
+              onAction={onManage}
             >
-              <Label className="text-warning">{t('remote.disconnect_active')}</Label>
+              <span className="flex w-full items-center gap-2">
+                <Gear className="size-3.5 text-muted" />
+                <Label>{t('remote.manage')}</Label>
+              </span>
             </Dropdown.Item>
-          </If>
-          <Dropdown.Item
-            className="rounded-md"
-            id="remote-manage"
-            textValue={t('remote.manage')}
-            onAction={handleManage}
-          >
-            <Label>{t('remote.manage')}</Label>
-          </Dropdown.Item>
+          </Dropdown.Section>
         </Dropdown.Menu>
       </Dropdown.Popover>
     </Dropdown>

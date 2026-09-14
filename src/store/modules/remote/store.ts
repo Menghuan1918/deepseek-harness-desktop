@@ -10,7 +10,8 @@
  * @module store/remote/store
  */
 
-import type { SshMachineRow } from './types'
+import type { SshApiClient } from './api'
+import type { SshMachineRow, SshProgressPhase } from './types'
 import { defineStore } from 'valtio-define'
 import { harness } from '../harness'
 import { createSshApiClient } from './api'
@@ -18,6 +19,14 @@ import { reconcileSwitcher } from './logic'
 
 /** 轮询间隔（毫秒）：秒级即可让切换器跟上连接/重连状态流转。 */
 const POLL_INTERVAL_MS = 2000
+
+/** machine.events 增量游标（模块级，不属于 UI 状态）。 */
+let eventSeq = 0
+
+/** 引擎/网络错误的可读摘要（与 ssh-ui 的 messageOf 同语义）。 */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 
 /** 模块级轮询句柄（与 harness store 的定时器管理模式一致）。 */
 let pollTimer: ReturnType<typeof setInterval> | undefined
@@ -28,13 +37,20 @@ let api = createSshApiClient(
   () => harness.$state.serviceUrl,
 )
 
+/** 当前数据面客户端（管理面板复用同一实例；测试经 bindSshApiForTests 替换）。 */
+export function sshApi(): SshApiClient {
+  return api
+}
+
 /** 测试注入口：替换数据面客户端并复位切换状态（仅测试使用）。 */
-export function bindSshApiForTests(client: {
-  listMachines: () => Promise<SshMachineRow[]>
-  connect: (machineId: string) => Promise<{ tunnelBaseUrl: string }>
-  disconnect: (machineId: string) => Promise<void>
-}): void {
-  api = client
+export function bindSshApiForTests(client: Partial<SshApiClient> & Pick<SshApiClient, 'listMachines' | 'connect' | 'disconnect'>): void {
+  api = {
+    save: async () => {},
+    remove: async () => {},
+    test: async () => ({ ok: true }),
+    events: async () => ({ items: [] }),
+    ...client,
+  }
 }
 
 export const remote = defineStore({
@@ -49,6 +65,14 @@ export const remote = defineStore({
     activeTunnelUrl: '',
     /** `/api-ssh` 是否可达；不可达时切换器降级（禁用远端项 + 提示）。 */
     available: true,
+    /** 连接进度弹窗：本次连接实际走过的管线阶段（落定后保留供失败复盘）。 */
+    connectTrail: [] as SshProgressPhase[],
+    /** 连接进度弹窗：machine.events 实时日志尾（增量轮询追加）。 */
+    connectLog: [] as string[],
+    /** 连接失败定格：目标机器 + 直接原因（弹窗呈现与重试入口）。 */
+    connectFailed: null as { id: string, error: string } | null,
+    /** 进行中手动关了弹窗：隐藏到落定；失败时重新弹出（原因必须可见）。 */
+    connectDismissed: false,
     /** 单飞标志：上一轮未完成时跳过本轮，避免请求堆积。 */
     refreshing: false,
     booted: false,
@@ -85,6 +109,7 @@ export const remote = defineStore({
         this.pendingId = next.pendingId
         this.activeTunnelUrl = next.activeTunnelUrl
         this.available = true
+        await this.trackConnectProgress()
       }
       catch (err) {
         // 本地实例不可达（启动中/已停止）：降级但保留既有列表，静默重试
@@ -94,6 +119,37 @@ export const remote = defineStore({
       finally {
         this.refreshing = false
       }
+    },
+
+    /** 连接进行中：累积实际走过的 progress 阶段 + 增量拉取事件日志。 */
+    async trackConnectProgress() {
+      const id = this.pendingId ?? this.connectFailed?.id
+      if (id === undefined || id === null)
+        return
+      const machine = this.machines.find(item => item.id === id)
+      const phase = machine?.progress?.phase
+      if (phase !== undefined && this.connectTrail[this.connectTrail.length - 1] !== phase)
+        this.connectTrail = [...this.connectTrail, phase]
+      try {
+        const { items } = await api.events(id, eventSeq)
+        for (const item of items) {
+          eventSeq = Math.max(eventSeq, item.seq + 1)
+          this.connectLog = [...this.connectLog, item.line]
+        }
+      }
+      catch {
+        // 事件通道失败不阻断连接进度（列表轮询仍在推进）
+      }
+    },
+
+    /** 关闭连接进度弹窗：清日志/阶段/失败定格（不影响进行中的连接）。 */
+    dismissConnect() {
+      this.connectTrail = []
+      this.connectLog = []
+      this.connectFailed = null
+      // 仍在连接中：仅隐藏到落定（失败会重新弹出），成功/失败后自然复位
+      if (this.pendingId !== null)
+        this.connectDismissed = true
     },
 
     /**
@@ -114,15 +170,26 @@ export const remote = defineStore({
       }
       if (machine.state === 'connecting' || machine.state === 'testing' || machine.state === 'reconnecting') {
         // 引擎已在推进（用户连接或自动重连）：挂起等待，轮询 reconcile 接管
-        this.pendingId = machineId
+        if (this.pendingId !== machineId)
+          this.beginTracking(machineId)
         return
       }
       // disconnected / given-up：重新连接（given-up 可经再次 connect 退出）
-      this.pendingId = machineId
+      this.beginTracking(machineId)
       void this.connectAndSwitch(machineId)
     },
 
-    /** 连接一台机器并在就绪后切换；失败留在本地（失败态由列表呈现）。 */
+    /** 开始跟踪一台机器的连接：复位日志/阶段/游标并挂起。 */
+    beginTracking(machineId: string) {
+      this.pendingId = machineId
+      this.connectFailed = null
+      this.connectDismissed = false
+      this.connectTrail = []
+      this.connectLog = []
+      eventSeq = 0
+    },
+
+    /** 连接一台机器并在就绪后切换；失败定格原因（进度弹窗呈现重试入口）。 */
     async connectAndSwitch(machineId: string) {
       try {
         const link = await api.connect(machineId)
@@ -132,11 +199,17 @@ export const remote = defineStore({
           this.activeId = machineId
           this.activeTunnelUrl = machine.tunnelBaseUrl ?? link.tunnelBaseUrl
           this.pendingId = null
+          // 成功：弹窗随 pendingId 清空自动关闭，日志/阶段一并复位
+          this.dismissConnect()
+          this.connectDismissed = false
         }
       }
       catch (err) {
         console.warn('[remote] connect failed:', err)
         this.pendingId = null
+        this.connectFailed = { id: machineId, error: messageOf(err) }
+        // 失败必须可见：进行中手动关过弹窗也重新弹出
+        this.connectDismissed = false
         // 拉取引擎落定的失败态（given-up + lastError）供切换器呈现
         void this.refresh()
       }
@@ -181,4 +254,9 @@ export function disposeRemoteForTests(): void {
   remote.activeTunnelUrl = ''
   remote.available = true
   remote.refreshing = false
+  remote.connectTrail = []
+  remote.connectLog = []
+  remote.connectFailed = null
+  remote.connectDismissed = false
+  eventSeq = 0
 }

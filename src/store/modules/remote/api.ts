@@ -5,13 +5,14 @@
  *   POST /api-ssh  { "method": "machine.list", "payload": {} }
  *   → 200          { "ok": true, "value": ... } | { "ok": false, "error": {...} }
  *
- * 壳层只用三个方法：`machine.list`（轮询）、`machine.connect`（切换到未连接
- * 机器）、`machine.disconnect`（面板之外的断开入口，预留给后续壳层动作）。
- * fetch 与基础 URL 均可注入，便于单测与复用。
+ * 壳层消费：`machine.list`（轮询）、`machine.connect`/`machine.disconnect`
+ * （切换与断开）、`machine.save`/`machine.remove`/`machine.test`（管理面板）、
+ * `machine.events`（连接进度弹窗的实时日志）。fetch 与基础 URL 均可注入，
+ * 便于单测与复用。
  * @module store/remote/api
  */
 
-import type { SshConnectionState, SshMachineListValue, SshMachineRow } from './types'
+import type { SshConnectionState, SshEventEntry, SshMachineListValue, SshMachineProfile, SshMachineRow, SshProgress, SshSecrets } from './types'
 
 /** 一次请求信封。 */
 interface SshApiRequest {
@@ -35,6 +36,14 @@ export interface SshApiClient {
   connect: (machineId: string) => Promise<{ tunnelBaseUrl: string }>
   /** `machine.disconnect`：主动断开（远端实例保持运行）。 */
   disconnect: (machineId: string) => Promise<void>
+  /** `machine.save`：保存（新增/覆盖）手动机器；secrets 仅显式传入时更新。 */
+  save: (machine: SshMachineProfile, secrets?: SshSecrets) => Promise<void>
+  /** `machine.remove`：删除手动机器。 */
+  remove: (machineId: string) => Promise<void>
+  /** `machine.test`：快速 SSH 握手探测（不建隧道）。 */
+  test: (machineId: string) => Promise<{ ok: boolean, banner?: string }>
+  /** `machine.events`：增量事件日志（seq 游标）。 */
+  events: (machineId: string, sinceSeq?: number) => Promise<{ items: SshEventEntry[] }>
 }
 
 /** 非法机器行兜底：缺 id/name/state 的行直接丢弃，不让坏数据进切换器。 */
@@ -54,6 +63,13 @@ function machineRowOf(raw: unknown): SshMachineRow | undefined {
     name: value.name,
     ...typeof value.color === 'string' && value.color !== '' ? { color: value.color } : {},
     ...value.tintBorder === true ? { tintBorder: true } : {},
+    ...typeof value.host === 'string' && value.host !== '' ? { host: value.host } : {},
+    ...typeof value.port === 'number' ? { port: value.port } : {},
+    ...typeof value.user === 'string' && value.user !== '' ? { user: value.user } : {},
+    ...typeof value.remotePort === 'number' ? { remotePort: value.remotePort } : {},
+    ...typeof value.startCommand === 'string' && value.startCommand !== '' ? { startCommand: value.startCommand } : {},
+    ...value.hasPassword === true ? { hasPassword: true } : {},
+    ...value.hasPassphrase === true ? { hasPassphrase: true } : {},
     state: value.state as SshConnectionState,
     ...typeof value.tunnelBaseUrl === 'string' ? { tunnelBaseUrl: value.tunnelBaseUrl } : {},
     ...typeof value.lastError === 'string' ? { lastError: value.lastError } : {},
@@ -61,6 +77,25 @@ function machineRowOf(raw: unknown): SshMachineRow | undefined {
     ...value.authMethod === 'agent' || value.authMethod === 'key' || value.authMethod === 'password'
       ? { authMethod: value.authMethod }
       : {},
+    ...progressOf(value.progress),
+  }
+}
+
+/** progress 投影：phase 合法才保留，附带可选 attempt/total/log。 */
+function progressOf(raw: unknown): { progress?: SshProgress } {
+  if (typeof raw !== 'object' || raw === null)
+    return {}
+  const value = raw as Record<string, unknown>
+  const PHASES: SshProgress['phase'][] = ['handshake', 'installing', 'starting', 'probing']
+  if (!PHASES.includes(value.phase as SshProgress['phase']))
+    return {}
+  return {
+    progress: {
+      phase: value.phase as SshProgress['phase'],
+      ...typeof value.attempt === 'number' ? { attempt: value.attempt } : {},
+      ...typeof value.total === 'number' ? { total: value.total } : {},
+      ...typeof value.log === 'string' ? { log: value.log } : {},
+    },
   }
 }
 
@@ -100,5 +135,16 @@ export function createSshApiClient(
     disconnect: async (machineId) => {
       await call<unknown>('machine.disconnect', { machineId })
     },
+    /** 保存（新增/覆盖）一台手动机器；secrets 仅在显式传入时更新。 */
+    save: async (machine: SshMachineProfile, secrets?: SshSecrets) => {
+      await call<unknown>('machine.save', { machine, secrets })
+    },
+    remove: async (machineId) => {
+      await call<unknown>('machine.remove', { machineId })
+    },
+    /** 快速 SSH 握手探测（不建隧道）；失败时引擎错误消息即原因。 */
+    test: machineId => call<{ ok: boolean, banner?: string }>('machine.test', { machineId }),
+    /** 增量取事件日志（seq 游标；空数组 = 无新事件）。 */
+    events: (machineId, sinceSeq = 0) => call<{ items: SshEventEntry[] }>('machine.events', { machineId, sinceSeq }),
   }
 }

@@ -6,6 +6,16 @@ function machineOf(partial: Partial<SshMachineRow>): SshMachineRow {
   return { id: 'm1', name: 'machine', state: 'disconnected', ...partial }
 }
 
+/** 组一个按调用序返回快照序列的 listMachines mock（末张快照驻留）。 */
+function bindListSequence(list: SshMachineRow[][]) {
+  let call = 0
+  return vi.fn(async () => {
+    const snapshot = list[Math.min(call, list.length - 1)]
+    call += 1
+    return snapshot
+  })
+}
+
 /** 注入可编程 mock 引擎：listMachines 按调用序返回快照序列。 */
 function bindEngine(options: {
   list: SshMachineRow[][]
@@ -203,5 +213,54 @@ describe('remote store 切换语义', () => {
     expect(remote.activeId).toBeNull()
     expect(remote.activeTunnelUrl).toBe('')
     expect(remote.machines[0]?.state).toBe('disconnected')
+  })
+
+  it('连接进行中：累积走过的 progress 阶段 + 增量追加事件日志；成功自动复位', async () => {
+    let release: () => void = () => {}
+    bindSshApiForTests({
+      listMachines: bindListSequence([
+        [machineOf({ id: 'm1', state: 'disconnected' })],
+        [machineOf({ id: 'm1', state: 'connecting', progress: { phase: 'installing' } })],
+        [machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })],
+      ]),
+      connect: vi.fn(() => new Promise<{ tunnelBaseUrl: string }>((resolve) => {
+        release = () => resolve({ tunnelBaseUrl: 'http://127.0.0.1:4001' })
+      })),
+      disconnect: vi.fn(async () => undefined),
+      events: vi.fn(async (_id: string, sinceSeq = 0) => ({
+        items: sinceSeq === 0
+          ? [{ seq: 0, line: '[handshake] ssh ok' }, { seq: 1, line: '[installing] download' }]
+          : [],
+      })),
+    })
+    await remote.refresh()
+    remote.switchTo('m1')
+    // 连接阻塞中：轮询 refresh 把 progress 阶段与事件增量累积进跟踪态
+    await remote.refresh()
+    expect(remote.connectTrail).toEqual(['installing'])
+    expect(remote.connectLog).toEqual(['[handshake] ssh ok', '[installing] download'])
+    // 就绪：切换完成，跟踪态自动复位（弹窗随 pendingId 清空关闭）
+    release()
+    await vi.waitFor(() => expect(remote.activeId).toBe('m1'))
+    expect(remote.connectTrail).toEqual([])
+    expect(remote.connectLog).toEqual([])
+    expect(remote.connectFailed).toBeNull()
+  })
+
+  it('连接失败：定格目标与直接原因供进度弹窗呈现，dismissConnect 关闭清理', async () => {
+    bindSshApiForTests({
+      listMachines: vi.fn(async () => [machineOf({ id: 'm1', state: 'given-up', lastError: 'timeout' })]),
+      connect: vi.fn(async () => { throw new Error('dial tcp timeout') }),
+      disconnect: vi.fn(async () => undefined),
+      events: vi.fn(async () => ({ items: [{ seq: 0, line: '[handshake] fail' }] })),
+    })
+    await remote.refresh()
+    remote.switchTo('m1')
+    await vi.waitFor(() => expect(remote.connectFailed).toEqual({ id: 'm1', error: 'dial tcp timeout' }))
+    // 失败期间的事件日志保留在弹窗里（用户可见问题所在）
+    await vi.waitFor(() => expect(remote.connectLog).toEqual(['[handshake] fail']))
+    remote.dismissConnect()
+    expect(remote.connectFailed).toBeNull()
+    expect(remote.connectLog).toEqual([])
   })
 })

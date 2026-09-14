@@ -19,8 +19,13 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }))
 const toastSpy = vi.fn()
+const manageSpy = vi.fn()
+const invokeSpy = vi.fn(async (..._args: unknown[]) => undefined)
 vi.mock('@/utils/toast', () => ({
   toast: (...args: unknown[]) => { toastSpy(...args) },
+}))
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => invokeSpy(...args),
 }))
 
 function machineOf(partial: Partial<SshMachineRow>): SshMachineRow {
@@ -65,6 +70,8 @@ function seedMachines(machines: SshMachineRow[]) {
 beforeEach(() => {
   disposeRemoteForTests()
   toastSpy.mockClear()
+  manageSpy.mockClear()
+  invokeSpy.mockClear()
   engineMachines = []
   engineUnreachable = false
   bindEngine()
@@ -77,8 +84,8 @@ afterEach(() => {
 })
 
 describe('remoteSwitcher 渲染', () => {
-  it('空态：本地项 + 空态引导 + 管理入口（toast 引导到内嵌设置页）', async () => {
-    render(<RemoteSwitcher />)
+  it('空态：本地项 + 空态引导 + 管理入口（打开壳层管理面板）', async () => {
+    render(<RemoteSwitcher onManage={manageSpy} />)
     await openMenu()
     const menu = screen.getByRole('menu')
     expect(within(menu).getByText('remote.local')).toBeTruthy()
@@ -86,7 +93,7 @@ describe('remoteSwitcher 渲染', () => {
 
     fireEvent.click(within(menu).getByText('remote.manage'))
     await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith('remote.manage_hint', {})
+      expect(manageSpy).toHaveBeenCalled()
     })
   })
 
@@ -97,20 +104,20 @@ describe('remoteSwitcher 渲染', () => {
       machineOf({ id: 'amber', name: 'amber', state: 'connecting' }),
       machineOf({ id: 'red', name: 'red', state: 'given-up', lastError: 'connect failed after 3 attempt(s): refused' }),
     ])
-    render(<RemoteSwitcher />)
+    render(<RemoteSwitcher onManage={manageSpy} />)
     await openMenu()
 
-    const colored = screen.getByText('colored').closest('[class*="flex"]')?.querySelector('span')
+    const colored = screen.getByText('colored').closest('[role="menuitem"]')?.querySelector('[class*="rounded-full"]')
     expect(colored?.getAttribute('style')).toContain('rgb(255, 0, 255)')
 
-    const green = screen.getByText('green').closest('[class*="flex"]')?.querySelector('span')
+    const green = screen.getByText('green').closest('[role="menuitem"]')?.querySelector('[class*="rounded-full"]')
     expect(green?.className).toContain('bg-success')
     expect(screen.getByText('remote.state.connected')).toBeTruthy()
 
-    const amber = screen.getByText('amber').closest('[class*="flex"]')?.querySelector('span')
+    const amber = screen.getByText('amber').closest('[role="menuitem"]')?.querySelector('[class*="rounded-full"]')
     expect(amber?.className).toContain('bg-warning')
 
-    const red = screen.getByText('red').closest('[class*="flex"]')?.querySelector('span')
+    const red = screen.getByText('red').closest('[role="menuitem"]')?.querySelector('[class*="rounded-full"]')
     expect(red?.className).toContain('bg-danger')
     // 放弃态的原因入口（title 提示）
     expect(screen.getByText('red').closest('[title]')?.getAttribute('title')).toContain('refused')
@@ -120,7 +127,7 @@ describe('remoteSwitcher 渲染', () => {
     seedMachines([machineOf({ id: 'm1', name: 'alpha', color: '#123456', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
     remote.activeId = 'm1'
     remote.activeTunnelUrl = 'http://127.0.0.1:4001'
-    const { unmount } = render(<RemoteSwitcher />)
+    const { unmount } = render(<RemoteSwitcher onManage={manageSpy} />)
     const trigger = screen.getByRole('button', { name: 'remote.switcher' })
     expect(trigger.textContent).toContain('alpha')
     // jsdom 将内联色归一为 rgb()（#123456 → rgb(18, 52, 86)）
@@ -129,7 +136,7 @@ describe('remoteSwitcher 渲染', () => {
 
     remote.activeId = null
     remote.activeTunnelUrl = ''
-    render(<RemoteSwitcher />)
+    render(<RemoteSwitcher onManage={manageSpy} />)
     expect(screen.getByRole('button', { name: 'remote.switcher' }).textContent).toContain('remote.local')
   })
 })
@@ -137,7 +144,7 @@ describe('remoteSwitcher 渲染', () => {
 describe('remoteSwitcher 交互与降级', () => {
   it('点击已连接机器项：切换视图（activeId/隧道 URL）', async () => {
     seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
-    render(<RemoteSwitcher />)
+    render(<RemoteSwitcher onManage={manageSpy} />)
     const menu = await openMenu()
     fireEvent.click(within(menu).getByText('alpha'))
     await waitFor(() => {
@@ -151,7 +158,7 @@ describe('remoteSwitcher 交互与降级', () => {
     remote.activeId = 'm1'
     remote.activeTunnelUrl = 'http://127.0.0.1:4001'
     remote.pendingId = 'm1'
-    render(<RemoteSwitcher />)
+    render(<RemoteSwitcher onManage={manageSpy} />)
     const menu = await openMenu()
     fireEvent.click(within(menu).getByText('remote.local'))
     await waitFor(() => {
@@ -164,7 +171,7 @@ describe('remoteSwitcher 交互与降级', () => {
   it('本地实例不可达：降级提示 + 远端项禁用（不弹错误风暴），恢复后自动复原', async () => {
     seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
     engineUnreachable = true
-    render(<RemoteSwitcher />)
+    render(<RemoteSwitcher onManage={manageSpy} />)
     // boot 首刷即不可达 → 降级
     await vi.waitFor(() => {
       expect(remote.available).toBe(false)
@@ -191,10 +198,10 @@ describe('remoteSwitcher 增强（4.4）', () => {
     seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
     remote.activeId = 'm1'
     remote.activeTunnelUrl = 'http://127.0.0.1:4001'
-    render(<RemoteSwitcher />)
+    render(<RemoteSwitcher onManage={manageSpy} />)
     const menu = await openMenu()
 
-    const dot = within(menu).getByText('alpha').closest('[class*="flex"]')?.querySelector('span')
+    const dot = within(menu).getByText('alpha').closest('[role="menuitem"]')?.querySelector('[class*="rounded-full"]')
     expect(dot?.className).toContain('bg-success')
 
     fireEvent.click(within(menu).getByText('remote.disconnect_active'))
@@ -207,7 +214,7 @@ describe('remoteSwitcher 增强（4.4）', () => {
 
   it('无活动机器时不出现断开项', async () => {
     seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
-    render(<RemoteSwitcher />)
+    render(<RemoteSwitcher onManage={manageSpy} />)
     const menu = await openMenu()
     expect(within(menu).queryByText('remote.disconnect_active')).toBeNull()
   })
@@ -217,11 +224,39 @@ describe('remoteSwitcher 增强（4.4）', () => {
       machineOf({ id: 'm1', name: 'alpha', state: 'reconnecting', nextRetryAt: Date.now() + 42_000 }),
       machineOf({ id: 'm2', name: 'beta', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4002', authMethod: 'key' }),
     ])
-    render(<RemoteSwitcher />)
+    render(<RemoteSwitcher onManage={manageSpy} />)
     const menu = await openMenu()
-    const alpha = within(menu).getByText('alpha').closest('[class*="flex"]')
+    const alpha = within(menu).getByText('alpha').closest('[role="menuitem"]')
     expect(alpha?.textContent).toContain('remote.retry_in')
-    const beta = within(menu).getByText('beta').closest('[class*="flex"]')
+    const beta = within(menu).getByText('beta').closest('[role="menuitem"]')
     expect(beta?.textContent).toContain('remote.auth.key')
+  })
+})
+
+describe('remoteSwitcher 行内双动作（当前窗口 vs 新窗口）', () => {
+  it('已连接机器行尾出现新窗口按钮：点击只发 remote_open_window，不触发切换', async () => {
+    seedMachines([
+      machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' }),
+      machineOf({ id: 'm2', name: 'beta', state: 'disconnected' }),
+    ])
+    render(<RemoteSwitcher onManage={manageSpy} />)
+    const menu = await openMenu()
+    // 仅已连接行有按钮（title/aria 语义键）
+    const buttons = within(menu).getAllByRole('button', { name: 'remote.open_new_window' })
+    expect(buttons.length).toBe(1)
+    fireEvent.click(buttons[0]!)
+    await waitFor(() => {
+      expect(invokeSpy).toHaveBeenCalledWith('remote_open_window', { machineId: 'm1', url: 'http://127.0.0.1:4001' })
+    })
+    // 行本体语义未被连带触发：视图仍是本地
+    expect(remote.activeId).toBeNull()
+    expect(remote.pendingId).toBeNull()
+  })
+
+  it('机器行显示 user@host:port 副标题', async () => {
+    seedMachines([machineOf({ id: 'm1', name: 'alpha', host: '10.1.1.1', port: 22, user: 'root', state: 'disconnected' })])
+    render(<RemoteSwitcher onManage={manageSpy} />)
+    const menu = await openMenu()
+    expect(within(menu).getByText('root@10.1.1.1:22')).toBeTruthy()
   })
 })
