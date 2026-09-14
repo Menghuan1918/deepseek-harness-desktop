@@ -243,6 +243,17 @@ export const remote = defineStore({
       }
     },
 
+    /**
+     * 远端弹窗启动寻址：窗口 label 为 remote-<machineId> 时由壳层调用——
+     * 列表未载先拉一轮，随后走标准 switchTo（已连接直切；未连接发起连接，
+     * 进度弹窗照常）。幂等：重复调用以最后一次为准。
+     */
+    async openInitialMachine(machineId: string) {
+      if (this.machines.length === 0)
+        await this.refresh().catch(() => undefined)
+      this.switchTo(machineId)
+    },
+
     /** 退回本地实例视图（不断开远端连接；同时撤销挂起中的切换）。 */
     backToLocal() {
       this.activeId = null

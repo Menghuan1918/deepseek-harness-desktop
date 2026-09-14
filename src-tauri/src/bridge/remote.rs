@@ -4,9 +4,11 @@
 //! 任何机器状态；这里只暴露 iframe 内插件做不了的两件事：
 //!
 //! - `remote_open_window { machineId, url }`：打开（已开则聚焦）label 为
-//!   `remote-<machineId>` 的专用 WebviewWindow，加载调用方传入的隧道 URL。
-//!   URL 由插件经 `/api-ssh` 的连接状态给出（`http://127.0.0.1:<port>`），
-//!   命令侧再做一次回环校验（纵深防御：桥白名单之外的输入不可信）。
+//!   `remote-<machineId>` 的专用 WebviewWindow。窗口加载的是壳层应用本体
+//!   （与主窗口同一套导航栏/切换器），前端按自身 label 解析出 machineId
+//!   并在启动时切到该机器——远端界面嵌在壳内呈现，而不是裸加载隧道页。
+//!   `url`（隧道 URL）仍做回环校验（纵深防御：桥白名单之外的输入不可信，
+//!   且未连接机器的调用在第一道就被挡掉）。
 //! - `remote_bridge_ping`：无参探测。iframe 内的插件（S4 面板）用它判定
 //!   自己运行在桌面壳内；纯 web 环境下该调用超时/被拒，弹窗按钮自隐藏。
 //!
@@ -71,27 +73,29 @@ fn open_window_args(machine_id: &str, url: &str) -> Result<(String, tauri::Url),
     Ok((label, parsed_url))
 }
 
-/// 打开（已开则聚焦）`remote-<machineId>` 弹窗窗口，加载隧道 URL。
+/// 打开（已开则聚焦）`remote-<machineId>` 弹窗窗口，加载壳层应用。
 ///
-/// 壳不自存机器状态：URL 由插件随调用传入，此处只做回环校验。重复调用
-/// 聚焦已有窗口（不重复建窗）；失败返回带前缀的可读错误，由调用方（S4
-/// 面板按钮）呈现。
+/// 壳不自存机器状态：前端按窗口 label 自解析目标机器并切换（机器状态经
+/// `/api-ssh` 轮询获取）；`url` 只做回环校验。重复调用聚焦已有窗口（不
+/// 重复建窗）；失败返回带前缀的可读错误，由调用方（S4 面板按钮）呈现。
 #[tauri::command]
 pub fn remote_open_window(
     app_handle: AppHandle,
     machine_id: String,
     url: String,
 ) -> Result<(), String> {
-    let (label, parsed_url) = open_window_args(&machine_id, &url)?;
+    let (label, _validated_url) = open_window_args(&machine_id, &url)?;
     // 已有窗口：聚焦即可（再次「打开」同一机器的语义）。
     if let Some(existing) = app_handle.get_webview_window(&label) {
         let _ = existing.set_focus();
         return Ok(());
     }
+    // 加载壳层应用本体（label 即机器寻址：前端 remote-<id> 自切换）；
+    // 多窗口按 machineId 分 label 天然并存。
     WebviewWindowBuilder::new(
         &app_handle,
         &label,
-        WebviewUrl::External(parsed_url),
+        WebviewUrl::App("index.html".into()),
     )
     .title(format!("DSH Remote · {machine_id}"))
     .inner_size(1280.0, 840.0)

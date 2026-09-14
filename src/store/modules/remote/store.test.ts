@@ -81,6 +81,44 @@ describe('remote store 轮询与降级', () => {
   })
 })
 
+describe('remote store 远端弹窗启动寻址', () => {
+  it('openInitialMachine：列表为空先拉一轮，已连接机器直接切换', async () => {
+    const engine = bindEngine({ list: [[machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })]] })
+    expect(remote.machines).toHaveLength(0)
+    await remote.openInitialMachine('m1')
+    expect(engine.listMachines).toHaveBeenCalled()
+    expect(remote.activeId).toBe('m1')
+    expect(remote.activeTunnelUrl).toBe('http://127.0.0.1:4001')
+  })
+
+  it('openInitialMachine：未连接机器走标准连接流程（进度弹窗照常）', async () => {
+    // 状态机式 mock：connect 前 disconnected、后 connected（轮询发现就绪）
+    let connected = false
+    const engine = bindEngine({
+      list: [[]],
+      connect: vi.fn(async () => {
+        connected = true
+        return { tunnelBaseUrl: 'http://127.0.0.1:4001' }
+      }),
+    })
+    engine.listMachines.mockImplementation(async () =>
+      [machineOf(connected
+        ? { id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' }
+        : { id: 'm1', state: 'disconnected' })])
+    await remote.openInitialMachine('m1')
+    expect(engine.connect).toHaveBeenCalledWith('m1')
+    await vi.waitFor(() => expect(remote.activeTunnelUrl).toBe('http://127.0.0.1:4001'))
+    expect(remote.activeId).toBe('m1')
+  })
+
+  it('openInitialMachine：未知机器静默不切换（label 与列表不符的兜底）', async () => {
+    bindEngine({ list: [[]] })
+    await remote.openInitialMachine('ghost')
+    expect(remote.activeId).toBeNull()
+    expect(remote.activeTunnelUrl).toBe('')
+  })
+})
+
 describe('remote store 切换语义', () => {
   it('switchTo 已连接机器：立即切换到隧道 URL', async () => {
     bindEngine({ list: [[machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })]] })
