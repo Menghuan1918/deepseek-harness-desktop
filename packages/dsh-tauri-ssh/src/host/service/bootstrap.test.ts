@@ -552,6 +552,8 @@ describe('component probe and launch commands', () => {
     expect(command).toContain(`--port "$4"`)
     expect(command).toContain('DSH_WEB_PORT=3080')
     expect(command).toContain('--no-open')
+    // 远端实例仅经回环隧道可达：跳过浏览器 cookie 鉴权（iframe 第三方上下文存不下 cookie）
+    expect(command).toContain('--skip-auth')
     expect(command).toContain('REMOTE_NOT_INSTALLED')
     expect(command).toContain('dsh-remote-web.log')
   })
