@@ -234,16 +234,16 @@ describe('remoteSwitcher 增强（4.4）', () => {
 })
 
 describe('remoteSwitcher 行内双动作（当前窗口 vs 新窗口）', () => {
-  it('已连接机器行尾出现新窗口按钮：点击只发 remote_open_window，不触发切换', async () => {
+  it('新窗口按钮常驻所有机器行：点击只发 remote_open_window，不触发切换', async () => {
     seedMachines([
       machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' }),
       machineOf({ id: 'm2', name: 'beta', state: 'disconnected' }),
     ])
     render(<RemoteSwitcher onManage={manageSpy} />)
     const menu = await openMenu()
-    // 仅已连接行有按钮（title/aria 语义键）
+    // 已连接与未连接行都有按钮（未连接开窗后由新窗口内壳层发起连接）
     const buttons = within(menu).getAllByRole('button', { name: 'remote.open_new_window' })
-    expect(buttons.length).toBe(1)
+    expect(buttons.length).toBe(2)
     fireEvent.click(buttons[0]!)
     await waitFor(() => {
       expect(invokeSpy).toHaveBeenCalledWith('remote_open_window', { machineId: 'm1', url: 'http://127.0.0.1:4001' })
@@ -251,6 +251,18 @@ describe('remoteSwitcher 行内双动作（当前窗口 vs 新窗口）', () => 
     // 行本体语义未被连带触发：视图仍是本地
     expect(remote.activeId).toBeNull()
     expect(remote.pendingId).toBeNull()
+  })
+
+  it('未连接机器的新窗口按钮：url 置空（窗口内启动连接流程）', async () => {
+    seedMachines([machineOf({ id: 'm2', name: 'beta', state: 'disconnected' })])
+    render(<RemoteSwitcher onManage={manageSpy} />)
+    const menu = await openMenu()
+    const button = within(menu).getByRole('button', { name: 'remote.open_new_window' })
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(invokeSpy).toHaveBeenCalledWith('remote_open_window', { machineId: 'm2', url: '' })
+    })
+    expect(remote.activeId).toBeNull()
   })
 
   it('机器行显示 user@host:port 副标题', async () => {
