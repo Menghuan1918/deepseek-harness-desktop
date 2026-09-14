@@ -5,12 +5,13 @@
  * @module dsh-tauri-ssh/host/service/transport
  */
 
-import type { Buffer } from 'node:buffer'
+import { Buffer } from 'node:buffer'
 import type { AddressInfo, Server } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { ConnectConfig } from 'ssh2'
 import type { MachineProfile, SshAuthMethod } from '../types/index'
 import type { ResolvedSshAuth } from './ssh-config'
+import { get as httpGet } from 'node:http'
 import { createServer } from 'node:net'
 import process from 'node:process'
 import { Client } from 'ssh2'
@@ -43,6 +44,21 @@ export interface SshExecOptions {
   stdinData?: Buffer
 }
 
+/**
+ * Cookie-injection slot of one tunnel. The remote `dsh web` session cookie is
+ * `SameSite=Strict`: an iframe embedding the tunnel URL is a cross-site
+ * context and neither stores nor sends it (the shell's remote view showed
+ * the bare 401 page even with the launch token in the URL). With a cookie
+ * minted at connect time (one local `GET …/?token=…` round-trip, no redirect
+ * follow), the tunnel stamps every request head itself — any embedding
+ * context (iframe, webview, browser tab) is authenticated transparently.
+ * `cookie === undefined` keeps the plain TCP pipe.
+ */
+export interface TunnelHeaderInjection {
+  /** The raw `Cookie` header value (`name=value`); read per accepted connection. */
+  cookie: string | undefined
+}
+
 /** A local loopback listener forwarding into the SSH tunnel. */
 export interface SshTunnelHandle {
   /** The bound loopback port (0 = ephemeral, read from the server). */
@@ -72,9 +88,12 @@ export interface SshSession {
    * @param preferredLocalPort - keep the tunnel's published URL stable across
    *   reconnects by re-binding this port when possible (falls back to an
    *   ephemeral port when it is taken).
+   * @param injection - mutable cookie-injection slot; when `cookie` is set,
+   *   every request head through the tunnel gets it stamped (see
+   *   {@link TunnelHeaderInjection}).
    * @returns the local listener handle.
    */
-  openTunnel: (remotePort: number, preferredLocalPort?: number) => Promise<SshTunnelHandle>
+  openTunnel: (remotePort: number, preferredLocalPort?: number, injection?: TunnelHeaderInjection) => Promise<SshTunnelHandle>
   /**
    * Register the session-closed callback (connection dropped, server went
    * away, or {@link close} ran).
@@ -407,7 +426,7 @@ export class Ssh2Transport implements SshTransport {
           }
         }
         client.connect({
-          ...sock === undefined ? {} : { sock: sock as ConnectConfig['sock'] },
+          ...sock === undefined ? {} : { sock: sock as NonNullable<ConnectConfig['sock']> },
           host: auth.host,
           port: auth.port,
           username: auth.username,
@@ -546,8 +565,8 @@ class Ssh2Session implements SshSession {
     })
   }
 
-  openTunnel(remotePort: number, preferredLocalPort?: number): Promise<SshTunnelHandle> {
-    return this.listenTunnel(remotePort, preferredLocalPort, true)
+  openTunnel(remotePort: number, preferredLocalPort?: number, injection?: TunnelHeaderInjection): Promise<SshTunnelHandle> {
+    return this.listenTunnel(remotePort, preferredLocalPort, true, injection)
   }
 
   /**
@@ -555,7 +574,7 @@ class Ssh2Session implements SshSession {
    * reconnect can re-publish the same tunnel URL; a taken port falls back
    * to an ephemeral one (only the first, deliberate preference retries).
    */
-  private listenTunnel(remotePort: number, preferredLocalPort: number | undefined, allowFallback: boolean): Promise<SshTunnelHandle> {
+  private listenTunnel(remotePort: number, preferredLocalPort: number | undefined, allowFallback: boolean, injection?: TunnelHeaderInjection): Promise<SshTunnelHandle> {
     return new Promise<SshTunnelHandle>((resolve, reject) => {
       const sockets = new Set<import('node:net').Socket>()
       const server: Server = createServer((socket) => {
@@ -574,7 +593,12 @@ class Ssh2Session implements SshSession {
             return
           }
           channel.on('error', () => socket.destroy())
-          socket.pipe(channel).pipe(socket)
+          const cookie = injection?.cookie
+          if (cookie === undefined) {
+            socket.pipe(channel).pipe(socket)
+            return
+          }
+          pipeChannelWithCookie(socket, channel, cookie)
         })
       })
       server.on('error', (error: NodeJS.ErrnoException) => {
@@ -582,7 +606,7 @@ class Ssh2Session implements SshSession {
           // The preferred port was reclaimed while we were away; an
           // ephemeral port keeps the reconnect alive (the URL change rides
           // the status publication).
-          void this.listenTunnel(remotePort, undefined, false).then(resolve, reject)
+          void this.listenTunnel(remotePort, undefined, false, injection).then(resolve, reject)
           return
         }
         reject(error)
@@ -613,6 +637,89 @@ class Ssh2Session implements SshSession {
     this.client.end()
     return Promise.resolve()
   }
+}
+
+/** Request-head cap for the cookie injector; a head never completing within it pipes raw (fail-open). */
+const TUNNEL_HEAD_CAP = 64 * 1024
+
+/**
+ * Stamp one request head with the minted cookie: any existing `Cookie` line
+ * is replaced (the browser has none worth keeping in an iframe context) and
+ * `Connection` collapses to `close` — one request per connection means the
+ * injector only ever parses the FIRST head. Upgrade (websocket) handshakes
+ * keep their `Connection: Upgrade` untouched; after the head the stream
+ * pipes raw in both directions.
+ */
+export function injectCookieHead(head: string, cookie: string): string {
+  const lines = head.split('\r\n')
+  const isUpgrade = lines.some(line => /^connection:\s*upgrade/iu.test(line))
+  const kept = lines.filter(line =>
+    !/^cookie:/iu.test(line) && (isUpgrade || !/^connection:/iu.test(line)))
+  // The request line stays first; the injected headers follow it.
+  kept.splice(1, 0, `Cookie: ${cookie}`)
+  if (!isUpgrade)
+    kept.splice(2, 0, 'Connection: close')
+  return kept.join('\r\n')
+}
+
+/** Pipe one tunneled connection, stamping the first request head with the cookie. */
+function pipeChannelWithCookie(
+  socket: import('node:net').Socket,
+  channel: Duplex,
+  cookie: string,
+): void {
+  const buffered: Buffer[] = []
+  let bufferedLength = 0
+  let injected = false
+  socket.on('data', (chunk: Buffer) => {
+    if (injected) {
+      channel.write(chunk)
+      return
+    }
+    buffered.push(chunk)
+    bufferedLength += chunk.length
+    const whole = Buffer.concat(buffered)
+    const headEnd = whole.indexOf('\r\n\r\n')
+    if (headEnd === -1) {
+      if (bufferedLength > TUNNEL_HEAD_CAP) {
+        injected = true
+        channel.write(whole)
+      }
+      return
+    }
+    injected = true
+    const head = whole.subarray(0, headEnd).toString('latin1')
+    const rest = whole.subarray(headEnd)
+    channel.write(Buffer.concat([Buffer.from(injectCookieHead(head, cookie), 'latin1'), rest]))
+  })
+  socket.on('end', () => channel.end())
+  channel.on('end', () => socket.end())
+  channel.pipe(socket)
+}
+
+/**
+ * Mint the tunnel's session cookie: GET the authenticated URL once WITHOUT
+ * following the 303 and read the `name=value` pair back from `set-cookie`.
+ * Resolves `undefined` on any failure (no token endpoint, timeout, transport
+ * error) — the tunnel then stays a plain pipe and the `?token=` URL remains
+ * the top-level fallback. The 3 s cap keeps a black-hole remote from
+ * stalling the connect; the request itself needs no cookie (the query token
+ * is the credential).
+ */
+export function mintTunnelCookie(authenticatedUrl: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const request = httpGet(authenticatedUrl, (response) => {
+      response.resume()
+      const raw = response.headers['set-cookie']?.[0]
+      const pair = raw === undefined ? undefined : raw.split(';')[0]?.trim()
+      resolve(pair === undefined || pair === '' ? undefined : pair)
+    })
+    request.on('error', () => resolve(undefined))
+    request.setTimeout(3_000, () => {
+      request.destroy()
+      resolve(undefined)
+    })
+  })
 }
 
 /** Mirror fetch's abort rejection: the signal's reason when present, else a DOMException-style AbortError. */

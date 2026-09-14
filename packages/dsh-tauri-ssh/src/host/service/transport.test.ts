@@ -6,7 +6,7 @@ import { Server, connect as tcpConnect } from 'node:net'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import { MachineId } from '../types/index'
-import { classifyConnectFailure, describeConnectFailure, loginShell, shQuote, Ssh2Transport } from './transport'
+import { classifyConnectFailure, describeConnectFailure, injectCookieHead, loginShell, shQuote, Ssh2Transport } from './transport'
 
 const profile: MachineProfile = {
   id: MachineId('m1'),
@@ -809,5 +809,65 @@ describe('ssh2Transport ProxyJump', () => {
     await expect(transport.connect(opsProfile, () => true)).rejects.toThrow(/Connection lost/iu)
     const [jump] = fakeClientInstances.slice(before)
     expect(jump?.ended).toBe(true)
+  })
+})
+
+describe('injectCookieHead', () => {
+  it('replaces Cookie, forces Connection: close, keeps the request line first', () => {
+    const head = 'GET / HTTP/1.1\r\nHost: 127.0.0.1:5000\r\nConnection: keep-alive\r\nCookie: stale=1'
+    const out = injectCookieHead(head, 'dsh-auth-x=v1.signed')
+    const lines = out.split('\r\n')
+    expect(lines[0]).toBe('GET / HTTP/1.1')
+    expect(lines).toContain('Cookie: dsh-auth-x=v1.signed')
+    expect(lines).toContain('Connection: close')
+    expect(lines.some(line => /keep-alive/iu.test(line))).toBe(false)
+    expect(lines.filter(line => /^cookie:/iu.test(line))).toHaveLength(1)
+  })
+
+  it('keeps Connection: Upgrade untouched for websocket handshakes', () => {
+    const head = 'GET /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket'
+    const out = injectCookieHead(head, 'dsh-auth-x=v1.signed')
+    expect(out).toContain('Connection: Upgrade')
+    expect(out).not.toContain('Connection: close')
+    expect(out).toContain('Cookie: dsh-auth-x=v1.signed')
+  })
+})
+
+describe('tunnel cookie injection', () => {
+  it('stamps the request head with the minted cookie through the pipe', async () => {
+    const transport = new Ssh2Transport(15000, new StubResolver())
+    const session = await transport.connect(profile, () => true)
+    const injection = { cookie: 'dsh-auth-x=v1.signed' as string | undefined }
+    const tunnel = await session.openTunnel(3080, undefined, injection)
+    const socket = tcpConnect(tunnel.localPort, '127.0.0.1')
+    await new Promise<void>(resolve => socket.once('connect', () => resolve()))
+    // PassThrough 回环：写入 channel 的字节流（= 注入后的请求）回到 socket
+    const echoed: Buffer[] = []
+    socket.on('data', chunk => echoed.push(chunk as Buffer))
+    socket.write('GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n')
+    await new Promise(resolve => setTimeout(resolve, 30))
+    const received = Buffer.concat(echoed).toString('latin1')
+    expect(received).toContain('Cookie: dsh-auth-x=v1.signed')
+    expect(received).toContain('Connection: close')
+    expect(received.startsWith('GET / HTTP/1.1')).toBe(true)
+    socket.destroy()
+    await tunnel.close()
+    await session.close()
+  })
+
+  it('without a minted cookie the tunnel stays a plain pipe', async () => {
+    const transport = new Ssh2Transport(15000, new StubResolver())
+    const session = await transport.connect(profile, () => true)
+    const tunnel = await session.openTunnel(3080)
+    const socket = tcpConnect(tunnel.localPort, '127.0.0.1')
+    await new Promise<void>(resolve => socket.once('connect', () => resolve()))
+    const echoed: Buffer[] = []
+    socket.on('data', chunk => echoed.push(chunk as Buffer))
+    socket.write('ping')
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(Buffer.concat(echoed).toString('latin1')).toBe('ping')
+    socket.destroy()
+    await tunnel.close()
+    await session.close()
   })
 })
