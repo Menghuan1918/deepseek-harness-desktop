@@ -59,12 +59,18 @@ pub fn remote_bridge_ping() -> String {
     "ok".to_string()
 }
 
-/// 校验弹窗入参并生成 (label, url)；抽成纯函数便于单测。
-fn open_window_args(machine_id: &str, url: &str) -> Result<(String, tauri::Url), String> {
+/// 校验弹窗入参并生成 (label, url)；抽成纯函数便于单测。`url` 允许为空
+/// ——未连接机器也可先开窗（窗口内壳层会发起标准连接流程），仅在非空时
+/// 做回环校验。
+fn open_window_args(machine_id: &str, url: &str) -> Result<(String, Option<tauri::Url>), String> {
     if machine_id.trim().is_empty() {
         return Err("REMOTE_WINDOW_FAILED: machineId must not be empty".to_string());
     }
-    let parsed_url = validate_loopback_http_url(url)?;
+    let parsed_url = if url.trim().is_empty() {
+        None
+    } else {
+        Some(validate_loopback_http_url(url)?)
+    };
     let label = format!(
         "{}{}",
         REMOTE_WINDOW_LABEL_PREFIX,
@@ -91,18 +97,28 @@ pub fn remote_open_window(
         return Ok(());
     }
     // 加载壳层应用本体（label 即机器寻址：前端 remote-<id> 自切换）；
-    // 多窗口按 machineId 分 label 天然并存。
-    WebviewWindowBuilder::new(
+    // 多窗口按 machineId 分 label 天然并存。窗口 chrome 与主窗口逐项对齐
+    // （desktop/builder.rs）：远端窗口与本体唯一区别是连接的后端。
+    let builder = WebviewWindowBuilder::new(
         &app_handle,
         &label,
         WebviewUrl::App("index.html".into()),
     )
     .title(format!("DSH Remote · {machine_id}"))
     .inner_size(1280.0, 840.0)
-    .min_inner_size(720.0, 480.0)
-    .build()
-    .map(|_| ())
-    .map_err(|err| format!("REMOTE_WINDOW_FAILED: {err}"))
+    .min_inner_size(860.0, 620.0)
+    .resizable(true);
+    // macOS：原生交通灯 + Overlay 标题栏与 44px 壳层导航栏融合（同主窗口）。
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 24.0));
+    builder
+        .build()
+        .map(|_| ())
+        .map_err(|err| format!("REMOTE_WINDOW_FAILED: {err}"))
 }
 
 #[cfg(test)]
