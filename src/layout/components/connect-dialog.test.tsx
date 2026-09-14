@@ -62,6 +62,28 @@ describe('connectDialog 连接进度弹窗', () => {
     await waitFor(() => expect(connectSpy).toHaveBeenCalledWith('m1'))
   })
 
+  it('取消连接（进行中）：中止引擎尝试并关闭弹窗，无失败定格', async () => {
+    const disconnectSpy = vi.fn(async () => undefined)
+    bindSshApiForTests({
+      listMachines: vi.fn(async () => []),
+      connect: vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:1' })),
+      disconnect: disconnectSpy,
+    })
+    remote.machines = [{ id: 'm1', name: 'alpha', state: 'connecting' }]
+    remote.pendingId = 'm1'
+    remote.connectTrail = ['handshake']
+    remote.connectLog = ['[handshake] ssh ok']
+    render(<ConnectDialog />)
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('connect-cancel'))
+    // 取消：断开下发、挂起与跟踪清空、弹窗关闭，且无失败定格
+    await waitFor(() => expect(disconnectSpy).toHaveBeenCalledWith('m1'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(remote.pendingId).toBeNull()
+    expect(remote.connectFailed).toBeNull()
+    expect(remote.connectLog).toEqual([])
+  })
+
   it('关闭（进行中）：弹窗关闭、跟踪态清理，pending 语义不撤销', async () => {
     remote.machines = [{ id: 'm1', name: 'alpha', state: 'connecting' }]
     remote.pendingId = 'm1'

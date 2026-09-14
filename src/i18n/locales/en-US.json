@@ -382,6 +382,7 @@
   "remote.connect.working": "Connecting in progress; you may close this dialog and it continues in background.",
   "remote.connect.failed_title": "Connection failed",
   "remote.connect.retry": "Retry",
+  "remote.connect.cancel": "Cancel",
   "remote.form.host": "Host",
   "remote.form.name": "Name",
   "remote.form.id": "ID",

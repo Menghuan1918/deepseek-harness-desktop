@@ -23,6 +23,9 @@ const POLL_INTERVAL_MS = 2000
 /** machine.events 增量游标（模块级，不属于 UI 状态）。 */
 let eventSeq = 0
 
+/** 连接尝试代次：取消/新尝试作废旧 connectAndSwitch 的落定（成功与失败都静默）。 */
+let connectEpoch = 0
+
 /** 引擎/网络错误的可读摘要（与 ssh-ui 的 messageOf 同语义）。 */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -153,6 +156,23 @@ export const remote = defineStore({
     },
 
     /**
+     * 取消进行中的连接：抬代次（在飞的 connectAndSwitch 落定静默）+ 中止
+     * 引擎侧尝试（manager 的 disconnect 会取消在飞 connect）。弹窗随
+     * pendingId 清空关闭；无失败定格。
+     */
+    cancelConnect(machineId: string) {
+      if (this.pendingId !== machineId)
+        return
+      connectEpoch += 1
+      this.pendingId = null
+      this.dismissConnect()
+      this.connectDismissed = false
+      void api.disconnect(machineId)
+        .catch(err => console.warn('[remote] cancel disconnect failed:', err))
+        .finally(() => void this.refresh())
+    },
+
+    /**
      * 切换视图：已连接直接切换；进行中（连接/重连）挂起等待；否则发起
      * 连接（阻塞到隧道就绪，见 S1 契约——不会指向空端口）。
      */
@@ -181,6 +201,7 @@ export const remote = defineStore({
 
     /** 开始跟踪一台机器的连接：复位日志/阶段/游标并挂起。 */
     beginTracking(machineId: string) {
+      connectEpoch += 1
       this.pendingId = machineId
       this.connectFailed = null
       this.connectDismissed = false
@@ -191,8 +212,12 @@ export const remote = defineStore({
 
     /** 连接一台机器并在就绪后切换；失败定格原因（进度弹窗呈现重试入口）。 */
     async connectAndSwitch(machineId: string) {
+      const epoch = connectEpoch
       try {
         const link = await api.connect(machineId)
+        // 已被取消或被新尝试取代：静默（不动 activeId/失败定格）
+        if (epoch !== connectEpoch)
+          return
         await this.refresh()
         const machine = this.machines.find(item => item.id === machineId)
         if (machine !== undefined && machine.state === 'connected') {
@@ -205,6 +230,9 @@ export const remote = defineStore({
         }
       }
       catch (err) {
+        // 用户取消（或新尝试取代）：引擎报 "cancelled by disconnect"，不定格失败
+        if (epoch !== connectEpoch)
+          return
         console.warn('[remote] connect failed:', err)
         this.pendingId = null
         this.connectFailed = { id: machineId, error: messageOf(err) }
@@ -259,4 +287,5 @@ export function disposeRemoteForTests(): void {
   remote.connectFailed = null
   remote.connectDismissed = false
   eventSeq = 0
+  connectEpoch = 0
 }

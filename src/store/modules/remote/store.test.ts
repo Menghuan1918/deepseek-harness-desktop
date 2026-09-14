@@ -263,4 +263,32 @@ describe('remote store 切换语义', () => {
     expect(remote.connectFailed).toBeNull()
     expect(remote.connectLog).toEqual([])
   })
+
+  describe('cancelConnect（取消连接）', () => {
+    it('取消进行中的连接：在飞 connect 以取消错误落定时静默，不定格失败', async () => {
+      let releaseConnect: (err: Error) => void = () => {}
+      const engine = bindEngine({
+        list: [[machineOf({ id: 'm1', state: 'disconnected' })]],
+        connect: vi.fn(() => new Promise<{ tunnelBaseUrl: string }>((_resolve, reject) => {
+          releaseConnect = reject
+        })),
+      })
+      const disconnectSpy = vi.fn(async () => undefined)
+      bindSshApiForTests({ listMachines: engine.listMachines, connect: engine.connect, disconnect: disconnectSpy })
+
+      await remote.refresh()
+      remote.switchTo('m1')
+      expect(engine.connect).toHaveBeenCalledWith('m1')
+      expect(remote.pendingId).toBe('m1')
+
+      remote.cancelConnect('m1')
+      expect(remote.pendingId).toBeNull()
+      await vi.waitFor(() => expect(disconnectSpy).toHaveBeenCalledWith('m1'))
+
+      // 引擎侧在飞 connect 以 "cancelled by disconnect" 拒绝：静默收场（不定格失败）
+      releaseConnect(new Error('connect failed: connection cancelled by disconnect'))
+      await vi.waitFor(() => expect(disconnectSpy).toHaveBeenCalledTimes(1))
+      expect(remote.connectFailed).toBeNull()
+    })
+  })
 })

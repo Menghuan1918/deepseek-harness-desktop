@@ -382,6 +382,7 @@
   "remote.connect.working": "连接进行中，可关闭此窗口，连接会在后台继续。",
   "remote.connect.failed_title": "连接失败",
   "remote.connect.retry": "重试",
+  "remote.connect.cancel": "取消连接",
   "remote.form.host": "主机",
   "remote.form.name": "名称",
   "remote.form.id": "ID",

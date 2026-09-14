@@ -80,16 +80,29 @@ export function ConnectDialog() {
                 </Description>
               </If>
             </Modal.Body>
-            <If cond={failed}>
-              <Modal.Footer>
+            <Modal.Footer>
+              <If cond={failed}>
                 <Button className="rounded-md" variant="tertiary" onPress={() => store.remote.dismissConnect()}>
                   {t('buttons.close')}
                 </Button>
                 <Button className="rounded-md" variant="primary" onPress={handleRetry}>
                   {t('remote.connect.retry')}
                 </Button>
-              </Modal.Footer>
-            </If>
+              </If>
+              <If cond={!failed}>
+                <Button className="rounded-md" variant="tertiary" onPress={() => store.remote.dismissConnect()}>
+                  {t('buttons.close')}
+                </Button>
+                <Button
+                  className="rounded-md"
+                  variant="secondary"
+                  data-testid="connect-cancel"
+                  onPress={() => pendingId !== null && store.remote.cancelConnect(pendingId)}
+                >
+                  {t('remote.connect.cancel')}
+                </Button>
+              </If>
+            </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
