@@ -154,18 +154,25 @@ export function RemoteSwitcher({ onManage }: { onManage: () => void }) {
                     <Description className={cn('ml-auto shrink-0', pending && 'text-warning')}>
                       {stateTextOf(machine, pending, t)}
                     </Description>
-                    {/* 行尾双动作：行本体=当前窗口切换；图标=新窗口打开 */}
+                    {/* 行尾双动作：行本体=当前窗口切换；图标=新窗口打开。
+                        RAC 菜单项的 press 由原生事件冒泡驱动（其 PressEvent
+                        无 stopPropagation），故图标用原生 span + 事件阻断：
+                        点击只发 remote_open_window，本窗口不跟着切换 */}
                     <If cond={connected}>
-                      <Button
-                        isIconOnly
+                      <span
+                        role="button"
+                        tabIndex={-1}
                         aria-label={t('remote.open_new_window')}
-                        className="size-6 shrink-0 rounded-md text-muted hover:text-ink"
-                        size="sm"
-                        variant="ghost"
-                        onPress={() => { openInNewWindow(machine, handleOpenWindowError) }}
+                        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted hover:bg-panel2 hover:text-ink"
+                        onPointerDown={e => e.stopPropagation()}
+                        onPointerUp={e => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openInNewWindow(machine, handleOpenWindowError)
+                        }}
                       >
                         <ArrowUpRightFromSquare className="size-3.5" />
-                      </Button>
+                      </span>
                     </If>
                   </span>
                 </Dropdown.Item>
