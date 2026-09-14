@@ -19,6 +19,7 @@ import { join } from 'pathe'
 import { MachineId, SshError } from '../types/index'
 import { checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, skippedVerificationSummary } from './bootstrap'
 import { fingerprintHostKey } from './host-keys'
+import { mintTunnelCookie } from './transport'
 
 /** One machine's live connection state. */
 interface MachineState {

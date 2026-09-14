@@ -5,12 +5,12 @@
  * @module dsh-tauri-ssh/host/service/transport
  */
 
-import { Buffer } from 'node:buffer'
 import type { AddressInfo, Server } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { ConnectConfig } from 'ssh2'
 import type { MachineProfile, SshAuthMethod } from '../types/index'
 import type { ResolvedSshAuth } from './ssh-config'
+import { Buffer } from 'node:buffer'
 import { get as httpGet } from 'node:http'
 import { createServer } from 'node:net'
 import process from 'node:process'
