@@ -17,7 +17,7 @@ import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { MachineId, SshError } from '../types/index'
-import { checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, runInstallScript, skippedVerificationSummary } from './bootstrap'
+import { checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, skippedVerificationSummary } from './bootstrap'
 import { fingerprintHostKey } from './host-keys'
 
 /** One machine's live connection state. */
@@ -263,6 +263,23 @@ export class SshManager {
     return state
   }
 
+  /**
+   * Best-effort launch-token read from the remote web log. No exec timeout:
+   * a timeout in this session implementation closes the whole connection,
+   * and a slow grep must never kill a healthy link — any failure simply
+   * degrades to the bare tunnel URL.
+   */
+  private async readRemoteWebToken(session: SshSession): Promise<string | undefined> {
+    try {
+      const result = await session.exec(remoteWebTokenCommand())
+      const token = result.stdout.trim()
+      return token === '' ? undefined : token
+    }
+    catch {
+      return undefined
+    }
+  }
+
   /** TOFU gate: accept a known fingerprint, remember a first sight, reject a mismatch. */
   private async checkHostKey(machineId: MachineId, hostKey: Buffer): Promise<boolean> {
     const fingerprint = fingerprintHostKey(hostKey)
@@ -340,9 +357,13 @@ export class SshManager {
         await tunnel.close().catch(() => undefined)
         throw new AttemptCancelled()
       }
+      // dsh web 的 launch token：隧道 URL 带上 ?token= 后，首次加载即 mint
+      // 该 authority 的鉴权 cookie（303 → /），壳层 iframe 与新窗口免登录；
+      // 读不到（实例非本插件拉起/日志无记录）退化为裸 URL（401 页自行呈现）。
+      const webToken = await this.readRemoteWebToken(session)
       const link: SshLink = {
         machineId,
-        tunnelBaseUrl: `http://127.0.0.1:${tunnel.localPort}`,
+        tunnelBaseUrl: `http://127.0.0.1:${tunnel.localPort}${webToken === undefined ? '' : `/?token=${webToken}`}`,
       }
       state.session = session
       state.tunnel = tunnel

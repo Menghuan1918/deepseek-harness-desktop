@@ -508,6 +508,17 @@ export function layoutDshEntry(plan?: RemoteInstallPlan): string {
  * @param plan - the resolved install plan (chooses the DSH entry).
  * @returns the shell command line that starts (or restarts) the instance.
  */
+/**
+ * The launch-token lookup command: `dsh web` prints its authenticated URL
+ * (`…/?token=…`) to stdout, which the start command appends to the remote
+ * web log. The last match wins (a restarted instance appends a fresh line);
+ * prints nothing when the log has no token (callers fall back to the bare
+ * tunnel URL). Token charset is the URL-safe base the launch token uses.
+ */
+export function remoteWebTokenCommand(): string {
+  return `grep -oE 'token=[A-Za-z0-9._~-]+' "$HOME/${REMOTE_WEB_LOG}" 2>/dev/null | tail -n 1 | cut -d= -f2`
+}
+
 export function startCommandFor(profile: MachineProfile, plan?: RemoteInstallPlan): string {
   if (profile.startCommand !== undefined)
     return `mkdir -p "$HOME/.dsh" && ( ${profile.startCommand} >>"$HOME/${REMOTE_WEB_LOG}" 2>&1 < /dev/null & ) &`
