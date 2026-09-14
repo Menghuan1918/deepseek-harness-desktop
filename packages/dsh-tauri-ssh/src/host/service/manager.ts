@@ -8,7 +8,7 @@ import type { Config } from '../storage/index'
  * @module dsh-tauri-ssh/host/service/manager
  */
 
-import type { MachineId, MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStatus, SshProgress, SshTestResult } from '../types/index'
+import type { MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStatus, SshProgress, SshTestResult } from '../types/index'
 import type { BootstrapHooks } from './bootstrap'
 import type { SshMachineEvents } from './events'
 import type { KnownHostsStore } from './host-keys'
@@ -16,7 +16,7 @@ import type { SshSession, SshTransport, SshTunnelHandle } from './transport'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
-import { SshError } from '../types/index'
+import { MachineId, SshError } from '../types/index'
 import { checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, runInstallScript, skippedVerificationSummary } from './bootstrap'
 import { fingerprintHostKey } from './host-keys'
 
@@ -140,7 +140,7 @@ export class SshManager {
     this.emit(machineId)
     let session: SshSession
     try {
-      session = await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
+      session = await this.deps.transport.connect(profile, (label, key) => this.checkHostKey(MachineId(label), key), signal)
     }
     catch (error) {
       delete state.progress
@@ -208,7 +208,7 @@ export class SshManager {
     // 作一致性语义——sync 引擎经此开专用会话，裸 /api-ssh 调用方同样拿到
     // 可区分的 machine-reconnecting 而非并行建连）。
     this.refuseWhileReconnecting(machineId, this.ensureState(machineId))
-    return await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
+    return await this.deps.transport.connect(profile, (label, key) => this.checkHostKey(MachineId(label), key), signal)
   }
 
   /**
@@ -301,7 +301,7 @@ export class SshManager {
     }
     let session: SshSession
     try {
-      session = await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
+      session = await this.deps.transport.connect(profile, (label, key) => this.checkHostKey(MachineId(label), key), signal)
     }
     catch (error) {
       if (generation === state.generation) {
@@ -442,7 +442,7 @@ export class SshManager {
     }
     let session: SshSession
     try {
-      session = await this.deps.transport.connect(profile, key => this.checkHostKey(machineId, key), signal)
+      session = await this.deps.transport.connect(profile, (label, key) => this.checkHostKey(MachineId(label), key), signal)
     }
     catch (error) {
       if (generation === state.generation) {

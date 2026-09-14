@@ -8,7 +8,9 @@ import type { MachineProfile } from '../types/index'
  * plus the ordered identity files to try). Keys are read fresh on every
  * connect — a key added to `~/.ssh` is picked up without touching DSH.
  *
- * Deliberate subset: `Match` blocks, `ProxyJump`, and agent forwarding are
+ * `ProxyJump` resolves to the ordered hop list (alias form `[user@]host[:port]`,
+ * comma-separated for multi-hop; `none` disables); the transport walks it.
+ * Deliberate subset: `Match` blocks, `ProxyCommand`, and agent forwarding are
  * out of scope; a host with no config match falls back to the profile fields
  * and the default identity files, exactly like a bare `ssh host` would.
  * @module dsh-tauri-ssh/host/service/ssh-config
@@ -46,6 +48,11 @@ export interface SshHostSettings {
   port?: number
   /** Every `IdentityFile` from the matching blocks, in order. */
   identityFiles: string[]
+  /**
+   * The `ProxyJump` hops (first obtained value wins, comma-split, `none`
+   * filtered out); each entry is the raw `[user@]alias[:port]` token.
+   */
+  proxyJump: string[]
 }
 
 /** The concrete connection plan one machine profile resolves to. */
@@ -60,6 +67,8 @@ export interface ResolvedSshAuth {
   password?: string
   /** The identity files to try, in order, as raw file contents. */
   keys: Array<{ privateKey: string, passphrase?: string }>
+  /** The resolved ProxyJump hop tokens (`[user@]alias[:port]`), in order; empty when direct. */
+  proxyJump: string[]
 }
 
 /** Token expansion for `~`, `%d`, `%h`, `%r` in config paths (the OpenSSH subset). */
@@ -188,7 +197,7 @@ export function parseSshConfig(text: string): SshHostBlock[] {
  * `IdentityFile` accumulates across all matching blocks.
  */
 export function lookupSshConfig(blocks: SshHostBlock[], host: string): SshHostSettings {
-  const settings: SshHostSettings = { identityFiles: [] }
+  const settings: SshHostSettings = { identityFiles: [], proxyJump: [] }
   for (const block of blocks) {
     const applies = block.patterns.some(pattern => hostPatternMatches(pattern, host))
     if (!applies)
@@ -207,6 +216,12 @@ export function lookupSshConfig(blocks: SshHostBlock[], host: string): SshHostSe
     }
     if (block.values.identityfile !== undefined) {
       settings.identityFiles.push(...block.values.identityfile)
+    }
+    if (settings.proxyJump.length === 0 && block.values.proxyjump !== undefined) {
+      settings.proxyJump = block.values.proxyjump[0]!
+        .split(',')
+        .map(token => token.trim())
+        .filter(token => token !== '' && token.toLowerCase() !== 'none')
     }
   }
   return settings
@@ -368,6 +383,7 @@ export class SshConfigResolver {
       port,
       username,
       keys,
+      proxyJump: settings.proxyJump,
       ...password === undefined ? {} : { password },
     }
   }

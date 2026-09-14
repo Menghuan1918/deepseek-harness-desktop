@@ -39,6 +39,7 @@ class StubResolver {
     username: string
     password?: string
     keys: Array<{ privateKey: string, passphrase?: string }>
+    proxyJump: string[]
   }> {
     const password = input.password === undefined || input.password === '' ? undefined : input.password
     return {
@@ -46,6 +47,7 @@ class StubResolver {
       port: this.plan.port ?? input.port,
       username: this.plan.username ?? input.user,
       keys: this.plan.keys ?? [],
+      proxyJump: [],
       ...password === undefined ? {} : { password },
     }
   }
@@ -147,6 +149,9 @@ class FakeClient extends EventEmitter {
   /** The most recent exec stream (so end() can close it like a real channel). */
   lastStream: EventEmitter | undefined
 
+  /** The direct-tcpip targets this client was asked to reach (jump chains). */
+  forwardCalls: Array<{ dstIP: string, dstPort: number }> = []
+
   forwardOut(
     _srcIP: string,
     _srcPort: number,
@@ -154,6 +159,7 @@ class FakeClient extends EventEmitter {
     _dstPort: number,
     callback: (error: Error | undefined, channel?: unknown) => void,
   ): this {
+    this.forwardCalls.push({ dstIP: _dstIP, dstPort: _dstPort })
     queueMicrotask(() => {
       if (this.forwardError !== undefined) {
         callback(this.forwardError)
@@ -218,6 +224,13 @@ function authHandlerOf(client: FakeClient): AuthHandler {
 function errorClientOnce(message: string): () => FakeClient {
   return function () {
     return fakeClientFactory('error', message)
+  }
+}
+
+/** The ready-mode counterpart of {@link errorClientOnce}. */
+function readyClientOnce(): () => FakeClient {
+  return function () {
+    return fakeClientFactory('ready', '')
   }
 }
 
@@ -658,5 +671,124 @@ describe('describeConnectFailure', () => {
     vi.mocked(Client).mockImplementationOnce(errorClientOnce('All configured authentication methods failed'))
     // Without one it points at the keys/agent.
     await expect(transport.connect(withoutPassword(profile), () => true)).rejects.toThrow(/no key or ssh-agent was accepted/)
+  })
+})
+
+/** A resolver that answers per config alias: ops jumps through dev. */
+class JumpResolver {
+  constructor(private readonly plans: Record<string, {
+    host: string
+    port: number
+    username?: string
+    proxyJump?: string[]
+  }>) {}
+
+  async resolve(input: MachineProfile): Promise<{
+    host: string
+    port: number
+    username: string
+    keys: Array<{ privateKey: string, passphrase?: string }>
+    proxyJump: string[]
+  }> {
+    const plan = this.plans[input.host]
+    if (plan === undefined)
+      throw new Error(`unknown host ${input.host}`)
+    return {
+      host: plan.host,
+      port: plan.port,
+      username: plan.username ?? input.user,
+      keys: [{ privateKey: 'jump-or-target-key' }],
+      proxyJump: plan.proxyJump ?? [],
+    }
+  }
+}
+
+describe('ssh2Transport ProxyJump', () => {
+  const opsProfile: MachineProfile = {
+    id: MachineId('ops'),
+    name: 'ops',
+    host: 'ops',
+    port: 2222,
+    user: 'root',
+    remotePort: 3080,
+  }
+
+  it('walks the jump chain: hop connects directly, target rides the forwarded stream', async () => {
+    const resolver = new JumpResolver({
+      ops: { host: '192.168.42.192', port: 2222, proxyJump: ['dev'] },
+      dev: { host: '10.1.0.2', port: 22 },
+    })
+    const labels: string[] = []
+    const transport = new Ssh2Transport(15000, resolver, noAgent)
+    const before = fakeClientInstances.length
+    const session = await transport.connect(opsProfile, (label) => {
+      labels.push(label)
+      return true
+    })
+    expect(session).toBeDefined()
+    const [jump, target] = fakeClientInstances.slice(before)
+    // 跳板直连自己的解析地址；目标经 forwardOut 流（sock）且地址为 ops 解析结果
+    expect(jump?.connectConfig?.host).toBe('10.1.0.2')
+    expect(jump?.connectConfig?.sock).toBeUndefined()
+    expect(jump?.forwardCalls).toEqual([{ dstIP: '192.168.42.192', dstPort: 2222 }])
+    expect(target?.connectConfig?.host).toBe('192.168.42.192')
+    expect(target?.connectConfig?.sock).toBeDefined()
+    // TOFU 按跳标签记录：跳板记在自己别名下，目标记机器 id
+    expect(labels).toEqual(['dev', 'ops'])
+    // 目标会话关闭时跳板一并收掉
+    await session.close()
+    expect(jump?.ended).toBe(true)
+  })
+
+  it('supports user@ and :port overrides and comma-separated multi-hop chains', async () => {
+    const resolver = new JumpResolver({
+      ops: { host: '192.168.42.192', port: 2222, proxyJump: ['root@dev:22', 'admin@bastion'] },
+      dev: { host: '10.1.0.2', port: 22 },
+      bastion: { host: '10.1.0.3', port: 2222 },
+    })
+    const transport = new Ssh2Transport(15000, resolver, noAgent)
+    const before = fakeClientInstances.length
+    await transport.connect(opsProfile, () => true)
+    const [first, second, target] = fakeClientInstances.slice(before)
+    expect(first?.connectConfig?.host).toBe('10.1.0.2')
+    expect(first?.forwardCalls).toEqual([{ dstIP: '10.1.0.3', dstPort: 2222 }])
+    expect(second?.connectConfig?.host).toBe('10.1.0.3')
+    expect(second?.forwardCalls).toEqual([{ dstIP: '192.168.42.192', dstPort: 2222 }])
+    expect(target?.connectConfig?.sock).toBeDefined()
+  })
+
+  it('rejects a proxy jump cycle before dialing', async () => {
+    const resolver = new JumpResolver({
+      ops: { host: '192.168.42.192', port: 2222, proxyJump: ['dev', 'dev'] },
+      dev: { host: '10.1.0.2', port: 22 },
+    })
+    const transport = new Ssh2Transport(15000, resolver, noAgent)
+    await expect(transport.connect(opsProfile, () => true)).rejects.toThrow(/proxy jump cycle/iu)
+  })
+
+  it('rejects a nested ProxyJump on the jump alias', async () => {
+    const resolver = new JumpResolver({
+      ops: { host: '192.168.42.192', port: 2222, proxyJump: ['dev'] },
+      dev: { host: '10.1.0.2', port: 22, proxyJump: ['third'] },
+    })
+    const transport = new Ssh2Transport(15000, resolver, noAgent)
+    await expect(transport.connect(opsProfile, () => true)).rejects.toThrow(/nested ProxyJump/iu)
+  })
+
+  it('closes the jump session when the target handshake fails', async () => {
+    const resolver = new JumpResolver({
+      ops: { host: '192.168.42.192', port: 2222, proxyJump: ['dev'] },
+      dev: { host: '10.1.0.2', port: 22 },
+    })
+    const transport = new Ssh2Transport(15000, resolver, noAgent)
+    const before = fakeClientInstances.length
+    // 第一跳就绪，目标握手失败
+    const { Client } = await import('ssh2')
+    vi.mocked(Client)
+      .mockImplementationOnce(readyClientOnce())
+      .mockImplementationOnce(errorClientOnce('Connection lost before handshake'))
+    await expect(transport.connect(opsProfile, () => true)).rejects.toThrow(/Connection lost/iu)
+    const [jump] = fakeClientInstances.slice(before)
+    expect(jump?.ended).toBe(true)
   })
 })

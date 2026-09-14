@@ -7,12 +7,14 @@
 
 import type { Buffer } from 'node:buffer'
 import type { AddressInfo, Server } from 'node:net'
+import type { Duplex } from 'node:stream'
 import type { ConnectConfig } from 'ssh2'
 import type { MachineProfile, SshAuthMethod } from '../types/index'
 import type { ResolvedSshAuth } from './ssh-config'
 import { createServer } from 'node:net'
 import process from 'node:process'
 import { Client } from 'ssh2'
+import { MachineId } from '../types/index'
 
 /** The credential-resolution face the transport needs (SshConfigResolver implements it). */
 export interface SshCredentialsResolver {
@@ -83,20 +85,55 @@ export interface SshSession {
   close: () => Promise<void>
 }
 
+/**
+ * TOFU host-key gate, keyed by hop label: the target machine id for the final
+ * hop, the `ProxyJump` alias for each jump host (jump keys are remembered
+ * under their own alias, so a host used as both jump and machine shares one
+ * TOFU record). May be async (the ssh2 callback form waits for the verdict).
+ */
+export type SshHostKeyVerifier = (label: string, hostKey: Buffer) => boolean | Promise<boolean>
+
 /** Transport factory: authenticate one machine and return its session. */
 export interface SshTransport {
   /**
    * @param profile - the machine profile to connect.
-   * @param hostKeyVerifier - TOFU host-key gate; may be async (the ssh2
-   *   callback form waits for the verdict).
+   * @param hostKeyVerifier - TOFU host-key gate, per hop label.
    * @param signal - aborts the handshake.
    * @returns the authenticated session.
    */
   connect: (
     profile: MachineProfile,
-    hostKeyVerifier: (hostKey: Buffer) => boolean | Promise<boolean>,
+    hostKeyVerifier: SshHostKeyVerifier,
     signal?: AbortSignal,
   ) => Promise<SshSession>
+}
+
+/** One parsed ProxyJump hop: the `[user@]alias[:port]` token, split. */
+interface ProxyJumpHop {
+  /** The config alias (drives the jump's own Host-block lookup). */
+  alias: string
+  /** Optional `user@` override. */
+  user?: string
+  /** Optional `:port` override. */
+  port?: number
+}
+
+/** Parse one ProxyJump token (`[user@]alias[:port]`). */
+function parseProxyJumpHop(token: string): ProxyJumpHop {
+  let rest = token
+  let user: string | undefined
+  const at = rest.lastIndexOf('@')
+  if (at !== -1) {
+    user = rest.slice(0, at)
+    rest = rest.slice(at + 1)
+  }
+  let port: number | undefined
+  const colon = rest.lastIndexOf(':')
+  if (colon !== -1 && /^\d+$/u.test(rest.slice(colon + 1))) {
+    port = Number(rest.slice(colon + 1))
+    rest = rest.slice(0, colon)
+  }
+  return { alias: rest, ...user === undefined ? {} : { user }, ...port === undefined ? {} : { port } }
 }
 
 /** Wrap one string for safe inclusion in a remote shell command line. */
@@ -216,10 +253,92 @@ export class Ssh2Transport implements SshTransport {
 
   async connect(
     profile: MachineProfile,
-    hostKeyVerifier: (hostKey: Buffer) => boolean | Promise<boolean>,
+    hostKeyVerifier: SshHostKeyVerifier,
     signal?: AbortSignal,
   ): Promise<SshSession> {
-    return new Promise<SshSession>((resolve, reject) => {
+    const hops: Ssh2Session[] = []
+    try {
+      const session = await this.connectTarget(profile, String(profile.id), hostKeyVerifier, signal, hops, new Set())
+      // 跳板会话与目标会话同生命周期：目标关闭时逐个收掉跳板（反序无必要，
+      // 逐跳 close 会连带掐断穿过它的 direct-tcpip 通道）。
+      session.onClosed(() => {
+        for (const hop of hops)
+          void hop.close().catch(() => undefined)
+      })
+      return session
+    }
+    catch (error) {
+      for (const hop of hops)
+        void hop.close().catch(() => undefined)
+      throw error
+    }
+  }
+
+  /**
+   * Connect one target, walking its resolved ProxyJump chain first. The whole
+   * chain resolves locally up front (config files only), then hops connect in
+   * order: hop i opens a direct-tcpip channel (`ssh -W` semantics) to the
+   * next hop's resolved host:port — the last hop points at the real target —
+   * and the next handshake rides that stream as its socket. A jump alias
+   * whose own config also sets ProxyJump is rejected (nested chains), as is
+   * any cycle. Stored secrets do not cross hops: jump auth uses the agent and
+   * the alias's identity files, exactly like `ssh -J`.
+   */
+  private async connectTarget(
+    profile: MachineProfile,
+    label: string,
+    hostKeyVerifier: SshHostKeyVerifier,
+    signal: AbortSignal | undefined,
+    hops: Ssh2Session[],
+    visited: ReadonlySet<string>,
+  ): Promise<Ssh2Session> {
+    const auth = await this.resolver.resolve(profile)
+    // 缺省视直连（兼容不填 proxyJump 的 resolver 实现）
+    const proxyJump = auth.proxyJump ?? []
+    if (proxyJump.length === 0)
+      return this.connectWithAuth(auth, label, hostKeyVerifier, signal, undefined)
+
+    const chain: Array<{ alias: string, auth: ResolvedSshAuth }> = []
+    const seen = new Set(visited)
+    for (const token of proxyJump) {
+      const hop = parseProxyJumpHop(token)
+      const key = hop.alias.toLowerCase()
+      if (seen.has(key))
+        throw new Error(`proxy jump cycle through "${hop.alias}"`)
+      seen.add(key)
+      const jumpProfile: MachineProfile = {
+        id: MachineId(hop.alias),
+        name: hop.alias,
+        host: hop.alias,
+        user: hop.user ?? '',
+        port: hop.port ?? 22,
+        remotePort: 3080,
+      }
+      const jumpAuth = await this.resolver.resolve(jumpProfile)
+      if ((jumpAuth.proxyJump ?? []).length > 0)
+        throw new Error(`nested ProxyJump on "${hop.alias}" is not supported`)
+      chain.push({ alias: hop.alias, auth: jumpAuth })
+    }
+
+    let sock: Duplex | undefined
+    for (const [index, hop] of chain.entries()) {
+      const session = await this.connectWithAuth(hop.auth, hop.alias, hostKeyVerifier, signal, sock)
+      hops.push(session)
+      const next = index + 1 < chain.length ? chain[index + 1]!.auth : auth
+      sock = await session.forwardOutStream(next.host, next.port)
+    }
+    return this.connectWithAuth(auth, label, hostKeyVerifier, signal, sock)
+  }
+
+  /** One ssh2 handshake: direct, or over a jump-forwarded stream when `sock` rides a hop. */
+  private connectWithAuth(
+    auth: ResolvedSshAuth,
+    label: string,
+    hostKeyVerifier: SshHostKeyVerifier,
+    signal: AbortSignal | undefined,
+    sock: Duplex | undefined,
+  ): Promise<Ssh2Session> {
+    return new Promise<Ssh2Session>((resolve, reject) => {
       if (signal?.aborted) {
         reject(abortError(signal))
         return
@@ -246,7 +365,7 @@ export class Ssh2Transport implements SshTransport {
       client.on('error', (error) => {
         settle(() => reject(describedConnectFailure(error, passwordOffered)))
       })
-      void this.resolver.resolve(profile).then((auth) => {
+      void Promise.resolve().then(() => {
         const agentSocket = this.options.agentSocket === undefined
           ? process.env.SSH_AUTH_SOCK
           : this.options.agentSocket
@@ -288,6 +407,7 @@ export class Ssh2Transport implements SshTransport {
           }
         }
         client.connect({
+          ...sock === undefined ? {} : { sock: sock as ConnectConfig['sock'] },
           host: auth.host,
           port: auth.port,
           username: auth.username,
@@ -301,7 +421,7 @@ export class Ssh2Transport implements SshTransport {
           // ssh2 accepts a synchronous boolean return OR the verify-callback
           // form; always driving the callback keeps async verifiers uniform.
           hostVerifier: (key: Buffer, verify: (valid: boolean) => void): void => {
-            const verdict = hostKeyVerifier(key)
+            const verdict = hostKeyVerifier(label, key)
             if (verdict instanceof Promise) {
               void verdict.then(verify, () => verify(false))
             }
@@ -343,6 +463,23 @@ class Ssh2Session implements SshSession {
       this.closedFired = true
       for (const callback of this.closed) callback()
       this.closed.clear()
+    })
+  }
+
+  /**
+   * Open one direct-tcpip channel (`ssh -W` semantics) through this session.
+   * Internal to the ProxyJump chain: the next hop's handshake rides the
+   * returned stream as its socket; closing this session kills the stream.
+   */
+  forwardOutStream(host: string, port: number): Promise<Duplex> {
+    return new Promise((resolve, reject) => {
+      this.client.forwardOut('127.0.0.1', 0, host, port, (error, stream) => {
+        if (error !== undefined) {
+          reject(error)
+          return
+        }
+        resolve(stream)
+      })
     })
   }
 

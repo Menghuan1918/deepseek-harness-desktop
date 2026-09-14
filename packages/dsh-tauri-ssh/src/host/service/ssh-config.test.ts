@@ -206,7 +206,21 @@ describe('lookupSshConfig', () => {
       user: 'first',
       port: 2222,
       identityFiles: ['~/.ssh/one', '~/.ssh/two'],
+      proxyJump: [],
     })
+  })
+
+  it('resolves ProxyJump chains with overrides, none, and first-wins', () => {
+    const blocks = parseSshConfig([
+      'Host ops',
+      '  ProxyJump root@dev:2222,none',
+      'Host *',
+      '  ProxyJump bastion',
+    ].join('\n'))
+    // 首个命中块先取值：ops 自己的 ProxyJump 胜出；none 过滤、逗号成链
+    expect(lookupSshConfig(blocks, 'ops').proxyJump).toEqual(['root@dev:2222'])
+    // 无块命中的回落到 Host *
+    expect(lookupSshConfig(blocks, 'other').proxyJump).toEqual(['bastion'])
   })
 
   it('skips negated blocks and non-matching wildcards', () => {
@@ -226,7 +240,7 @@ describe('lookupSshConfig', () => {
   })
 
   it('returns only the defaults shape for no matches', () => {
-    expect(lookupSshConfig([], 'anything')).toEqual({ identityFiles: [] })
+    expect(lookupSshConfig([], 'anything')).toEqual({ identityFiles: [], proxyJump: [] })
   })
 })
 
