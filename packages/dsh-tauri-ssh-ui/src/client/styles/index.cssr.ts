@@ -41,22 +41,27 @@ export default c([
     color: 'var(--dsw-alias-label-tertiary)',
   }),
 
-  /* The page chrome: refresh / add / save. */
+  /* The section head: title/intro left, page actions right. */
+  c('.dshp-ssh-section-head', {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: '12px',
+    flexWrap: 'wrap',
+  }),
+
+  /* The page chrome: refresh / add. */
   c('.dshp-ssh-chrome', {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
     flexWrap: 'wrap',
+    flexShrink: 0,
   }),
 
   /* The danger seat of an otherwise primitive button (token-aligned color). */
   c('.dshp-ssh-danger-action', {
     color: 'var(--dsw-alias-state-error-primary)',
-  }),
-
-  /* "Add machine" keeps the dashed affordance of every other empty-list entry. */
-  c('.dshp-ssh-add-action', {
-    borderStyle: 'dashed',
   }),
 
   /* The step rail: compact phase chips of the in-flight operation. */
@@ -85,19 +90,17 @@ export default c([
     border: '1px solid currentColor',
   }),
 
-  /* Dirty form: ring the Save button so the staged-but-unsaved state is visible. */
-  c('.dshp-ssh-save-dirty', {
-    boxShadow: '0 0 0 2px var(--dsw-alias-state-warning-primary, #d48806)',
-  }),
-
-  /* The machine list: one hairline card per machine. */
+  /* The machine list: one surface, hairline dividers between rows. */
   c('.dshp-ssh-rows', {
     listStyle: 'none',
     margin: '12px 0 0',
     padding: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: '8px',
+    border: '1px solid var(--dsw-alias-border-l2)',
+    borderRadius: '12px',
+    background: 'var(--dsw-alias-bg-layer-3)',
+    overflow: 'hidden',
   }),
 
   /* The read-only ~/.ssh/config group header. */
@@ -124,14 +127,17 @@ export default c([
   }),
 
   c('.dshp-ssh-row-card', {
-    border: '1px solid var(--dsw-alias-border-l2)',
-    borderRadius: '12px',
-    padding: '12px 14px',
+    padding: '10px 14px',
     display: 'flex',
     flexDirection: 'column',
-    gap: '12px',
-    background: 'var(--dsw-alias-bg-layer-3)',
-  }),
+    gap: '8px',
+    /* tintBorder 的机器：左侧 2px 标识色条（inline style 上色）。 */
+    borderLeft: '2px solid transparent',
+  }, [
+    c('& + &', {
+      borderTop: '1px solid var(--dsw-alias-border-l2)',
+    }),
+  ]),
 
   c('.dshp-ssh-row-head', {
     display: 'flex',
@@ -292,15 +298,27 @@ export default c([
     marginLeft: 'auto',
   }),
 
-  /* The editing surface: a filled module on the panel. */
+  /* The inline editor: an indented分区 with a hairline top divider. */
   c('.dshp-ssh-editor', {
-    borderRadius: '12px',
-    background: 'var(--dsw-alias-bg-module-platform)',
-    padding: '14px 16px',
+    margin: '2px 0 4px',
+    paddingTop: '12px',
+    borderTop: '1px solid var(--dsw-alias-border-l2)',
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
   }),
+
+  /* The editor's action row: hint left, cancel/save right. */
+  c('.dshp-ssh-editor-actions', {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: '8px',
+  }, [
+    c('.dshp-ssh-hint', {
+      marginRight: 'auto',
+    }),
+  ]),
 
   c('.dshp-ssh-grid', {
     display: 'grid',

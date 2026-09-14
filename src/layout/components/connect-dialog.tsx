@@ -55,9 +55,9 @@ export function ConnectDialog() {
               <If cond={connectTrail.length > 0 || currentPhase !== undefined}>
                 <div className="flex items-center gap-1.5" data-testid="connect-steps">
                   {(connectTrail.length > 0 ? connectTrail : currentPhase !== undefined ? [currentPhase] : []).map((phase, index, all) => (
-                    // 阶段可能重复出现（重试），以序位区分 key
-                    // eslint-disable-next-line react/no-array-index-key
                     <span
+                      // 阶段可能重复出现（重试），以序位区分 key
+                      // eslint-disable-next-line react/no-array-index-key
                       key={`${phase}-${index}`}
                       className={cn(
                         'rounded-md px-2 py-0.5 text-xs',

@@ -66,9 +66,13 @@ describe('machinesSection', () => {
     const { fetchFn } = mount({
       envelope: { ok: true, value: { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:49152' }] } },
     })
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('machine-a')).toBeTruthy())
+    const card = screen.getByTestId('machine-a')
+    expect(within(card).getByText('alpha')).toBeTruthy()
     expect(screen.getByTestId('status-a').textContent).toContain('Connected')
     expect(screen.getByText('http://127.0.0.1:49152')).toBeTruthy()
+    // 机密字段在编辑器内（行已显示优先）
+    fireEvent.click(withinButton(card, 'Edit'))
     const passwordInput = screen.getByPlaceholderText('set')
     expect(passwordInput).toBeTruthy()
     expect(fetchFn).toHaveBeenCalledWith('/api-ssh', expect.objectContaining({ method: 'POST' }))
@@ -85,6 +89,14 @@ describe('machinesSection', () => {
     fireEvent.change(dialog.getByLabelText('Name'), { target: { value: 'newton' } })
     fireEvent.change(dialog.getByLabelText('User (optional)'), { target: { value: 'ops' } })
     expect(dialog.getByLabelText('ID')).toHaveProperty('value', '10-1-1-1')
+    // save 落盘后 store 重新拉列表：依序 mock save 应答与新列表
+    fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: {} }) } as unknown as Response)
+    fetchFn.mockResolvedValueOnce({
+      json: async () => ({
+        ok: true,
+        value: { items: [{ id: '10-1-1-1', name: 'newton', host: 'ops@10.1.1.1', port: 22, user: 'ops', hasPassword: false, hasPassphrase: false, remotePort: 3080, state: 'disconnected' }] },
+      }),
+    } as unknown as Response)
     fireEvent.click(dialog.getByText('Add & save'))
     await waitFor(() => expect(saveCalls(fetchFn)).toHaveLength(1))
     const payload = saveCalls(fetchFn)[0] as { machineId: string, row: Record<string, unknown> }
@@ -120,14 +132,20 @@ describe('machinesSection', () => {
 
   it('persists edits through the store', async () => {
     const { fetchFn } = mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } } })
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'alpha-2' } })
-    fireEvent.change(screen.getByLabelText('Password (optional)'), { target: { value: 'sekrit' } })
-    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(screen.getByTestId('machine-a')).toBeTruthy())
+    // 行内编辑：Edit 展开，改动后按行保存（无全局 Save）
+    const card = screen.getByTestId('machine-a')
+    fireEvent.click(withinButton(card, 'Edit'))
+    const editor = screen.getByTestId('editor-a')
+    fireEvent.change(within(editor).getByLabelText('Name'), { target: { value: 'alpha-2' } })
+    fireEvent.change(within(editor).getByLabelText('Password (optional)'), { target: { value: 'sekrit' } })
+    fireEvent.click(within(editor).getByText('Save'))
     await waitFor(() => expect(saveCalls(fetchFn)).toHaveLength(1))
     const payload = saveCalls(fetchFn)[0] as { row: Record<string, unknown>, secrets?: Record<string, unknown> }
     expect(payload.row).toMatchObject({ name: 'alpha-2' })
     expect(payload.secrets).toMatchObject({ password: 'sekrit' })
+    // 保存即收起编辑器
+    await waitFor(() => expect(screen.queryByTestId('editor-a')).toBeNull())
   })
 
   it('removes a machine immediately through the confirmation modal', async () => {
@@ -146,6 +164,11 @@ describe('machinesSection', () => {
     expect(screen.getByTestId('machine-b')).toBeTruthy()
     fireEvent.click(withinButton(betaCard, 'Remove'))
     await waitFor(() => expect(screen.getByText('Remove it')).toBeTruthy())
+    // remove 落盘后 reload 列表：依序 mock remove 应答与不含 b 的新列表
+    fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: {} }) } as unknown as Response)
+    fetchFn.mockResolvedValueOnce({
+      json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } }),
+    } as unknown as Response)
     fireEvent.click(screen.getByText('Remove it'))
     // 确认即删除：无需再点保存
     await waitFor(() => expect(removeCalls(fetchFn)).toHaveLength(1))
@@ -155,14 +178,10 @@ describe('machinesSection', () => {
 
   it('tests, connects, opens through the desktop bridge, and disconnects a machine', async () => {
     const openWindow = vi.fn(async () => undefined)
-    const fetchFn = fakeFetch({ ok: true, value: { items: [] } })
+    const fetchFn = fakeFetch({ ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } })
     const store = new MachinesStore(fetchFn)
-    store.store.update((state) => {
-      state.status = 'ready'
-      state.machines = [machineA]
-    })
     render(<MachinesSection store={store} t={t} bridge={desktopBridge(openWindow)} />)
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('machine-a')).toBeTruthy())
 
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { ok: true, banner: 'Linux alpha' } }) } as unknown as Response)
     fireEvent.click(withinButton(screen.getByTestId('machine-a'), 'Test'))
@@ -245,12 +264,14 @@ describe('machinesSection', () => {
 
   it('edits every config field and falls back on malformed numbers', async () => {
     const { fetchFn } = mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } } })
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
-    fireEvent.change(screen.getByLabelText('Port'), { target: { value: '2222' } })
-    fireEvent.change(screen.getByLabelText('Remote port'), { target: { value: 'abc' } })
-    fireEvent.change(screen.getByLabelText('Start command (optional)'), { target: { value: 'dsh web --port 3000' } })
-    fireEvent.change(screen.getByLabelText('Key passphrase (optional)'), { target: { value: 'phrase' } })
-    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(screen.getByTestId('machine-a')).toBeTruthy())
+    fireEvent.click(withinButton(screen.getByTestId('machine-a'), 'Edit'))
+    const editor = screen.getByTestId('editor-a')
+    fireEvent.change(within(editor).getByLabelText('Port'), { target: { value: '2222' } })
+    fireEvent.change(within(editor).getByLabelText('Remote port'), { target: { value: 'abc' } })
+    fireEvent.change(within(editor).getByLabelText('Start command (optional)'), { target: { value: 'dsh web --port 3000' } })
+    fireEvent.change(within(editor).getByLabelText('Key passphrase (optional)'), { target: { value: 'phrase' } })
+    fireEvent.click(within(editor).getByText('Save'))
     await waitFor(() => expect(saveCalls(fetchFn)).toHaveLength(1))
     const payload = saveCalls(fetchFn)[0] as { row: Record<string, unknown>, secrets?: Record<string, unknown> }
     expect(payload.row).toMatchObject({
@@ -263,9 +284,11 @@ describe('machinesSection', () => {
 
   it('masks the secret inputs and keeps the write-only direction', async () => {
     mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } } })
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
-    const password = screen.getByLabelText('Password (optional)')
-    const passphrase = screen.getByLabelText('Key passphrase (optional)')
+    await waitFor(() => expect(screen.getByTestId('machine-a')).toBeTruthy())
+    fireEvent.click(withinButton(screen.getByTestId('machine-a'), 'Edit'))
+    const editor = screen.getByTestId('editor-a')
+    const password = within(editor).getByLabelText('Password (optional)')
+    const passphrase = within(editor).getByLabelText('Key passphrase (optional)')
     expect(password.getAttribute('type')).toBe('password')
     expect(passphrase.getAttribute('type')).toBe('password')
     // Presence flags only: the placeholders report set/unset, never values.
@@ -285,26 +308,34 @@ describe('machinesSection', () => {
 
   it('persists the identity color and the border tint switch', async () => {
     const { fetchFn } = mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } } })
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
-    fireEvent.click(screen.getByLabelText('Color: #4176E6'))
+    await waitFor(() => expect(screen.getByTestId('machine-a')).toBeTruthy())
     const card = screen.getByTestId('machine-a')
-    expect(card.style.borderColor).toBe('')
-    fireEvent.click(within(card).getByRole('switch'))
-    expect(card.style.borderColor).toBe('rgb(65, 118, 230)')
-    fireEvent.click(screen.getByText('Save'))
+    fireEvent.click(withinButton(card, 'Edit'))
+    const editor = screen.getByTestId('editor-a')
+    fireEvent.click(within(editor).getByLabelText('Color: #4176E6'))
+    fireEvent.click(within(editor).getByRole('switch'))
+    // 保存后列表回报新外观：tint 色条随已存数据上色
+    fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: {} }) } as unknown as Response)
+    fetchFn.mockResolvedValueOnce({
+      json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'disconnected', color: '#4176E6', tintBorder: true }] } }),
+    } as unknown as Response)
+    fireEvent.click(within(editor).getByText('Save'))
     await waitFor(() => expect(saveCalls(fetchFn)).toHaveLength(1))
     expect((saveCalls(fetchFn)[0] as { row: Record<string, unknown> }).row)
       .toMatchObject({ color: '#4176E6', tintBorder: true })
+    await waitFor(() => expect(card.style.borderLeftColor).toBe('rgb(65, 118, 230)'))
   })
 
   it('resets color and border tint through the default swatch', async () => {
     const { fetchFn } = mount({
       envelope: { ok: true, value: { items: [{ ...machineA, state: 'disconnected', color: '#4176E6', tintBorder: true }] } },
     })
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
-    expect(screen.getByTestId('machine-a').style.borderColor).toBe('rgb(65, 118, 230)')
-    fireEvent.click(screen.getByLabelText('Default'))
-    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(screen.getByTestId('machine-a')).toBeTruthy())
+    expect(screen.getByTestId('machine-a').style.borderLeftColor).toBe('rgb(65, 118, 230)')
+    fireEvent.click(withinButton(screen.getByTestId('machine-a'), 'Edit'))
+    const editor = screen.getByTestId('editor-a')
+    fireEvent.click(within(editor).getByLabelText('Default'))
+    fireEvent.click(within(editor).getByText('Save'))
     await waitFor(() => expect(saveCalls(fetchFn)).toHaveLength(1))
     const row = (saveCalls(fetchFn)[0] as { row: Record<string, unknown> }).row
     expect(row.color).toBeUndefined()
@@ -540,7 +571,7 @@ describe('machinesSection', () => {
     const { store } = mount({
       envelope: { ok: true, value: { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:1' }] } },
     })
-    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('machine-a')).toBeTruthy())
     act(() => {
       store.store.update((state) => {
         state.installResults.a = { dshPath: '/home/root/.local/bin/dsh', credentialsCopied: true }
