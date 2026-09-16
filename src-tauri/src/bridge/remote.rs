@@ -17,7 +17,7 @@
 //! remote URL 面与主窗口一致（仅 loopback）。错误遵循仓库约定：
 //! `Result<_, String>`，Err 以大写协议前缀开头（如 `REMOTE_URL_INVALID:`）。
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
 
 /// 弹窗窗口 label 前缀（与 capability 的 `remote-*` glob 对应）。
 const REMOTE_WINDOW_LABEL_PREFIX: &str = "remote-";
@@ -96,27 +96,11 @@ pub fn remote_open_window(
         let _ = existing.set_focus();
         return Ok(());
     }
-    // 加载壳层应用本体（label 即机器寻址：前端 remote-<id> 自切换）；
-    // 多窗口按 machineId 分 label 天然并存。窗口 chrome 与主窗口逐项对齐
-    // （desktop/builder.rs）：远端窗口与本体唯一区别是连接的后端。
-    let builder = WebviewWindowBuilder::new(
-        &app_handle,
-        &label,
-        WebviewUrl::App("index.html".into()),
-    )
-    .title(format!("DSH Remote · {machine_id}"))
-    .inner_size(1280.0, 840.0)
-    .min_inner_size(860.0, 620.0)
-    .resizable(true);
-    // macOS：原生交通灯 + Overlay 标题栏与 44px 壳层导航栏融合（同主窗口）。
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .decorations(true)
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(14.0, 24.0));
-    builder
-        .build()
+    // 建窗 chrome 全部取壳层建窗真值（`build_shell_window`）：52px 导航栏交通灯、
+    // 桥脚本按窗口注入、（Windows）WebView2 共用数据目录等，远端窗口与本体
+    // 唯一区别是连接的后端。label 即机器寻址：前端 remote-<id> 自切换。
+    let title = format!("DSH Remote · {machine_id}");
+    crate::desktop::builder::build_shell_window(&app_handle, label, &title)
         .map(|_| ())
         .map_err(|err| format!("REMOTE_WINDOW_FAILED: {err}"))
 }
