@@ -104,6 +104,13 @@ S5 验收中「数据面全旅程」「壳层命令/单测/lint」「capability�
       耗尽），弹窗关闭且无失败定格；「关闭」则后台继续。
 - [ ] ssh config 里带 `ProxyJump` 的主机（如 ops 经 dev）：连接经跳板
       建立，不再报 "Connection lost before handshake" 盲重试。
+- [ ] 合并 v0.14.3 后回归：远端窗口交通灯与新 52px 导航栏对齐（y=28，
+      非旧 24）；主/远端窗口均出现「文件/帮助」菜单；远端窗口内插件
+      boot 正常（建窗走共享 `build_shell_window`，桥脚本按窗口注入）。
+- [ ] 插件退役回归（dsh-tauri-panel 并入 core 后）：连接日志出现
+      「同步桌面捆绑插件（11 个）」且远端实例按新 profile 正常重启
+      （不出现 cannot resolve profile bundle / EADDRINUSE 崩溃）；
+      远端 profile 无退役包残留（wire 清理悬空托管链接）。
 
 ## G macOS 平台（如适用）
 
@@ -113,9 +120,9 @@ S5 验收中「数据面全旅程」「壳层命令/单测/lint」「capability�
 
 | 验收点 | 证据 |
 |---|---|
-| 1 壳层验证 | `cargo test` 530 绿（含 bridge/remote + capability）；`pnpm typecheck` 绿；根 `pnpm test -- --run` 769 过 4 跳过（65 文件）；`pnpm lint` 0 error / 27 warning（全部上游既有文件，较基线不劣化） |
-| 2 数据面全旅程 | `docs/testing/s5-ssh-e2e-evidence.md`（dev 真机 ALL STEPS PASSED；v14 分支 2026-09-13 复跑通过，connect 5.1s、authMethod=key、事件 6 条） |
-| 3 插件套件 | `dsh-tauri-ssh` 379 过 4 跳过（根 runner）；`dsh-tauri-ssh-ui` 96 过（包内 runner，含 Modal/步骤条/在飞反馈新用例） |
+| 1 壳层验证 | `cargo test` 563 绿（含 bridge/remote + capability + 上游多窗口）；`pnpm typecheck` 绿；根 `pnpm test -- --run` 906 过 4 跳过 2 败（败者=上游 worktree 包 macOS `/var` 符号链接敏感，纯 origin/main 同败，与本分支无关）；`pnpm lint` 0 error / 17 warning |
+| 2 数据面全旅程 | `docs/testing/s5-ssh-e2e-evidence.md`（dev 真机 ALL STEPS PASSED；v14 分支 2026-09-13 复跑通过，connect 5.1s、authMethod=key、事件 6 条；2026-09-16 合并 v0.14.3 后复验：connect 20s 含插件重同步 11 个 5.4MB、隧道 303 mint→200、远端单实例健康） |
+| 3 插件套件 | `dsh-tauri-ssh` 356 过 4 跳过（根 runner；含 wire 悬空清理/端口等待新用例）；`dsh-tauri-ssh-ui` 96 过（包内 runner，含 Modal/步骤条/在飞反馈新用例） |
 | 4 capability 复核 | `builder.rs security_tests::remote_popup_windows_are_scoped_by_glob_and_stay_loopback`；白名单仅增 `remote_bridge_ping`/`remote_open_window`；命令侧回环 http 校验单测 |
 | 5 旧概念残留 | `Setting.remotes`/`remote_machine_*`/`remote-status` 等关键词全仓 grep 零命中（仅余 git-remote 无关词） |
 | 切换器/轮询/着色/降态逻辑 | `src/store/modules/remote/*.test.ts`（23 例）+ `remote-switcher.test.tsx`（9 例） |
