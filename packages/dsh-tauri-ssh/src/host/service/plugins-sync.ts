@@ -45,7 +45,7 @@ const REMOTE_PIDFILE = '.dsh/dsh-remote.pid'
 const REMOTE_PROFILE = '.dsh/profiles/web'
 
 /** The wiring helper uploaded alongside the tree (keeps shell quoting trivial). */
-const WIRE_SCRIPT = `const fs = require('fs')
+export const WIRE_SCRIPT = `const fs = require('fs')
 const path = require('path')
 const [profilePkg, base, ...names] = process.argv.slice(2)
 const doc = JSON.parse(fs.readFileSync(profilePkg, 'utf8'))
@@ -55,12 +55,23 @@ doc.dsh.profile = doc.dsh.profile || {}
 doc.dsh.profile.bundles = Array.isArray(doc.dsh.profile.bundles) ? doc.dsh.profile.bundles : []
 const profileModules = path.join(path.dirname(profilePkg), 'node_modules')
 fs.mkdirSync(profileModules, { recursive: true })
+const managedPrefix = path.resolve(base) + path.sep
 for (const name of names) {
   doc.dependencies[name] = 'link:' + path.join(base, name)
   if (!doc.dsh.profile.bundles.includes(name)) doc.dsh.profile.bundles.push(name)
   const link = path.join(profileModules, name)
   fs.rmSync(link, { recursive: true, force: true })
   fs.symlinkSync(path.join(base, name), link, 'dir')
+}
+for (const name of Object.keys(doc.dependencies)) {
+  if (names.includes(name)) continue
+  const spec = doc.dependencies[name]
+  if (typeof spec !== 'string' || !spec.startsWith('link:')) continue
+  const target = path.resolve(path.dirname(profilePkg), spec.slice(5))
+  if (!target.startsWith(managedPrefix)) continue
+  delete doc.dependencies[name]
+  doc.dsh.profile.bundles = doc.dsh.profile.bundles.filter(b => b !== name)
+  fs.rmSync(path.join(profileModules, name), { recursive: true, force: true })
 }
 fs.writeFileSync(profilePkg, JSON.stringify(doc, null, 2) + '\\n')
 console.log('wired ' + names.length + ' bundled plugins')
@@ -179,8 +190,11 @@ export function pluginSyncApplyCommand(tree: BundledPluginsTree, hash: string): 
     `rm -rf "$BASE.old"`,
     `echo "${hash}" > "$HOME/${SYNC_MARKER}"`,
     `"$HOME/${REMOTE_ROOT}/runtime/bin/node" "$BASE/node_modules/_wire.js" "$HOME/${REMOTE_PROFILE}/package.json" "$BASE/node_modules" ${names}`,
-    // 实例在跑则重启：ensure 流程探测不到就绪会按新 profile 重新拉起
+    // 实例在跑则重启：pidfile 之外还按安装路径精确清场（pidfile 可能因上次崩溃
+    // 指向已死进程），并等 3080 释放后再交还 ensure 拉起，避免新实例 EADDRINUSE
     `[ -f "$HOME/${REMOTE_PIDFILE}" ] && kill "$(cat "$HOME/${REMOTE_PIDFILE}")" 2>/dev/null || true`,
+    `pkill -f "$HOME/${REMOTE_ROOT}/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js web" 2>/dev/null || true`,
+    'i=0; while [ $i -lt 50 ] && (exec 3<>/dev/tcp/127.0.0.1/3080) 2>/dev/null; do i=$((i+1)); sleep 0.2; done',
     'echo PLUGINS_SYNCED',
   ].join('\n')
 }
