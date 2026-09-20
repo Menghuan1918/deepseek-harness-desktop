@@ -120,9 +120,9 @@ S5 验收中「数据面全旅程」「壳层命令/单测/lint」「capability�
 
 | 验收点 | 证据 |
 |---|---|
-| 1 壳层验证 | `cargo test` 563 绿（含 bridge/remote + capability + 上游多窗口）；`pnpm typecheck` 绿；根 `pnpm test -- --run` 906 过 4 跳过 2 败（败者=上游 worktree 包 macOS `/var` 符号链接敏感，纯 origin/main 同败，与本分支无关）；`pnpm lint` 0 error / 17 warning |
-| 2 数据面全旅程 | `docs/testing/s5-ssh-e2e-evidence.md`（dev 真机 ALL STEPS PASSED；v14 分支 2026-09-13 复跑通过，connect 5.1s、authMethod=key、事件 6 条；2026-09-16 合并 v0.14.3 后复验：connect 20s 含插件重同步 11 个 5.4MB、隧道 303 mint→200、远端单实例健康） |
-| 3 插件套件 | `dsh-tauri-ssh` 356 过 4 跳过（根 runner；含 wire 悬空清理/端口等待新用例）；`dsh-tauri-ssh-ui` 96 过（包内 runner，含 Modal/步骤条/在飞反馈新用例） |
+| 1 壳层验证 | `cargo test` 615 绿（含 bridge/remote + capability + 上游多窗口）；`pnpm typecheck` 绿；rebase v0.15.7 后：unit lane 1268 过 4 跳 3 败（2=上游 worktree macOS `/var` 敏感 + 1=上游 queue 时序 flaky 单跑即过，均与本分支无关）；`pnpm lint` 0 error / 19 warning |
+| 2 数据面全旅程 | `docs/testing/s5-ssh-e2e-evidence.md`（dev 真机 ALL STEPS PASSED；v14 分支 2026-09-13 复跑通过，connect 5.1s、authMethod=key、事件 6 条；2026-09-16 合并 v0.14.3 后复验：connect 20s 含插件重同步 11 个 5.4MB、隧道 303 mint→200、远端单实例健康；2026-09-20 rebase v0.15.7 后复验：同步 12 个 1.5MB（部署树裁剪瘦身）、远端 profile 12 插件含 model-config、隧道 mint→200、单实例） |
+| 3 插件套件 | `dsh-tauri-ssh` 356 过 4 跳过（包内 vitest.config；含 wire 悬空清理/端口等待用例）；`dsh-tauri-ssh-ui` 96 过（包内 runner，含 Modal/步骤条/在飞反馈新用例） |
 | 4 capability 复核 | `builder.rs security_tests::remote_popup_windows_are_scoped_by_glob_and_stay_loopback`；白名单仅增 `remote_bridge_ping`/`remote_open_window`；命令侧回环 http 校验单测 |
 | 5 旧概念残留 | `Setting.remotes`/`remote_machine_*`/`remote-status` 等关键词全仓 grep 零命中（仅余 git-remote 无关词） |
 | 切换器/轮询/着色/降态逻辑 | `src/store/modules/remote/*.test.ts`（23 例）+ `remote-switcher.test.tsx`（9 例） |
