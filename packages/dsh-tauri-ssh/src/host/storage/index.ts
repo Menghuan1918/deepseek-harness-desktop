@@ -28,6 +28,9 @@ export const DEFAULT_REMOTE_PORT = 3080
 /** Default SSH transport port. */
 export const DEFAULT_SSH_PORT = 22
 
+/** Default remote dsh profile name (`dsh --profile <name> web`). */
+export const DEFAULT_REMOTE_PROFILE = 'remote'
+
 /**
  * One machine profile schema: the settings-namespace member shape. Credential
  * fields are `role('secret')` positions — redacted from every wire surface,
@@ -43,6 +46,7 @@ export const MachineSchema = z.object({
   password: z.string().role('secret'),
   passphrase: z.string().role('secret'),
   remotePort: z.number().default(DEFAULT_REMOTE_PORT),
+  profileName: z.string(),
   startCommand: z.string(),
   color: z.string(),
   tintBorder: z.boolean(),

@@ -19,6 +19,7 @@ import type { RemoteArch, RemoteAssetMatrix, RemoteOs } from './assets'
 import type { SshSession } from './transport'
 import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
+import { DEFAULT_REMOTE_PROFILE } from '../storage/index'
 import { assetMatrixFor, dshNpmTarballUrls, dshZipDownloadUrls, nodeDownloadUrls, nodeFilenameFor, nodeShasumUrls, parsePlatform, PNPM_SHA256, PNPM_VERSION, pnpmDownloadUrls } from './assets'
 import { clientUrlsFromBootHtml, looksLikePluginBundle } from './boot-html'
 import { shQuote } from './transport'
@@ -544,11 +545,17 @@ export function remoteWebTokenCommand(): string {
   return `grep -oE 'token=[A-Za-z0-9._~-]+' "$HOME/${REMOTE_WEB_LOG}" 2>/dev/null | tail -n 1 | cut -d= -f2`
 }
 
+/** Shell- and path-safe profile names only (`^[A-Za-z0-9_-]+$`); anything else falls back to the default. */
+export function safeProfileName(raw: string | undefined): string {
+  return raw !== undefined && /^[\w-]+$/.test(raw) ? raw : DEFAULT_REMOTE_PROFILE
+}
+
 export function startCommandFor(profile: MachineProfile, plan?: RemoteInstallPlan): string {
   if (profile.startCommand !== undefined)
     return `mkdir -p "$HOME/.dsh" && ( ${profile.startCommand} >>"$HOME/${REMOTE_WEB_LOG}" 2>&1 < /dev/null & ) &`
   const node = `$HOME/${REMOTE_ROOT}/runtime/bin/node`
   const dshBin = layoutDshEntry(plan)
+  const profileName = safeProfileName(profile.profileName)
   return [
     `ROOT="$HOME/${REMOTE_ROOT}"`,
     `NODE=${node}`,
@@ -559,8 +566,8 @@ export function startCommandFor(profile: MachineProfile, plan?: RemoteInstallPla
     `mkdir -p "$LOG_DIR"`,
     `export PATH="$ROOT/runtime/bin:$PATH"`,
     `export DSH_TELEMETRY_DISABLED=1 NO_COLOR=1 DSH_WEB_PORT=${profile.remotePort}`,
-    `( sh -c 'echo $$ > "$1/.dsh-remote.pid"; exec "$2" "$3" web --host 127.0.0.1 --port "$4" --no-open' dsh-remote "$LOG_DIR" "$NODE" "$DSH_BIN" ${profile.remotePort} </dev/null >>"$LOG" 2>&1 & )`,
-    `echo "远端实例已拉起（日志: $LOG）"`,
+    `( sh -c 'echo $$ > "$1/.dsh-remote.pid"; exec "$2" "$3" --profile "$5" web --host 127.0.0.1 --port "$4" --no-open' dsh-remote "$LOG_DIR" "$NODE" "$DSH_BIN" ${profile.remotePort} ${profileName} </dev/null >>"$LOG" 2>&1 & )`,
+    `echo "远端实例已拉起（档案: ${profileName}, 日志: $LOG）"`,
   ].join('\n')
 }
 

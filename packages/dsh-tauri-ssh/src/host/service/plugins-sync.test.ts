@@ -58,7 +58,7 @@ describe('plugin sync commands', () => {
   })
 
   it('apply command: atomic swap + hash marker + profile wiring + instance restart', () => {
-    const command = pluginSyncApplyCommand(tree, 'abc123')
+    const command = pluginSyncApplyCommand(tree, 'abc123', 'remote')
     // 原子交换：staging → 正式位
     expect(command).toContain('$BASE.new')
     expect(command).toContain('mv "$BASE.new" "$BASE"')
@@ -66,7 +66,7 @@ describe('plugin sync commands', () => {
     expect(command).toContain('echo "abc123" > "$HOME/.dsh-desktop/plugins/.sync-sha256"')
     // profile 接线走上传的 _wire.js（deps link + bundles + symlink）
     expect(command).toContain('_wire.js')
-    expect(command).toContain('.dsh/profiles/web/package.json')
+    expect(command).toContain('.dsh/profiles/remote/package.json')
     expect(command).toContain('dsh-tauri dsh-tauri-ssh')
     // 实例在跑则按 pidfile 重启（ensure 探测落空后按新 profile 拉起）；
     // pidfile 之外按安装路径精确清场，并等 3080 释放避免新实例 EADDRINUSE

@@ -167,6 +167,9 @@ function EditPanel({ draft, t, secretSet, dirty, saving, onChange, onSecret, onS
         <Field label={t('field.remotePort')}>
           <Input className={cls.fieldInput} type="number" value={row.remotePort} disabled={saving} onChange={event => onChange(draft.key, { remotePort: numberOf(event.target.value, DEFAULT_REMOTE_PORT) })} />
         </Field>
+        <Field label={t('field.profileName')}>
+          <Input className={cls.fieldInput} value={row.profileName ?? ''} placeholder="remote" disabled={saving || (row.startCommand ?? '') !== ''} onChange={event => onChange(draft.key, { profileName: event.target.value })} />
+        </Field>
         <Field label={t('field.startCommand')}>
           <Input className={cls.fieldInput} value={row.startCommand ?? ''} disabled={saving} onChange={event => onChange(draft.key, { startCommand: event.target.value })} />
         </Field>
@@ -556,6 +559,7 @@ function AddMachineDialog({ t, saving, takenIds, onSubmit, onClose }: {
   const [port, setPort] = useState(String(DEFAULT_PORT))
   const [user, setUser] = useState('')
   const [remotePort, setRemotePort] = useState(String(DEFAULT_REMOTE_PORT))
+  const [profileName, setProfileName] = useState('')
 
   const slug = slugOf(host)
   const effectiveId = idTouched ? id.trim() : (slug === '' ? '' : freeIdOf(slug, takenIds))
@@ -581,6 +585,7 @@ function AddMachineDialog({ t, saving, takenIds, onSubmit, onClose }: {
       hasPassword: false,
       hasPassphrase: false,
       remotePort: numberOf(remotePort, DEFAULT_REMOTE_PORT),
+      ...(profileName.trim() === '' ? {} : { profileName: profileName.trim() }),
     })
   }
 
@@ -630,6 +635,9 @@ function AddMachineDialog({ t, saving, takenIds, onSubmit, onClose }: {
         </Field>
         <Field label={t('field.remotePort')}>
           <Input className={cls.fieldInput} value={remotePort} disabled={saving} onChange={event => setRemotePort(event.target.value)} />
+        </Field>
+        <Field label={t('field.profileName')}>
+          <Input className={cls.fieldInput} value={profileName} placeholder="remote" disabled={saving} onChange={event => setProfileName(event.target.value)} />
         </Field>
       </div>
       {errorKey === null

@@ -48,6 +48,11 @@ export interface MachineProfile {
   passphrase?: string
   /** TCP port the remote `dsh web` instance listens on (loopback). */
   remotePort: number
+  /**
+   * Remote dsh profile name (`dsh --profile <name> web`); defaults to
+   * `remote`. Ignored when the machine carries its own `startCommand`.
+   */
+  profileName?: string
   /** Command that starts the remote instance; defaults to `dsh web --host 127.0.0.1 --port <remotePort>`. */
   startCommand?: string
   /** Optional identity color (any CSS color) shown as the machine's pip in the UI. */
@@ -71,6 +76,7 @@ export interface MachineView {
   /** Whether the profile currently holds a key passphrase (the value itself never rides). */
   hasPassphrase: boolean
   remotePort: number
+  profileName?: string
   startCommand?: string
   color?: string
   tintBorder?: boolean
@@ -83,6 +89,7 @@ export interface MachineSaveRow {
   port: number
   user: string
   remotePort: number
+  profileName?: string
   startCommand?: string
   color?: string
   tintBorder?: boolean

@@ -19,7 +19,7 @@ import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { MachineId, SshError } from '../types/index'
-import { checkMissingCommand, credentialsCopyCommand, describeError, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, skippedVerificationSummary } from './bootstrap'
+import { checkMissingCommand, credentialsCopyCommand, describeError, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, safeProfileName, skippedVerificationSummary } from './bootstrap'
 import { fingerprintHostKey } from './host-keys'
 import { syncBundledPlugins } from './plugins-sync'
 import { mintTunnelCookie } from './transport'
@@ -92,7 +92,7 @@ export interface SshManagerDeps {
    * tarball pipeline; tests stub it to stay offline). Returns whether the
    * remote was modified (a running instance gets restarted by the sync).
    */
-  syncPlugins?: (session: SshSession, hooks: { onEvent?: (stage: SshMachineStage, line: string) => void }) => Promise<boolean>
+  syncPlugins?: (session: SshSession, profileName: string, hooks: { onEvent?: (stage: SshMachineStage, line: string) => void }) => Promise<boolean>
 }
 
 /** The sentinel rethrown when an in-flight attempt loses to a disconnect. */
@@ -412,7 +412,7 @@ export class SshManager {
     // 上传并重启实例，随后的 ensure 按新 profile 拉起。best-effort：同步
     // 失败降级为原生远端 UI，连接本身不受影响。
     try {
-      await (this.deps.syncPlugins ?? syncBundledPlugins)(session, {
+      await (this.deps.syncPlugins ?? syncBundledPlugins)(session, safeProfileName(profile.profileName), {
         onEvent: (stage, line) => {
           if (generation === state.generation)
             this.deps.events.append(machineId, stage, line)
@@ -906,6 +906,7 @@ export function profileView(profile: MachineProfile): MachineView {
     hasPassword: profile.password !== undefined,
     hasPassphrase: profile.passphrase !== undefined,
     remotePort: profile.remotePort,
+    ...profile.profileName === undefined ? {} : { profileName: profile.profileName },
     ...profile.startCommand === undefined ? {} : { startCommand: profile.startCommand },
     ...profile.color === undefined ? {} : { color: profile.color },
     ...profile.tintBorder === true ? { tintBorder: true } : {},

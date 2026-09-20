@@ -298,6 +298,8 @@ function saveRowOf(payload: Record<string, unknown>): MachineSaveRow {
   const startCommand = typeof value.startCommand === 'string' && value.startCommand !== ''
     ? value.startCommand
     : undefined
+  const rawProfileName = typeof value.profileName === 'string' ? value.profileName.trim() : ''
+  const profileName = /^[\w-]+$/.test(rawProfileName) ? rawProfileName : undefined
   const color = typeof value.color === 'string' && value.color !== '' ? value.color : undefined
   return {
     name: value.name,
@@ -305,6 +307,7 @@ function saveRowOf(payload: Record<string, unknown>): MachineSaveRow {
     port,
     user: value.user,
     remotePort,
+    ...profileName === undefined ? {} : { profileName },
     ...startCommand === undefined ? {} : { startCommand },
     ...color === undefined ? {} : { color },
     ...value.tintBorder === true ? { tintBorder: true } : {},

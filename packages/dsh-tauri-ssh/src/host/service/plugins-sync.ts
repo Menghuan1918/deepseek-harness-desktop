@@ -41,8 +41,6 @@ const REMOTE_PLUGINS_DIR = `${REMOTE_ROOT}/plugins`
 const SYNC_MARKER = `${REMOTE_PLUGINS_DIR}/.sync-sha256`
 /** Remote pidfile written by the instance start command (bootstrap.ts). */
 const REMOTE_PIDFILE = '.dsh/dsh-remote.pid'
-/** The dsh profile every remote web instance runs. */
-const REMOTE_PROFILE = '.dsh/profiles/web'
 
 /** The wiring helper uploaded alongside the tree (keeps shell quoting trivial). */
 export const WIRE_SCRIPT = `const fs = require('fs')
@@ -177,8 +175,9 @@ export function pluginSyncMarkerCommand(): string {
  * restart a running instance so the ensure-launch flow relaunches it onto
  * the new profile.
  */
-export function pluginSyncApplyCommand(tree: BundledPluginsTree, hash: string): string {
+export function pluginSyncApplyCommand(tree: BundledPluginsTree, hash: string, profileName: string): string {
   const names = tree.pluginNames.join(' ')
+  const profile = `.dsh/profiles/${profileName}`
   return [
     'set -e',
     `BASE="$HOME/${REMOTE_PLUGINS_DIR}"`,
@@ -189,7 +188,8 @@ export function pluginSyncApplyCommand(tree: BundledPluginsTree, hash: string): 
     `mv "$BASE.new" "$BASE"`,
     `rm -rf "$BASE.old"`,
     `echo "${hash}" > "$HOME/${SYNC_MARKER}"`,
-    `"$HOME/${REMOTE_ROOT}/runtime/bin/node" "$BASE/node_modules/_wire.js" "$HOME/${REMOTE_PROFILE}/package.json" "$BASE/node_modules" ${names}`,
+    `mkdir -p "$HOME/${profile}"`,
+    `"$HOME/${REMOTE_ROOT}/runtime/bin/node" "$BASE/node_modules/_wire.js" "$HOME/${profile}/package.json" "$BASE/node_modules" ${names}`,
     // 实例在跑则重启：pidfile 之外还按安装路径精确清场（pidfile 可能因上次崩溃
     // 指向已死进程），并等 3080 释放后再交还 ensure 拉起，避免新实例 EADDRINUSE
     `[ -f "$HOME/${REMOTE_PIDFILE}" ] && kill "$(cat "$HOME/${REMOTE_PIDFILE}")" 2>/dev/null || true`,
@@ -205,6 +205,7 @@ export function pluginSyncApplyCommand(tree: BundledPluginsTree, hash: string): 
  */
 export async function syncBundledPlugins(
   session: SshSession,
+  profileName: string,
   hooks: { onEvent?: (stage: SshMachineStage, line: string) => void } = {},
 ): Promise<boolean> {
   const tree = findBundledPluginsTree()
@@ -218,9 +219,9 @@ export async function syncBundledPlugins(
     return false
   const sizeMb = (tar.length / 1024 / 1024).toFixed(1)
   hooks.onEvent?.('install', `同步桌面捆绑插件到远端（${tree.pluginNames.length} 个, ${sizeMb} MB）`)
-  const applied = await session.exec(pluginSyncApplyCommand(tree, hash), { stdinData: tar })
+  const applied = await session.exec(pluginSyncApplyCommand(tree, hash, profileName), { stdinData: tar })
   if (applied.code !== 0 || !applied.stdout.includes('PLUGINS_SYNCED'))
     throw new Error(`远端插件同步失败: ${applied.stderr.trim() || `exit ${applied.code}`}`)
-  hooks.onEvent?.('install', '桌面捆绑插件已同步，远端实例按新 profile 重启')
+  hooks.onEvent?.('install', `桌面捆绑插件已同步，远端实例按新 profile 重启`)
   return true
 }

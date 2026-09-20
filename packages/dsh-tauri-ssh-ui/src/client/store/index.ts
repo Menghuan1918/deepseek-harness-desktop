@@ -33,6 +33,7 @@ export interface MachineRow {
   hasPassword: boolean
   hasPassphrase: boolean
   remotePort: number
+  profileName?: string
   startCommand?: string
   /** Optional identity color (any CSS color) shown as the machine's pip. */
   color?: string
@@ -283,6 +284,8 @@ export function machineRowOf(value: unknown): MachineRow | undefined {
   const startCommand = typeof row.startCommand === 'string' && row.startCommand !== ''
     ? row.startCommand
     : undefined
+  const rawProfileName = typeof row.profileName === 'string' ? row.profileName.trim() : ''
+  const profileName = /^[\w-]+$/.test(rawProfileName) ? rawProfileName : undefined
   const color = typeof row.color === 'string' && row.color !== '' ? row.color : undefined
   return {
     id: row.id,
@@ -293,6 +296,7 @@ export function machineRowOf(value: unknown): MachineRow | undefined {
     hasPassword: row.hasPassword === true,
     hasPassphrase: row.hasPassphrase === true,
     remotePort,
+    ...profileName === undefined ? {} : { profileName },
     ...startCommand === undefined ? {} : { startCommand },
     ...color === undefined ? {} : { color },
     ...row.tintBorder === true ? { tintBorder: true } : {},
@@ -306,6 +310,7 @@ export interface MachineSaveRow {
   port: number
   user: string
   remotePort: number
+  profileName?: string
   startCommand?: string
   color?: string
   tintBorder?: boolean
@@ -319,6 +324,7 @@ export function savePayloadOf(machine: MachineRow, secrets: SecretValues): { mac
     port: machine.port,
     user: machine.user,
     remotePort: machine.remotePort,
+    ...machine.profileName === undefined || machine.profileName === '' ? {} : { profileName: machine.profileName },
     ...machine.startCommand === undefined || machine.startCommand === '' ? {} : { startCommand: machine.startCommand },
     ...machine.color === undefined || machine.color === '' ? {} : { color: machine.color },
     ...machine.tintBorder === true ? { tintBorder: true } : {},

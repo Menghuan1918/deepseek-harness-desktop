@@ -556,6 +556,16 @@ describe('component probe and launch commands', () => {
     expect(command).toContain('dsh-remote-web.log')
   })
 
+  it('launches with the machine profile flag and falls back to remote', async () => {
+    const plan = await planRemoteInstall('Linux 6.8 x86_64', {}, healthyFetchers())
+    const named = startCommandFor({ ...profile, profileName: 'work' }, plan)
+    expect(named).toContain(`--profile "$5"`)
+    expect(named).toContain('work')
+    expect(named).toContain('档案: work')
+    expect(startCommandFor(profile, plan)).toContain('档案: remote')
+    expect(startCommandFor({ ...profile, profileName: 'a b;rm' }, plan)).toContain('档案: remote')
+  })
+
   it('keeps the profile startCommand override untouched', () => {
     const overridden: MachineProfile = { ...profile, startCommand: 'my-launcher web --port 4000' }
     expect(startCommandFor(overridden))
