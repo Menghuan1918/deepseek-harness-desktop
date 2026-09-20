@@ -45,6 +45,11 @@ const E2E_CONFIG = {
   healthPollIntervalMs: 1_000,
   healthPollAttempts: 90,
   installTimeoutMs: 1_800_000,
+  keepaliveIntervalMs: 10_000,
+  keepaliveCountMax: 3,
+  reconnectInitialDelayMs: 1_000,
+  reconnectMaxDelayMs: 5_000,
+  reconnectMaxAttempts: 6,
 }
 
 /** Kill only processes whose command line references the shared layout. */

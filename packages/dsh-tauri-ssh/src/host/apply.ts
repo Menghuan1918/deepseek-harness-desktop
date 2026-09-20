@@ -9,28 +9,24 @@
  */
 
 import type z from 'schemastery'
-import type { SshApiHost } from './routes/index.js'
-import type { SshHostBlock } from './service/ssh-config.js'
-import type { MachinesValue, Config as SshRemoteConfig } from './storage/index.js'
-<<<<<<< HEAD
-import type { HostSettingsScope, MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineEventsPage, SshMachineStatus, SshTestResult } from './types/index.js'
-=======
-import type { HostSettingsScope, MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineStatus, SshTestResult, SyncApplyResult, SyncPluginRef, SyncPreview, SyncSkillRef } from './types/index.js'
->>>>>>> a59eb500 (feat(ssh): sync.* /api-ssh surface (engine + per-item results))
+import type { SshApiHost } from './routes/index'
+import type { SshHostBlock } from './service/ssh-config'
+import type { MachinesValue, Config as SshRemoteConfig } from './storage/index'
+import type { HostSettingsScope, MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineEventsPage, SshMachineStatus, SshTestResult, SyncApplyResult, SyncPluginRef, SyncPreview, SyncSkillRef } from './types/index'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
-import { SSH_API_PREFIX, SSH_PLUGIN_NAME } from '../shared/constants.js'
-import { createSshApiHandler } from './routes/index.js'
-import { SshMachineEvents } from './service/events.js'
-import { KnownHostsStore } from './service/host-keys.js'
-import { profileView, SshManager } from './service/manager.js'
-import { discoverableHosts, loadSshConfigBlocks, lookupSshConfig, SshConfigResolver } from './service/ssh-config.js'
-import { profileDependenciesReader, skillRootsScanner, tarPacker } from './service/sync-local.js'
-import { SyncEngine } from './service/sync.js'
-import { Ssh2Transport } from './service/transport.js'
-import { ConfigSchema, DEFAULT_REMOTE_PORT, DEFAULT_SSH_PORT, MACHINES_NAMESPACE, machinesFromValue, MachinesSchema } from './storage/index.js'
-import { MachineId } from './types/index.js'
+import { SSH_API_PREFIX, SSH_PLUGIN_NAME } from '../shared/constants'
+import { createSshApiHandler } from './routes/index'
+import { SshMachineEvents } from './service/events'
+import { KnownHostsStore } from './service/host-keys'
+import { profileView, SshManager } from './service/manager'
+import { discoverableHosts, loadSshConfigBlocks, lookupSshConfig, SshConfigResolver } from './service/ssh-config'
+import { SyncEngine } from './service/sync'
+import { profileDependenciesReader, skillRootsScanner, tarPacker } from './service/sync-local'
+import { Ssh2Transport } from './service/transport'
+import { ConfigSchema, DEFAULT_REMOTE_PORT, DEFAULT_SSH_PORT, MACHINES_NAMESPACE, machinesFromValue, MachinesSchema } from './storage/index'
+import { MachineId } from './types/index'
 
 /** Default location of the TOFU host-key document under the harness home. */
 function defaultKnownHostsPath(): string {
@@ -80,8 +76,14 @@ export class SshRemoteService implements SshApiHost {
       transport: new Ssh2Transport(
         config.connectTimeoutMs,
         // Credentials come from the host's own ~/.ssh (config + identity
-        // files), exactly like a local `ssh` invocation.
+        // files), exactly like a local `ssh` invocation; the auth chain is
+        // ssh-agent → private keys → stored password, and the keepalive
+        // watchdog timing is the plugin config's.
         new SshConfigResolver(this.sshDir, this.homeDir),
+        {
+          keepaliveIntervalMs: config.keepaliveIntervalMs,
+          keepaliveCountMax: config.keepaliveCountMax,
+        },
       ),
       knownHosts,
       config,

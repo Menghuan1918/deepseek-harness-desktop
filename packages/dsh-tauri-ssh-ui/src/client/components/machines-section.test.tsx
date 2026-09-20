@@ -249,10 +249,16 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Testing'))
 
     cleanup()
-    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'reconnecting', nextRetryHint: 'in 8s' }] } } })
+    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'reconnecting', nextRetryAt: Date.now() + 8_000 }] } } })
     await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Reconnecting'))
     expect(screen.getByTestId('status-a').textContent).toContain('next retry: in 8s')
     expect(withinButton(screen.getByTestId('machine-a'), 'Connect').hasAttribute('disabled')).toBe(true)
+  })
+
+  it('renders a due retry as now instead of a negative countdown', async () => {
+    mount({ envelope: { ok: true, value: { items: [{ ...machineA, state: 'reconnecting', nextRetryAt: Date.now() - 2_000 }] } } })
+    await waitFor(() => expect(screen.getByTestId('status-a').textContent).toContain('Reconnecting'))
+    expect(screen.getByTestId('status-a').textContent).toContain('next retry: now')
   })
 
   it('renders the given-up state and lets the operator retry the connect', async () => {
@@ -426,7 +432,7 @@ describe('machinesSection', () => {
   it('polls the host while an operation is in flight and stops when idle', async () => {
     vi.useFakeTimers()
     try {
-      const fetchFn = fakeFetch({ ok: true, value: { items: [] } })
+      const fetchFn = fakeFetch({ ok: true, value: { items: [{ ...machineA, state: 'connecting' }] } })
       const store = new MachinesStore(fetchFn)
       store.store.update((state) => {
         state.status = 'ready'
@@ -436,15 +442,20 @@ describe('machinesSection', () => {
       render(<MachinesSection store={store} t={t} />)
       const before = fetchFn.mock.calls.length
       await act(async () => vi.advanceTimersByTime(1600))
-      // One poll = machine.list + machine.events (the S2 channel ride-along).
+      // One poll = machine.list + machine.events for the one known machine.
       expect(fetchFn.mock.calls.length).toBe(before + 2)
-      // Idle machines stop the polling loop.
-      store.store.update((state) => {
-        state.statuses = { a: { state: 'disconnected' } }
-        state.busy = {}
+      // Idle machines stop the polling loop. The flip runs inside act so the
+      // interval effect cleans up before the clock advances again; every
+      // further call would prove the loop leaked.
+      act(() => {
+        store.store.update((state) => {
+          state.statuses = { a: { state: 'disconnected' } }
+          state.busy = {}
+        })
       })
+      const idle = fetchFn.mock.calls.length
       await act(async () => vi.advanceTimersByTime(3200))
-      expect(fetchFn.mock.calls.length).toBe(before + 2)
+      expect(fetchFn.mock.calls.length).toBe(idle)
     }
     finally {
       vi.useRealTimers()

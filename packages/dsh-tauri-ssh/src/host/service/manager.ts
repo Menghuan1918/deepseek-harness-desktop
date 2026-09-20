@@ -1,24 +1,27 @@
 import type { Buffer } from 'node:buffer'
 import type { Config } from '../storage/index'
 /**
- * Per-machine connection manager: profile map, the disconnected/connecting/
- * connected state machine, TOFU host-key gating, remote-instance assurance,
- * and the tunnel lifecycle. Transport-agnostic — tests inject a fake
- * transport and never touch the network.
+ * Per-machine connection manager: profile map, the connection state machine
+ * (disconnected/testing/connecting/connected/reconnecting/given-up), TOFU
+ * host-key gating, remote-instance assurance, the tunnel lifecycle, and the
+ * watchdog-driven reconnect loop (exponential backoff, tunnel rebuild).
+ * Transport-agnostic — tests inject a fake transport and never touch the
+ * network.
  * @module dsh-tauri-ssh/host/service/manager
  */
 
-import type { MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStatus, SshProgress, SshTestResult } from '../types/index'
+import type { MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStage, SshMachineStatus, SshProgress, SshTestResult } from '../types/index'
 import type { BootstrapHooks } from './bootstrap'
 import type { SshMachineEvents } from './events'
 import type { KnownHostsStore } from './host-keys'
-import type { SshSession, SshTransport, SshTunnelHandle } from './transport'
+import type { SshSession, SshTransport, SshTunnelHandle, TunnelHeaderInjection } from './transport'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { MachineId, SshError } from '../types/index'
-import { checkMissingCommand, credentialsCopyCommand, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, skippedVerificationSummary } from './bootstrap'
+import { checkMissingCommand, credentialsCopyCommand, describeError, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, skippedVerificationSummary } from './bootstrap'
 import { fingerprintHostKey } from './host-keys'
+import { syncBundledPlugins } from './plugins-sync'
 import { mintTunnelCookie } from './transport'
 
 /** One machine's live connection state. */
@@ -26,7 +29,7 @@ interface MachineState {
   /** Monotonic attempt counter; a disconnect invalidates in-flight connects. */
   generation: number
   /** Published connection phase; the status source of truth. */
-  phase: 'disconnected' | 'connecting' | 'connected'
+  phase: 'disconnected' | 'testing' | 'connecting' | 'connected' | 'reconnecting' | 'given-up'
   /** In-flight connect promise; concurrent connects share it. */
   connecting?: Promise<SshLink>
   /** In-flight install promise; concurrent installs share it. */
@@ -43,6 +46,26 @@ interface MachineState {
   dshMissing?: boolean
   /** Live progress of the in-flight operation. */
   progress?: SshProgress
+  /** The active reconnect loop, while one owns the machine. */
+  reconnect?: ReconnectState
+  /** Local port to prefer when (re)binding the tunnel, keeping the URL stable. */
+  preferredTunnelPort?: number
+  /** Which credential the live (or last successful) connection used. */
+  authMethod?: SshSession['authMethod']
+}
+
+/** The background reconnect loop's bookkeeping. */
+interface ReconnectState {
+  /** Generation this loop belongs to; a disconnect invalidates it. */
+  generation: number
+  /** Number of the retry that runs next, 1-based; exceeds the budget → give up. */
+  attempt: number
+  /** Epoch ms when the scheduled retry fires; absent while a retry is in flight. */
+  nextRetryAt?: number
+  /** The pending retry timer; a disconnect clears it. */
+  timer?: NodeJS.Timeout
+  /** Redacted reason of every failed attempt so far, first attempt included. */
+  reasons: string[]
 }
 
 /** Manager dependencies (all transport seams injectable for tests). */
@@ -58,6 +81,18 @@ export interface SshManagerDeps {
   emitStatus: (machineId: MachineId, status: SshMachineStatus) => void
   /** Local dsh `.env` credentials to copy after an install (defaults to the host's own). */
   readEnvCredentials?: () => ReturnType<typeof readEnvCredentials>
+  /**
+   * Mint the tunnel's session cookie: one local GET of the authenticated URL
+   * (no redirect follow), resolving the `name=value` pair from `set-cookie`.
+   * Defaults to the node:http implementation; tests stub it to stay offline.
+   */
+  mintCookie?: (authenticatedUrl: string) => Promise<string | undefined>
+  /**
+   * Sync the desktop-bundled plugins to the remote (defaults to the real
+   * tarball pipeline; tests stub it to stay offline). Returns whether the
+   * remote was modified (a running instance gets restarted by the sync).
+   */
+  syncPlugins?: (session: SshSession, hooks: { onEvent?: (stage: SshMachineStage, line: string) => void }) => Promise<boolean>
 }
 
 /** The sentinel rethrown when an in-flight attempt loses to a disconnect. */
@@ -111,6 +146,8 @@ export class SshManager {
     const state = this.states.get(machineId)
     const lastError = state?.lastError
     const progress = state?.progress
+    const nextRetryAt = state?.reconnect?.nextRetryAt
+    const authMethod = state?.authMethod
     return {
       machineId,
       state: state?.phase ?? 'disconnected',
@@ -118,6 +155,8 @@ export class SshManager {
       ...lastError === undefined ? {} : { lastError },
       ...state?.dshMissing === true ? { dshMissing: true } : {},
       ...progress === undefined ? {} : { progress },
+      ...nextRetryAt === undefined ? {} : { nextRetryAt },
+      ...authMethod === undefined ? {} : { authMethod },
     }
   }
 
@@ -128,7 +167,10 @@ export class SshManager {
 
   /**
    * One-shot probe: authenticate, run `uname -srm`, close. Never starts the
-   * remote instance and never leaves a connection behind.
+   * remote instance and never leaves a connection behind. Publishes the
+   * transient `testing` state for the probe's duration, then restores the
+   * phase it found (unless something else transitioned the machine in the
+   * meantime — reconnects and disconnects own their transitions).
    * @param machineId - the machine to probe.
    * @param signal - aborts the probe.
    * @returns the probe outcome.
@@ -137,19 +179,28 @@ export class SshManager {
   async test(machineId: MachineId, signal?: AbortSignal): Promise<SshTestResult> {
     const profile = this.requireProfile(machineId)
     const state = this.ensureState(machineId)
+    const previousPhase = state.phase
+    state.phase = 'testing'
     state.progress = { phase: 'handshake' }
     this.emit(machineId)
+    const restore = (): void => {
+      const current = this.states.get(machineId)
+      // Only test() ever sets `testing`, so a different phase means another
+      // transition (drop, reconnect, disconnect) took ownership meanwhile.
+      if (current === state && current.phase === 'testing') {
+        current.phase = previousPhase === 'testing' ? 'disconnected' : previousPhase
+        delete current.progress
+      }
+      this.emit(machineId)
+    }
     let session: SshSession
     try {
       session = await this.deps.transport.connect(profile, (label, key) => this.checkHostKey(MachineId(label), key), signal)
     }
     catch (error) {
-      delete state.progress
-      this.emit(machineId)
-      return { ok: false, message: describeSshFailure(error) }
+      restore()
+      return { ok: false, message: this.redacted(machineId, describeSshFailure(error)) }
     }
-    delete state.progress
-    this.emit(machineId)
     try {
       const result = await session.exec('uname -srm')
       if (result.code !== 0) {
@@ -158,35 +209,57 @@ export class SshManager {
       return { ok: true, banner: result.stdout.trim() }
     }
     catch (error) {
-      return { ok: false, message: describeSshFailure(error) }
+      return { ok: false, message: this.redacted(machineId, describeSshFailure(error)) }
     }
     finally {
+      restore()
       await session.close()
     }
   }
 
   /**
    * Establish (or reuse) the machine link: SSH connection, remote-instance
-   * assurance, and the local tunnel. Idempotent.
+   * assurance, and the local tunnel. Idempotent. A failed attempt hands the
+   * machine to the background reconnect loop (the caller sees the failure;
+   * the loop keeps retrying with exponential backoff and either reconnects
+   * or lands in the `given-up` terminal state).
    * @param machineId - the machine to connect.
    * @param signal - aborts the connection attempt.
    * @returns the live link.
-   * @throws {SshError} on any failure.
+   * @throws {SshError} on any failure, or `machine-reconnecting` while the
+   *   reconnect loop owns the machine.
    */
   async connect(machineId: MachineId, signal?: AbortSignal): Promise<SshLink> {
     const profile = this.requireProfile(machineId)
     const state = this.ensureState(machineId)
     if (state.link !== undefined)
       return state.link
+    this.refuseWhileReconnecting(machineId, state)
     if (state.connecting === undefined) {
       state.phase = 'connecting'
+      delete state.lastError
+      delete state.dshMissing
       state.progress = { phase: 'handshake' }
       this.emit(machineId)
+      const generation = state.generation
       const attempt = this.performConnect(machineId, profile, signal)
       state.connecting = attempt.finally(() => {
         // The slot is only ever replaced while undefined, so the settling
         // attempt always owns it at this point.
         delete this.states.get(machineId)?.connecting
+      })
+      // The caller sees the first failure; the reconnect loop keeps trying
+      // in the background (unless the failure is persistent dsh-missing or
+      // a disconnect superseded the attempt).
+      void attempt.catch((error) => {
+        const current = this.states.get(machineId)
+        if (current === undefined || current.generation !== generation)
+          return
+        if ((error instanceof SshError && error.code === 'machine-dsh-missing') || current.dshMissing === true) {
+          this.giveUp(machineId, current)
+          return
+        }
+        this.beginReconnect(machineId)
       })
     }
     return state.connecting
@@ -213,9 +286,9 @@ export class SshManager {
   }
 
   /**
-   * Tear down one machine's link, invalidating any in-flight connect.
-   * Idempotent for an absent link; unknown ids resolve without writing
-   * anything.
+   * Tear down one machine's link, invalidating any in-flight connect and any
+   * running reconnect loop. Idempotent for an absent link; unknown ids
+   * resolve without writing anything.
    * @param machineId - the machine to disconnect.
    */
   async disconnect(machineId: MachineId): Promise<void> {
@@ -223,6 +296,7 @@ export class SshManager {
     if (state === undefined)
       return
     state.generation += 1
+    this.stopReconnect(state)
     delete state.lastError
     delete state.dshMissing
     delete state.progress
@@ -301,7 +375,9 @@ export class SshManager {
    * The bootstrap event stream likewise settles on every failure (its own
    * settling events, or the catch for transport exceptions that bypass
    * them), except a superseded attempt: cancellation by an explicit
-   * disconnect is the documented no-terminal case.
+   * disconnect is the documented no-terminal case. Failures record the
+   * (redacted, auth-stage) reason — the caller decides whether the reconnect
+   * loop takes over.
    */
   private async performConnect(machineId: MachineId, profile: MachineProfile, signal?: AbortSignal): Promise<SshLink> {
     const state = this.ensureState(machineId)
@@ -322,13 +398,29 @@ export class SshManager {
       session = await this.deps.transport.connect(profile, (label, key) => this.checkHostKey(MachineId(label), key), signal)
     }
     catch (error) {
+      // The locally captured, redacted message: a superseded attempt must
+      // not read state.lastError back — that slot may already belong to a
+      // newer try.
+      const message = this.redacted(machineId, describeSshFailure(error))
       if (generation === state.generation) {
         delete state.progress
-        state.lastError = describeSshFailure(error)
-        state.phase = 'disconnected'
-        this.emit(machineId)
+        this.noteConnectFailure(machineId, message)
       }
-      throw new SshError('machine-connect-failed', machineId, describeSshFailure(error))
+      throw new SshError('machine-connect-failed', machineId, message)
+    }
+    // 桌面捆绑插件随远端实例走（远端窗口与本体唯一区别=后端）：树变化时
+    // 上传并重启实例，随后的 ensure 按新 profile 拉起。best-effort：同步
+    // 失败降级为原生远端 UI，连接本身不受影响。
+    try {
+      await (this.deps.syncPlugins ?? syncBundledPlugins)(session, {
+        onEvent: (stage, line) => {
+          if (generation === state.generation)
+            this.deps.events.append(machineId, stage, line)
+        },
+      })
+    }
+    catch (error) {
+      this.deps.events.append(machineId, 'install', `捆绑插件同步失败（降级原生 UI）: ${describeError(error)}`)
     }
     try {
       await ensureRemoteInstance(
@@ -351,7 +443,12 @@ export class SshManager {
         },
         this.deps.planInstall,
       )
-      const tunnel = await session.openTunnel(profile.remotePort)
+      // Prefer the previously published tunnel port so a reconnect keeps
+      // the machine's URL stable for consumers (falls back to ephemeral).
+      // Cookie 注入槽先挂上：隧道一旦发布即可服务；mint 落定后每条连接
+      // 自动带 Cookie（ mint 前的纯裸管阶段只发生在发布前，外部不可见）。
+      const injection: TunnelHeaderInjection = { cookie: undefined }
+      const tunnel = await session.openTunnel(profile.remotePort, state.preferredTunnelPort, injection)
       // A disconnect that landed anywhere above (bootstrap, tunnel opening)
       // must not publish a link; tear the tunnel down and abort the attempt.
       if (generation !== state.generation) {
@@ -362,29 +459,56 @@ export class SshManager {
       // 该 authority 的鉴权 cookie（303 → /），壳层 iframe 与新窗口免登录；
       // 读不到（实例非本插件拉起/日志无记录）退化为裸 URL（401 页自行呈现）。
       const webToken = await this.readRemoteWebToken(session)
+      // 会话 cookie 是 SameSite=Strict：iframe 第三方上下文存不下也发不出
+      // （壳层内嵌 401 的根因）——隧道自注 Cookie 才是不挑嵌入上下文的解法；
+      // URL 同时保留 ?token=（顶层导航的新窗口/浏览器自举用）。
+      if (webToken !== undefined) {
+        const mint = this.deps.mintCookie ?? mintTunnelCookie
+        injection.cookie = await mint(`http://127.0.0.1:${tunnel.localPort}/?token=${webToken}`)
+      }
       const link: SshLink = {
         machineId,
         tunnelBaseUrl: `http://127.0.0.1:${tunnel.localPort}${webToken === undefined ? '' : `/?token=${webToken}`}`,
       }
+      const reconnected = state.reconnect !== undefined ? state.reconnect.reasons.length : undefined
       state.session = session
       state.tunnel = tunnel
       state.link = link
+      state.preferredTunnelPort = tunnel.localPort
+      state.authMethod = session.authMethod
       delete state.progress
+      this.stopReconnect(state)
       state.phase = 'connected'
       session.onClosed(() => {
         const current = this.states.get(machineId)
         if (current?.session !== session)
           return
-        current.lastError = 'SSH connection closed'
+        // The established connection dropped (server went away, network,
+        // keepalive watchdog): hand the machine to the reconnect loop.
         const tunnel = current.tunnel
         delete current.session
         delete current.tunnel
         delete current.link
-        current.phase = 'disconnected'
+        delete current.progress
         void tunnel?.close().catch(() => undefined)
-        this.emit(machineId)
+        current.lastError = 'SSH connection closed'
+        this.beginReconnect(machineId)
       })
       this.emit(machineId)
+      this.deps.events.append(
+        machineId,
+        'auth',
+        this.redacted(machineId, `connected to ${profile.host}${session.authMethod === undefined ? '' : ` (auth: ${session.authMethod})`}`),
+        { terminal: 'success' },
+      )
+      if (reconnected !== undefined) {
+        this.deps.events.append(
+          machineId,
+          'reconnect',
+          this.redacted(machineId, `reconnected to ${profile.host} after ${reconnected} failed attempt(s)`),
+          { terminal: 'success' },
+        )
+      }
       return link
     }
     catch (error) {
@@ -396,20 +520,173 @@ export class SshManager {
       // state.lastError back — that slot may already belong to a newer try.
       const message = error instanceof Error ? error.message : String(error)
       if (generation === state.generation && !bootstrapSettled) {
-        onEvent('failed', 'bootstrap 失败', { terminal: 'failed', reason: message })
+        onEvent('failed', 'bootstrap 失败', { terminal: 'failed', reason: this.redacted(machineId, message) })
       }
       if (generation === state.generation) {
         delete state.progress
-        state.lastError = message
-        // The start script's own "not installed" verdict keeps the UI's
-        // install hint alive (the auto-bootstrap could not complete).
-        if (message.includes('REMOTE_NOT_INSTALLED'))
-          state.dshMissing = true
+        this.noteConnectFailure(machineId, message)
         state.phase = 'disconnected'
         this.emit(machineId)
       }
-      throw new SshError('machine-bootstrap-failed', machineId, message)
+      throw new SshError('machine-bootstrap-failed', machineId, this.redacted(machineId, message))
     }
+  }
+
+  /**
+   * Record one failed connection attempt: redacted `lastError`, the
+   * dsh-missing marker, and an `auth`-stage event line on the machine event
+   * channel. Never publishes the phase — the caller owns that transition.
+   */
+  private noteConnectFailure(machineId: MachineId, message: string): void {
+    const state = this.states.get(machineId)
+    if (state === undefined)
+      return
+    const redactedMessage = this.redacted(machineId, message)
+    state.lastError = redactedMessage
+    // The start script's own "not installed" verdict keeps the UI's install
+    // hint alive (the auto-bootstrap could not complete).
+    if (message.includes('REMOTE_NOT_INSTALLED'))
+      state.dshMissing = true
+    this.deps.events.append(machineId, 'auth', redactedMessage)
+  }
+
+  /**
+   * Hand one machine to the reconnect loop after its first failed attempt
+   * (user connect, install connect, or a dropped established connection).
+   * Idempotent — a machine already owned by a loop stays on its schedule.
+   */
+  private beginReconnect(machineId: MachineId): void {
+    const state = this.ensureState(machineId)
+    if (state.reconnect !== undefined)
+      return
+    state.reconnect = {
+      generation: state.generation,
+      attempt: 0,
+      reasons: [state.lastError ?? 'connection failed'],
+    }
+    this.scheduleReconnect(machineId)
+  }
+
+  /**
+   * Schedule the loop's next retry (or give up when the budget is spent):
+   * exponential backoff from the configured initial delay, capped at the
+   * configured ceiling. Publishes the `reconnecting` phase with the retry
+   * hint each time the schedule changes.
+   */
+  private scheduleReconnect(machineId: MachineId): void {
+    const state = this.states.get(machineId)
+    const rec = state?.reconnect
+    if (state === undefined || rec === undefined)
+      return
+    rec.attempt += 1
+    if (rec.attempt > this.deps.config.reconnectMaxAttempts) {
+      this.giveUp(machineId, state)
+      return
+    }
+    const base = this.deps.config.reconnectInitialDelayMs
+    const ceiling = this.deps.config.reconnectMaxDelayMs
+    const delay = Math.min(base * 2 ** (rec.attempt - 1), ceiling)
+    rec.nextRetryAt = Date.now() + delay
+    state.phase = 'reconnecting'
+    delete state.progress
+    this.emit(machineId)
+    this.deps.events.append(
+      machineId,
+      'reconnect',
+      this.redacted(machineId, `retrying in ${Math.round(delay / 100) / 10} s (attempt ${rec.attempt} of ${this.deps.config.reconnectMaxAttempts})`),
+    )
+    rec.timer = setTimeout(() => {
+      void this.attemptReconnect(machineId)
+    }, delay)
+    // A pending retry must never hold the host process open on its own.
+    rec.timer.unref?.()
+  }
+
+  /**
+   * One background reconnect attempt: re-reads the live profile (an edit
+   * during the outage — e.g. a fixed password — applies on the next retry)
+   * and stops silently when a disconnect superseded the loop.
+   */
+  private async attemptReconnect(machineId: MachineId): Promise<void> {
+    const state = this.states.get(machineId)
+    const rec = state?.reconnect
+    if (state === undefined || rec === undefined || rec.generation !== state.generation)
+      return
+    const profile = this.profiles.get(machineId)
+    if (profile === undefined)
+      return
+    delete rec.nextRetryAt
+    state.progress = { phase: 'handshake' }
+    this.emit(machineId)
+    try {
+      await this.performConnect(machineId, profile)
+      // performConnect published `connected`, cleared the loop, and emitted
+      // the success events.
+    }
+    catch (error) {
+      if (error instanceof AttemptCancelled)
+        return
+      const current = this.states.get(machineId)
+      const loop = current?.reconnect
+      if (current === undefined || loop === undefined || loop.generation !== current.generation)
+        return
+      if ((error instanceof SshError && error.code === 'machine-dsh-missing') || current.dshMissing === true) {
+        // A missing dsh runtime is persistent — retrying cannot fix it, and
+        // the given-up state frees the machine for the install flow.
+        this.giveUp(machineId, current)
+        return
+      }
+      loop.reasons.push(current.lastError ?? describeSshFailure(error))
+      this.scheduleReconnect(machineId)
+    }
+  }
+
+  /**
+   * Land one machine in the `given-up` terminal state: summarized failure
+   * reason, loop cleared, terminal event emitted. A fresh `connect` exits it.
+   */
+  private giveUp(machineId: MachineId, state: MachineState): void {
+    const rec = state.reconnect
+    this.stopReconnect(state)
+    delete state.progress
+    state.phase = 'given-up'
+    const last = rec?.reasons[rec.reasons.length - 1] ?? state.lastError ?? 'connection failed'
+    state.lastError = rec === undefined
+      ? this.redacted(machineId, last)
+      : this.redacted(machineId, `connect failed after ${rec.reasons.length} attempt(s): ${last}`)
+    this.emit(machineId)
+    this.deps.events.append(machineId, 'reconnect', state.lastError, { terminal: 'failed', reason: state.lastError })
+  }
+
+  /** Clear one machine's reconnect loop (timer and bookkeeping). */
+  private stopReconnect(state: MachineState): void {
+    if (state.reconnect?.timer !== undefined)
+      clearTimeout(state.reconnect.timer)
+    delete state.reconnect
+  }
+
+  /** @throws {SshError} `machine-reconnecting` while the reconnect loop owns the machine. */
+  private refuseWhileReconnecting(machineId: MachineId, state: MachineState): void {
+    const rec = state.reconnect
+    if (rec === undefined)
+      return
+    throw new SshError(
+      'machine-reconnecting',
+      machineId,
+      `machine is reconnecting (attempt ${rec.attempt} of ${this.deps.config.reconnectMaxAttempts}); `
+      + 'wait for the automatic retry or disconnect first',
+    )
+  }
+
+  /** Scrub the profile's secret values out of any operator-facing text. */
+  private redacted(machineId: MachineId, text: string): string {
+    const profile = this.profiles.get(machineId)
+    let out = text
+    for (const secret of [profile?.password, profile?.passphrase]) {
+      if (secret !== undefined && secret !== '')
+        out = out.replaceAll(secret, '***')
+    }
+    return out
   }
 
   /**
@@ -417,15 +694,18 @@ export class SshManager {
    * the platform, download/verify/install the missing runtime components
    * from the pinned release, copy the local API credentials into the remote
    * `~/.dsh/.env`, then hand off to {@link connect} automatically.
-   * Idempotent while in flight.
+   * Idempotent while in flight. Refused while the reconnect loop owns the
+   * machine.
    * @param machineId - the machine to install on.
    * @param signal - aborts the attempt.
    * @returns the install outcome.
-   * @throws {SshError} on any failure (connect, install, or probe).
+   * @throws {SshError} on any failure (connect, install, or probe), or
+   *   `machine-reconnecting` while reconnecting.
    */
   async install(machineId: MachineId, signal?: AbortSignal): Promise<SshInstallResult> {
     const profile = this.requireProfile(machineId)
     const state = this.ensureState(machineId)
+    this.refuseWhileReconnecting(machineId, state)
     if (state.installing === undefined) {
       state.progress = { phase: 'installing' }
       this.emit(machineId)
@@ -447,7 +727,8 @@ export class SshManager {
    * terminal event, or the catch for exception failures (probe, planner,
    * transport rejects, missing entry) that bypass it. A superseded attempt
    * (cancellation by an explicit disconnect) is the documented no-terminal
-   * case.
+   * case. A failed install connection hands the machine to the reconnect
+   * loop, like a failed connect.
    */
   private async performInstall(machineId: MachineId, profile: MachineProfile, signal?: AbortSignal): Promise<SshInstallResult> {
     const state = this.ensureState(machineId)
@@ -467,13 +748,16 @@ export class SshManager {
       session = await this.deps.transport.connect(profile, (label, key) => this.checkHostKey(MachineId(label), key), signal)
     }
     catch (error) {
+      // The locally captured, redacted message: a superseded attempt must
+      // not read state.lastError back — that slot may already belong to a
+      // newer try.
+      const message = this.redacted(machineId, describeSshFailure(error))
       if (generation === state.generation) {
         delete state.progress
-        state.lastError = describeSshFailure(error)
-        state.phase = 'disconnected'
-        this.emit(machineId)
+        this.noteConnectFailure(machineId, message)
+        this.beginReconnect(machineId)
       }
-      throw new SshError('machine-connect-failed', machineId, describeSshFailure(error))
+      throw new SshError('machine-connect-failed', machineId, message)
     }
     try {
       const installTimeoutMs = this.deps.config.installTimeoutMs

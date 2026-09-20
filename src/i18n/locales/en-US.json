@@ -411,5 +411,6 @@
   "remote.manager.disconnect": "Disconnect",
   "remote.manager.test": "Test",
   "remote.manager.empty": "No remote machines yet. Click \"Add machine\" to create one.",
-  "buttons.close": "Close"
+  "buttons.close": "Close",
+  "remote.loading": "Loading remote interface…"
 }

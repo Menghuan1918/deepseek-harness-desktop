@@ -1,15 +1,15 @@
-import type { MachineProfile, SshMachineEvent } from '../types/index.js'
-import type { RemoteInstallPlan } from './bootstrap.js'
-import type { SshExecOptions, SshExecResult, SshSession, SshTransport, SshTunnelHandle } from './transport.js'
+import type { MachineProfile, SshMachineEvent } from '../types/index'
+import type { RemoteInstallPlan } from './bootstrap'
+import type { SshExecOptions, SshExecResult, SshSession, SshTransport, SshTunnelHandle } from './transport'
 import { Buffer } from 'node:buffer'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
-import { afterEach, describe, expect, it } from 'vitest'
-import { MachineId, SshError } from '../types/index.js'
-import { SshMachineEvents } from './events.js'
-import { KnownHostsStore } from './host-keys.js'
-import { SshManager } from './manager.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MachineId, SshError } from '../types/index'
+import { SshMachineEvents } from './events'
+import { KnownHostsStore } from './host-keys'
+import { SshManager } from './manager'
 
 const profile: MachineProfile = {
   id: MachineId('m1'),
@@ -33,6 +33,11 @@ const config = {
   healthPollIntervalMs: 5,
   healthPollAttempts: 3,
   installTimeoutMs: 60000,
+  keepaliveIntervalMs: 10000,
+  keepaliveCountMax: 3,
+  reconnectInitialDelayMs: 1,
+  reconnectMaxDelayMs: 2,
+  reconnectMaxAttempts: 2,
 }
 
 /** A boot page whose manifest the bundle probe confirms. */
@@ -80,6 +85,9 @@ class FakeSession implements SshSession {
   tunnelGate: Promise<void> | undefined
   tunnelStarted: (() => void) | undefined
   execGate: ((command: string, index: number) => Promise<void> | undefined) | undefined
+  /** The preferred local port the last openTunnel call received. */
+  preferredTunnelPort: number | undefined
+  authMethod: SshSession['authMethod'] = 'key'
   private closedCallbacks: Array<() => void> = []
 
   constructor(
@@ -95,6 +103,8 @@ class FakeSession implements SshSession {
   missingResult = ''
   /** Whether the launch answered REMOTE_NOT_INSTALLED instead of starting. */
   startNotInstalled = false
+  /** The web-log token grep answer (default: no token → bare tunnel URL). */
+  webTokenResult = ''
 
   exec(command: string, options?: SshExecOptions): Promise<SshExecResult> {
     this.commands.push(command)
@@ -121,6 +131,10 @@ class FakeSession implements SshSession {
       }
       if (command.includes('grep -q \'^DEEPSEEK_API_KEY=\'')) {
         return { code: 0, stdout: this.credentialsAnswer, stderr: '' }
+      }
+      // 注意用命令头识别：launch 命令行里也含日志路径（重定向目标）
+      if (command.startsWith('grep -oE \'token=')) {
+        return { code: 0, stdout: this.webTokenResult, stderr: '' }
       }
       if (command.includes('dsh-remote.pid')) {
         if (this.startNotInstalled)
@@ -153,7 +167,12 @@ class FakeSession implements SshSession {
   /** The stdout the credentials-copy command answers (default: copied). */
   credentialsAnswer = 'copied'
 
-  async openTunnel(): Promise<SshTunnelHandle> {
+  /** The injection slot the last openTunnel call received. */
+  tunnelInjection: { cookie: string | undefined } | undefined
+
+  async openTunnel(_remotePort: number, preferredLocalPort?: number, injection?: { cookie: string | undefined }): Promise<SshTunnelHandle> {
+    this.tunnelInjection = injection
+    this.preferredTunnelPort = preferredLocalPort
     this.tunnelStarted?.()
     if (this.tunnelGate !== undefined)
       await this.tunnelGate
@@ -190,14 +209,17 @@ class FakeTransport implements SshTransport {
   connectCalls = 0
   hostKeys: Array<{ key: Buffer, accepted: boolean }> = []
   rejectKeys = false
+  /** The profile each connect call received (the loop must re-read edits). */
+  profiles: MachineProfile[] = []
 
   constructor(private readonly sessionFactory: () => FakeSession) {}
 
   async connect(
-    _profile: MachineProfile,
-    hostKeyVerifier: (key: Buffer) => boolean | Promise<boolean>,
+    profile: MachineProfile,
+    hostKeyVerifier: (label: string, key: Buffer) => boolean | Promise<boolean>,
   ): Promise<SshSession> {
     this.connectCalls += 1
+    this.profiles.push(profile)
     const session = this.sessionFactory()
     this.sessions.push(session)
     if (this.rejectKeys)
@@ -205,7 +227,7 @@ class FakeTransport implements SshTransport {
     if (session.connectError !== undefined)
       throw session.connectError
     const key = Buffer.from('host-key')
-    this.hostKeys.push({ key, accepted: await hostKeyVerifier(key) })
+    this.hostKeys.push({ key, accepted: await hostKeyVerifier(String(profile.id), key) })
     return session
   }
 }
@@ -222,12 +244,32 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+/** Wait until the predicate holds (background reconnect races). */
+async function until(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 2000
+  while (!predicate()) {
+    if (Date.now() > deadline)
+      throw new Error(`timed out waiting for ${label}`)
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+}
+
+/** Wait until one machine settles into its terminal state after a failure. */
+async function untilSettled(manager: SshManager, machineId: MachineId = MachineId('m1')): Promise<void> {
+  await until(() => {
+    const state = manager.status(machineId).state
+    return state === 'given-up' || state === 'connected' || state === 'disconnected'
+  }, 'terminal state')
+}
+
 function boot(overrides: Partial<{
   sessionFactory: () => FakeSession
   rejectKeys: boolean
   readEnvCredentials: () => { apiKey?: string, baseUrl?: string }
   config: typeof config
   planInstall: () => Promise<RemoteInstallPlan>
+  mintCookie: (authenticatedUrl: string) => Promise<string | undefined>
+  syncPlugins: (session: import('./transport').SshSession, hooks: { onEvent?: (stage: import('../types/index').SshMachineStage, line: string) => void }) => Promise<boolean>
 }> = {}) {
   const transport = new FakeTransport(overrides.sessionFactory ?? (() => new FakeSession(() => true)))
   transport.rejectKeys = overrides.rejectKeys ?? false
@@ -240,6 +282,10 @@ function boot(overrides: Partial<{
     config: overrides.config ?? config,
     events,
     planInstall: overrides.planInstall ?? (() => Promise.resolve(plan)),
+    // 默认离线 mint：不走真实 HTTP；个别用例经 overrides 覆盖
+    mintCookie: overrides.mintCookie ?? (() => Promise.resolve(undefined)),
+    // 默认离线插件同步：不打本地 tar；个别用例经 overrides 覆盖
+    syncPlugins: overrides.syncPlugins ?? (() => Promise.resolve(false)),
     ...overrides.readEnvCredentials === undefined ? {} : { readEnvCredentials: overrides.readEnvCredentials },
     emitStatus: (id, status) => {
       emits.push({ id, state: status.state, ...status.progress === undefined ? {} : { progress: status.progress } })
@@ -362,25 +408,29 @@ describe('sshManager', () => {
   it('clears progress and reports the failure when connect fails', async () => {
     const { manager } = boot({ rejectKeys: true })
     await expect(manager.connect(MachineId('m1'))).rejects.toThrow()
+    await untilSettled(manager)
     const status = manager.status(MachineId('m1'))
-    expect(status.state).toBe('disconnected')
+    expect(status.state).toBe('given-up')
     expect(status.progress).toBeUndefined()
-    expect(status.lastError).toBe('auth failed')
+    expect(status.lastError).toBe('connect failed after 3 attempt(s): auth failed')
+    expect(status.nextRetryAt).toBeUndefined()
   })
 
   it('fails loud with machine-connect-failed on transport errors', async () => {
     const { manager } = boot({ rejectKeys: true })
     await expect(manager.connect(MachineId('m1'))).rejects.toThrow(SshError)
-    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-connect-failed' })
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-reconnecting' })
+    await untilSettled(manager)
     const status = manager.status(MachineId('m1'))
-    expect(status.state).toBe('disconnected')
-    expect(status.lastError).toBe('auth failed')
+    expect(status.state).toBe('given-up')
+    expect(status.lastError).toBe('connect failed after 3 attempt(s): auth failed')
   })
 
   it('fails loud with machine-bootstrap-failed when the instance never answers', async () => {
     const { manager } = boot({ sessionFactory: () => new FakeSession(() => false) })
     await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
-    expect(manager.status(MachineId('m1')).state).toBe('disconnected')
+    await untilSettled(manager)
+    expect(manager.status(MachineId('m1')).state).toBe('given-up')
   })
 
   it('fails loud with machine-bootstrap-failed when the start command fails', async () => {
@@ -388,6 +438,8 @@ describe('sshManager', () => {
       sessionFactory: () => new FakeSession(() => false, undefined, new Error('dsh: not found')),
     })
     await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
+    await untilSettled(manager)
+    expect(manager.status(MachineId('m1')).state).toBe('given-up')
   })
 
   it('settles the bootstrap stream when a transport exception bypasses the bootstrap failure path', async () => {
@@ -525,15 +577,41 @@ describe('sshManager', () => {
     expect(emits.map(entry => entry.state)).toEqual(['connecting', 'disconnected'])
   })
 
-  it('marks the machine disconnected when the SSH session drops', async () => {
-    const { manager, transport } = boot()
-    await manager.connect(MachineId('m1'))
+  it('marks the machine disconnected when the SSH session drops and reconnects it', async () => {
+    const { manager, transport, emits, events } = boot()
+    const first = await manager.connect(MachineId('m1'))
     const session = transport.sessions[0]!
     session.drop()
+    // The drop hands the machine to the reconnect loop; the retry (1 ms in
+    // the test config) succeeds against the fresh session.
+    await until(() => manager.status(MachineId('m1')).state === 'connected', 'auto-reconnect')
     const status = manager.status(MachineId('m1'))
-    expect(status.state).toBe('disconnected')
-    expect(status.lastError).toBe('SSH connection closed')
-    expect(manager.link(MachineId('m1'))).toBeUndefined()
+    expect(status.state).toBe('connected')
+    expect(status.tunnelBaseUrl).toBe(first.tunnelBaseUrl)
+    expect(manager.link(MachineId('m1'))).toBeDefined()
+    expect(transport.connectCalls).toBe(2)
+    // One publish for the schedule, one for the in-flight retry's progress.
+    expect(emits.map(entry => entry.state)).toEqual(['connecting', 'connected', 'reconnecting', 'reconnecting', 'connected'])
+    expect(events.since(MachineId('m1')).events.some(event => event.stage === 'reconnect' && event.terminal === 'success')).toBe(true)
+  })
+
+  it('re-binds the same tunnel port across a drop reconnect', async () => {
+    const { manager, transport } = boot()
+    await manager.connect(MachineId('m1'))
+    transport.sessions[0]!.drop()
+    await until(() => manager.status(MachineId('m1')).state === 'connected', 'auto-reconnect')
+    expect(transport.sessions[1]!.preferredTunnelPort).toBe(49152)
+  })
+
+  it('reports the next retry hint while reconnecting', async () => {
+    const { manager } = boot({
+      sessionFactory: () => new FakeSession(() => true, new Error('connect ECONNREFUSED')),
+    })
+    await expect(manager.connect(MachineId('m1'))).rejects.toThrow()
+    expect(manager.status(MachineId('m1')).state).toBe('reconnecting')
+    expect(manager.status(MachineId('m1')).nextRetryAt).toBeGreaterThan(Date.now() - 1)
+    await untilSettled(manager)
+    expect(manager.status(MachineId('m1')).nextRetryAt).toBeUndefined()
   })
 
   it('ignores session-close callbacks that no longer own the state', async () => {
@@ -552,7 +630,8 @@ describe('sshManager', () => {
     const session = transport.sessions[0]!
     session.tunnelCloseError = new Error('listener busy')
     session.drop()
-    expect(manager.status(MachineId('m1')).state).toBe('disconnected')
+    await until(() => manager.status(MachineId('m1')).state === 'connected', 'auto-reconnect')
+    expect(manager.status(MachineId('m1')).state).toBe('connected')
   })
 
   it('probes a machine with a remote banner', async () => {
@@ -635,8 +714,8 @@ describe('sshManager', () => {
   it('rejects a mismatched host key (TOFU conflict)', async () => {
     const { manager, transport } = boot()
     await manager.connect(MachineId('m1'))
-    transport.connect = async function (this: FakeTransport, _p: MachineProfile, verifier: (key: Buffer) => boolean | Promise<boolean>): Promise<SshSession> {
-      const accepted = await verifier(Buffer.from('other-key'))
+    transport.connect = async function (this: FakeTransport, p: MachineProfile, verifier: (label: string, key: Buffer) => boolean | Promise<boolean>): Promise<SshSession> {
+      const accepted = await verifier(String(p.id), Buffer.from('other-key'))
       if (!accepted)
         throw new Error('Host key verification failed')
       const session = new FakeSession(() => true)
@@ -679,7 +758,9 @@ describe('sshManager', () => {
     await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
     const status = manager.status(MachineId('m1'))
     expect(status.dshMissing).toBe(true)
-    expect(status.state).toBe('disconnected')
+    // A missing runtime is persistent: the machine lands in given-up (not
+    // the reconnect loop), freeing it for the install flow.
+    expect(status.state).toBe('given-up')
     expect(status.lastError).toContain('REMOTE_NOT_INSTALLED')
   })
 
@@ -694,16 +775,6 @@ describe('sshManager', () => {
 })
 
 describe('sshManager install', () => {
-  /** Wait until the published state satisfies the predicate (auto-connect races). */
-  async function until(predicate: () => boolean, label: string): Promise<void> {
-    const deadline = Date.now() + 2000
-    while (!predicate()) {
-      if (Date.now() > deadline)
-        throw new Error(`timed out waiting for ${label}`)
-      await new Promise(resolve => setTimeout(resolve, 5))
-    }
-  }
-
   it('installs dsh end-to-end, copies credentials, and auto-connects', async () => {
     // Session 1 = install (platform probe, missing check, install script,
     // entry check, credentials copy); session 2 = the automatic connect
@@ -957,9 +1028,10 @@ describe('sshManager install', () => {
   it('fails loud with machine-connect-failed when the install connection fails', async () => {
     const { manager } = boot({ rejectKeys: true })
     await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-connect-failed' })
+    await untilSettled(manager)
     const status = manager.status(MachineId('m1'))
-    expect(status.state).toBe('disconnected')
-    expect(status.lastError).toBe('auth failed')
+    expect(status.state).toBe('given-up')
+    expect(status.lastError).toBe('connect failed after 3 attempt(s): auth failed')
   })
 
   it('runs without an install timeout when the config omits it', async () => {
@@ -1193,10 +1265,12 @@ describe('sshManager install', () => {
     const { manager, transport } = boot({ sessionFactory: factory, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     const result = await manager.install(MachineId('m1'))
     expect(result.credentialsCopied).toBe(true)
-    await until(() => transport.connectCalls === 2, 'auto-connect attempt')
+    // The auto-connect fails auth and its reconnect retries also fail: the
+    // machine settles in the given-up terminal state with the auth reason.
+    await until(() => manager.status(MachineId('m1')).state === 'given-up', 'auto-connect give-up')
     const status = manager.status(MachineId('m1'))
-    expect(status.state).toBe('disconnected')
-    expect(status.lastError).toBe('auth failed')
+    expect(status.lastError).toContain('auth failed')
+    expect(transport.connectCalls).toBeGreaterThan(2)
   })
 
   it('reports a non-Error install failure in the status', async () => {
@@ -1214,5 +1288,270 @@ describe('sshManager install', () => {
     const { manager } = boot({ sessionFactory: () => session, readEnvCredentials: () => ({ apiKey: 'sk-test' }) })
     await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-install-failed' })
     expect(manager.status(MachineId('m1')).lastError).toBe('pnpm blew up')
+  })
+})
+
+describe('sshManager reconnect', () => {
+  /** Retry budget with distinguishable, fake-timer-friendly delays. */
+  const fastRetry = { ...config, reconnectInitialDelayMs: 100, reconnectMaxDelayMs: 400, reconnectMaxAttempts: 3 }
+
+  /** Sessions whose transport connect always fails with ECONNREFUSED. */
+  const refused = (): FakeSession => new FakeSession(() => true, new Error('connect ECONNREFUSED 10.0.0.1:22'))
+
+  it('backs off exponentially, caps the delay, and gives up after the budget', async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, transport } = boot({ sessionFactory: refused, config: fastRetry })
+      await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-connect-failed' })
+      expect(manager.status(MachineId('m1')).state).toBe('reconnecting')
+      expect(transport.connectCalls).toBe(1)
+      // Retry 1 fires after the 100 ms initial delay — not before.
+      await vi.advanceTimersByTimeAsync(99)
+      expect(transport.connectCalls).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(transport.connectCalls).toBe(2)
+      // Retry 2 doubles to 200 ms.
+      await vi.advanceTimersByTimeAsync(199)
+      expect(transport.connectCalls).toBe(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(transport.connectCalls).toBe(3)
+      // Retry 3 caps at 400 ms.
+      await vi.advanceTimersByTimeAsync(399)
+      expect(transport.connectCalls).toBe(3)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(transport.connectCalls).toBe(4)
+      // Budget spent: the terminal given-up state with the summarized reason.
+      const status = manager.status(MachineId('m1'))
+      expect(status.state).toBe('given-up')
+      expect(status.lastError).toBe('connect failed after 4 attempt(s): connect ECONNREFUSED 10.0.0.1:22')
+      expect(status.nextRetryAt).toBeUndefined()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops retrying after a manual disconnect', async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, transport } = boot({ sessionFactory: refused, config: fastRetry })
+      await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-connect-failed' })
+      await manager.disconnect(MachineId('m1'))
+      expect(manager.status(MachineId('m1')).state).toBe('disconnected')
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(transport.connectCalls).toBe(1)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops retrying when the machine profile vanishes', async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, transport } = boot({ sessionFactory: refused, config: fastRetry })
+      await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-connect-failed' })
+      manager.refreshProfiles(new Map())
+      expect(manager.status(MachineId('m1')).state).toBe('disconnected')
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(transport.connectCalls).toBe(1)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('refuses connect and install while reconnecting with a distinct code', async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager } = boot({ sessionFactory: refused, config: fastRetry })
+      await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-connect-failed' })
+      await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-reconnecting' })
+      await expect(manager.install(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-reconnecting' })
+      // 专用会话（sync 引擎入口）同样拒绝——与 connect/install 的在途一致
+      // 性语义对称，不并行建连。
+      await expect(manager.openSession(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-reconnecting' })
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses the edited profile on the next retry', async () => {
+    // Real timers: the retry goes through TOFU file I/O, which the fake
+    // clock would not wait for.
+    let calls = 0
+    const factory = (): FakeSession => {
+      calls += 1
+      // The first connect fails; retries (after the profile edit) succeed.
+      return calls === 1 ? refused() : new FakeSession(() => true)
+    }
+    const { manager, transport } = boot({
+      sessionFactory: factory,
+      config: { ...config, reconnectInitialDelayMs: 5, reconnectMaxDelayMs: 10, reconnectMaxAttempts: 3 },
+    })
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-connect-failed' })
+    // The operator fixes the profile mid-outage (e.g. a new password).
+    manager.refreshProfiles(new Map([[MachineId('m1'), { ...profile, host: '10.0.0.9' }], [secondProfile.id, secondProfile]]))
+    await until(() => manager.status(MachineId('m1')).state === 'connected', 'retry with edited profile')
+    expect(transport.profiles[1]?.host).toBe('10.0.0.9')
+  })
+
+  it('gives up without retrying when dsh is missing', async () => {
+    // The launch verdict REMOTE_NOT_INSTALLED is the merged flow's
+    // dsh-missing signal (the auto-bootstrap could not complete).
+    const session = new FakeSession(index => index !== 0)
+    session.startNotInstalled = true
+    const { manager, transport } = boot({ sessionFactory: () => session })
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-bootstrap-failed' })
+    expect(manager.status(MachineId('m1')).state).toBe('given-up')
+    expect(manager.status(MachineId('m1')).dshMissing).toBe(true)
+    expect(transport.connectCalls).toBe(1)
+  })
+
+  it('publishes the tunnel URL with the launch token when the remote log has one', async () => {
+    // 远端 web 日志带 token：隧道 URL 附带 ?token=（首次加载 mint 鉴权 cookie）
+    const { manager } = boot({
+      sessionFactory: () => {
+        const session = new FakeSession(() => true)
+        session.webTokenResult = 'tok-abc-123\n'
+        return session
+      },
+    })
+    const link = await manager.connect(MachineId('m1'))
+    expect(link.tunnelBaseUrl).toBe('http://127.0.0.1:49152/?token=tok-abc-123')
+    expect(manager.status(MachineId('m1')).tunnelBaseUrl).toBe('http://127.0.0.1:49152/?token=tok-abc-123')
+  })
+
+  it('syncs bundled plugins before ensuring the instance (failure degrades, never blocks)', async () => {
+    const calls: string[] = []
+    const { manager } = boot({
+      syncPlugins: () => {
+        calls.push('sync')
+        return Promise.resolve(true)
+      },
+    })
+    const link = await manager.connect(MachineId('m1'))
+    expect(link.tunnelBaseUrl).toContain('http://127.0.0.1:')
+    expect(calls).toEqual(['sync'])
+  })
+
+  it('a plugin-sync failure degrades to the stock remote UI without failing the connect', async () => {
+    const { manager, events } = boot({
+      syncPlugins: () => Promise.reject(new Error('upload broke')),
+    })
+    const link = await manager.connect(MachineId('m1'))
+    expect(link.tunnelBaseUrl).toContain('http://127.0.0.1:')
+    const lines = events.since(MachineId('m1')).events.map(event => event.line)
+    expect(lines.some(line => line.includes('捆绑插件同步失败'))).toBe(true)
+  })
+
+  it('stamps the tunnel with the minted session cookie once the launch token resolves', async () => {
+    let mintedUrl = ''
+    const { manager, transport } = boot({
+      sessionFactory: () => {
+        const session = new FakeSession(() => true)
+        session.webTokenResult = 'tok-abc-123\n'
+        return session
+      },
+      mintCookie: (url) => {
+        mintedUrl = url
+        return Promise.resolve('dsh-auth-x=v1.signed')
+      },
+    })
+    const link = await manager.connect(MachineId('m1'))
+    // mint 走隧道自身的带 token URL；注入槽随后携带 Cookie（iframe 免登录）
+    expect(mintedUrl).toBe('http://127.0.0.1:49152/?token=tok-abc-123')
+    expect(transport.sessions[0]?.tunnelInjection?.cookie).toBe('dsh-auth-x=v1.signed')
+    expect(link.tunnelBaseUrl).toBe('http://127.0.0.1:49152/?token=tok-abc-123')
+  })
+
+  it('exits given-up on a fresh connect', async () => {
+    let fail = true
+    const factory = (): FakeSession => fail ? refused() : new FakeSession(() => true)
+    const { manager } = boot({ sessionFactory: factory })
+    await expect(manager.connect(MachineId('m1'))).rejects.toMatchObject({ code: 'machine-connect-failed' })
+    await untilSettled(manager)
+    expect(manager.status(MachineId('m1')).state).toBe('given-up')
+    fail = false
+    const link = await manager.connect(MachineId('m1'))
+    expect(link.tunnelBaseUrl).toBe('http://127.0.0.1:49152')
+    expect(manager.status(MachineId('m1')).state).toBe('connected')
+  })
+
+  it('scrubs stored secrets from lastError, statuses, and events', async () => {
+    const leaky = (): FakeSession => new FakeSession(() => true, new Error('auth failed for password "sekrit"'))
+    const { manager, emits, events } = boot({ sessionFactory: leaky })
+    await expect(manager.connect(MachineId('m1'))).rejects.toThrow()
+    await untilSettled(manager)
+    expect(manager.status(MachineId('m1')).lastError).not.toContain('sekrit')
+    expect(manager.status(MachineId('m1')).lastError).toContain('***')
+    expect(JSON.stringify(manager.statuses())).not.toContain('sekrit')
+    expect(JSON.stringify(emits)).not.toContain('sekrit')
+    expect(JSON.stringify(events.since(MachineId('m1')))).not.toContain('sekrit')
+  })
+
+  it('emits auth and reconnect stage events across the give-up run', async () => {
+    const { manager, events } = boot({ sessionFactory: refused })
+    await expect(manager.connect(MachineId('m1'))).rejects.toThrow()
+    await untilSettled(manager)
+    const page = events.since(MachineId('m1'))
+    const stages = page.events.map(event => `${event.stage}${event.terminal === undefined ? '' : `:${event.terminal}`}`)
+    expect(stages.filter(stage => stage === 'auth')).toHaveLength(3)
+    expect(stages).toContain('reconnect:failed')
+    expect(page.events.at(-1)?.line).toContain('connect failed after 3 attempt(s)')
+  })
+
+  it('publishes the transient testing state around a probe', async () => {
+    const session = new FakeSession(() => true)
+    let markProbeStarted: (() => void) | undefined
+    const probeStarted = new Promise<void>((resolve) => {
+      markProbeStarted = resolve
+    })
+    session.exec = () => {
+      markProbeStarted?.()
+      return new Promise(resolve => setTimeout(resolve, 10, { code: 0, stdout: 'Linux x86_64', stderr: '' }))
+    }
+    const { manager } = boot({ sessionFactory: () => session })
+    const pending = manager.test(MachineId('m1'))
+    await probeStarted
+    expect(manager.status(MachineId('m1')).state).toBe('testing')
+    const result = await pending
+    expect(result).toEqual({ ok: true, banner: 'Linux x86_64' })
+    expect(manager.status(MachineId('m1')).state).toBe('disconnected')
+  })
+
+  it('restores the given-up phase after a probe', async () => {
+    let fail = true
+    const factory = (): FakeSession => fail ? refused() : new FakeSession(() => true)
+    const { manager } = boot({ sessionFactory: factory })
+    await expect(manager.connect(MachineId('m1'))).rejects.toThrow()
+    await untilSettled(manager)
+    expect(manager.status(MachineId('m1')).state).toBe('given-up')
+    fail = false
+    const result = await manager.test(MachineId('m1'))
+    expect(result.ok).toBe(true)
+    expect(manager.status(MachineId('m1')).state).toBe('given-up')
+  })
+
+  it('does not let a probe restore a phase that changed underneath it', async () => {
+    const session = new FakeSession(() => true)
+    let releaseProbe: (() => void) | undefined
+    let markProbeStarted: (() => void) | undefined
+    const probeStarted = new Promise<void>((resolve) => {
+      markProbeStarted = resolve
+    })
+    session.exec = () => new Promise((resolve) => {
+      markProbeStarted?.()
+      releaseProbe = () => resolve({ code: 0, stdout: 'Linux x86_64', stderr: '' })
+    })
+    const { manager } = boot({ sessionFactory: () => session })
+    const pending = manager.test(MachineId('m1'))
+    await probeStarted
+    // A disconnect takes ownership while the probe still runs.
+    await manager.disconnect(MachineId('m1'))
+    releaseProbe!()
+    await pending
+    expect(manager.status(MachineId('m1')).state).toBe('disconnected')
   })
 })

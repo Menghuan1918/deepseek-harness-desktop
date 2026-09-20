@@ -46,18 +46,23 @@ export interface SecretValues {
   passphrase?: string
 }
 
+/** The pipeline phases one connection-plane operation walks through. */
+export type ProgressPhase = 'handshake' | 'installing' | 'starting' | 'probing'
+
 /** Live transport status of one machine, from the /api-ssh list. */
 export interface MachineStatus {
   /** The C-STATE vocabulary (S3-owned); unknown wire values read as disconnected. */
   state: MachineLifecycleState
-  /** While reconnecting: when the next retry fires (S3's optional hint). */
-  nextRetryHint?: string
+  /** While reconnecting: epoch ms of the next scheduled retry (S3-owned field). */
+  nextRetryAt?: number
+  /** Which credential the live (or last successful) connection used; registered, not rendered. */
+  authMethod?: 'agent' | 'key' | 'password'
   tunnelBaseUrl?: string
   lastError?: string
   /** Whether the last failure was "dsh not installed on the remote" (offers install). */
   dshMissing?: boolean
   /** Live progress of the in-flight operation (phase codes translated by the UI). */
-  progress?: { phase: 'handshake' | 'starting' | 'probing' | 'installing', attempt?: number, total?: number, log?: string }
+  progress?: { phase: ProgressPhase, attempt?: number, total?: number, log?: string }
 }
 
 /** Outcome of a machine.install call (the host's install result). */
@@ -99,6 +104,8 @@ export interface MachinesPageState {
   statuses: Record<string, MachineStatus>
   /** Streaming log lines per machine id (the S2 event channel; capped tail). */
   logs: Record<string, string[]>
+  /** Observed progress-phase sequence per machine id (the step rail's truth). */
+  trails: Record<string, ProgressPhase[]>
   /** One in-flight connection-plane op per machine id. */
   busy: Record<string, 'test' | 'connect' | 'disconnect' | 'install'>
   /** The latest connection-plane outcome, shown in the banner. */
@@ -164,17 +171,17 @@ export function machineEventsOf(value: unknown): SshMachineEvent[] {
     const event = entry as Record<string, unknown>
     if (typeof event.seq !== 'number' || typeof event.machineId !== 'string' || typeof event.line !== 'string')
       continue
-    if (event.ts !== undefined && typeof event.ts !== 'number')
+    if (event.ts !== undefined && typeof event.ts !== 'string')
       continue
     if (event.stage !== undefined && typeof event.stage !== 'string')
       continue
     out.push({
       seq: event.seq,
-      ts: typeof event.ts === 'number' ? event.ts : 0,
+      ts: typeof event.ts === 'string' ? event.ts : '',
       machineId: event.machineId,
       stage: typeof event.stage === 'string' ? event.stage : '',
       line: event.line,
-      ...event.terminal === true ? { terminal: true } : {},
+      ...(event.terminal === 'success' || event.terminal === 'failed') ? { terminal: event.terminal } : {},
       ...typeof event.reason === 'string' ? { reason: event.reason } : {},
     })
   }
@@ -336,8 +343,12 @@ export class MachinesStore {
   /** The published page state. */
   readonly store: SnapshotStore<MachinesPageState> & { update: (mutator: (state: MachinesPageState) => void) => void }
 
-  /** The consumed event cursor (machine.events seq high-water mark). */
-  private lastEventSeq = 0
+  /**
+   * The consumed event cursor per machine id (the last `seq` seen for that
+   * machine). `seq` is a per-machine space — a global high-water mark would
+   * mix counters and starve machines with lower sequence numbers.
+   */
+  private readonly lastEventSeqByMachine = new Map<string, number>()
 
   /** Whether the host still gets asked for machine.events (off after first refusal). */
   private eventsSupported = true
@@ -353,6 +364,7 @@ export class MachinesStore {
       discovered: [],
       statuses: {},
       logs: {},
+      trails: {},
       busy: {},
       notice: null,
       installResults: {},
@@ -386,8 +398,10 @@ export class MachinesStore {
     const statuses: Record<string, MachineStatus> = {}
     for (const item of [...(list.items ?? []), ...(list.discovered ?? [])]) {
       const status: MachineStatus = { state: lifecycleStateOf(item.state) }
-      if (typeof item.nextRetryHint === 'string' && item.nextRetryHint !== '')
-        status.nextRetryHint = item.nextRetryHint
+      if (typeof item.nextRetryAt === 'number' && Number.isFinite(item.nextRetryAt))
+        status.nextRetryAt = item.nextRetryAt
+      if (item.authMethod === 'agent' || item.authMethod === 'key' || item.authMethod === 'password')
+        status.authMethod = item.authMethod
       if (item.tunnelBaseUrl !== undefined)
         status.tunnelBaseUrl = item.tunnelBaseUrl
       if (item.lastError !== undefined)
@@ -404,6 +418,24 @@ export class MachinesStore {
       state.machines = machines
       state.discovered = discovered
       state.statuses = statuses
+      // 阶段轨迹：操作期间把实际出现的 progress.phase 依次入轨（步骤条的
+      // 真值——装没装过 install 阶段由轨迹说话）；progress 消失即操作结束，
+      // 清轨让步骤条收起。被删除的机器顺带清轨。
+      for (const [id, status] of Object.entries(statuses)) {
+        const phase = status.progress?.phase
+        if (phase !== undefined) {
+          const trail = state.trails[id] ?? []
+          if (trail[trail.length - 1] !== phase)
+            state.trails[id] = [...trail, phase]
+        }
+        else {
+          delete state.trails[id]
+        }
+      }
+      for (const id of Object.keys(state.trails)) {
+        if (statuses[id] === undefined)
+          delete state.trails[id]
+      }
     })
   }
 
@@ -438,32 +470,52 @@ export class MachinesStore {
   }
 
   /**
-   * Pull machine.events past the cursor and fold the lines into the per-machine
-   * logs. A host without the S2 channel (or any refusal) turns the channel off
-   * for good — the panel then lives on the status progress fields alone, and
-   * the polling loop never fails the page for it.
+   * Pull machine.events for every known machine and fold the lines into the
+   * per-machine logs. The channel is per-machine: `seq` counts inside one
+   * machine's buffer only, so the cursor lives per machine id and each poll
+   * sends `{ machineId, sinceSeq }` per machine (the cursor is omitted on a
+   * machine's first poll). A host without the S2 channel (or any refusal)
+   * turns the channel off for good — the panel then lives on the status
+   * progress fields alone, and the polling loop never fails the page for it.
    */
   private async pollEvents(): Promise<void> {
     if (!this.eventsSupported)
       return
-    let events: SshMachineEvent[]
+    const snapshot = this.store.getSnapshot()
+    const known = new Set([...snapshot.machines, ...snapshot.discovered].map(row => row.id))
+    // Removed machines leave their cursors behind; drop them so the map
+    // tracks the live machine set only.
+    for (const id of this.lastEventSeqByMachine.keys()) {
+      if (!known.has(id))
+        this.lastEventSeqByMachine.delete(id)
+    }
+    const byMachine = new Map<string, string[]>()
     try {
-      events = machineEventsOf(await this.callApi<unknown>('machine.events', {
-        ...this.lastEventSeq === 0 ? {} : { after: this.lastEventSeq },
-      }))
+      for (const machineId of known) {
+        const cursor = this.lastEventSeqByMachine.get(machineId)
+        const events = machineEventsOf(await this.callApi<unknown>('machine.events', {
+          machineId,
+          ...cursor === undefined ? {} : { sinceSeq: cursor },
+        }))
+        if (events.length === 0)
+          continue
+        this.lastEventSeqByMachine.set(machineId, Math.max(...events.map(event => event.seq)))
+        for (const event of events) {
+          // 空行的收尾事件（terminal/reason）合成一行标记，不再静默丢弃
+          const line = event.line !== ''
+            ? event.line
+            : event.terminal === undefined
+              ? ''
+              : `[${event.terminal}]${event.reason === undefined ? '' : ` ${event.reason}`}`
+          if (line === '')
+            continue
+          byMachine.set(event.machineId, [...(byMachine.get(event.machineId) ?? []), line])
+        }
+      }
     }
     catch {
       this.eventsSupported = false
       return
-    }
-    if (events.length === 0)
-      return
-    this.lastEventSeq = Math.max(this.lastEventSeq, ...events.map(event => event.seq))
-    const byMachine = new Map<string, string[]>()
-    for (const event of events) {
-      if (event.line === '')
-        continue
-      byMachine.set(event.machineId, [...(byMachine.get(event.machineId) ?? []), event.line])
     }
     if (byMachine.size === 0)
       return

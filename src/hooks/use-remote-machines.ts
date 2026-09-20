@@ -1,5 +1,6 @@
 import { useEventListener, useMount } from '@reause/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useRef } from 'react'
 import { store } from '@/store'
 
 /** 远端弹窗 label 前缀（与 rust remote_open_window 的窗口命名一致）。 */
@@ -37,5 +38,5 @@ export function useRemoteMachines(): void {
   }
 
   useEventListener('focus', refreshNow)
-  useEventListener(document, 'visibilitychange', refreshNow)
+  useEventListener(useRef(document), 'visibilitychange', refreshNow)
 }

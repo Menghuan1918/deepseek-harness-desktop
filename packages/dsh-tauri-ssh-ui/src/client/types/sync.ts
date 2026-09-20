@@ -8,8 +8,8 @@
 
 /**
  * The connection-state vocabulary (C-STATE, S3-owned): the six lifecycle
- * states a machine row can report, plus the optional next-retry hint that
- * rides a `reconnecting` status.
+ * states a machine row can report. A `reconnecting` row also carries the
+ * optional `nextRetryAt` epoch-ms field (the retry-hint source).
  */
 export type MachineLifecycleState
   = | 'disconnected'
@@ -29,14 +29,22 @@ export function isLifecycleState(value: unknown): value is MachineLifecycleState
     || value === 'given-up'
 }
 
-/** One machine event from the polled `machine.events` channel (C-EVENT, S2-owned). */
+/**
+ * One machine event from the polled `machine.events` channel (C-EVENT,
+ * S2-owned): a displayable log line tagged with its pipeline stage. `seq` is
+ * a per-machine space (the poll cursor is kept per machine, never mixed).
+ */
 export interface SshMachineEvent {
+  /** Per-machine sequence number. */
   seq: number
-  ts: number
+  /** Wall-clock timestamp (ISO-8601), passed through as the host spelled it. */
+  ts: string
   machineId: string
+  /** Pipeline stage; passed through unclassified (auth/reconnect need no special case). */
   stage: string
   line: string
-  terminal?: boolean
+  /** Terminal verdict, present only on the settling event of an operation. */
+  terminal?: 'success' | 'failed'
   reason?: string
 }
 

@@ -165,7 +165,11 @@ export type SshTestResult
   = | { ok: true, banner: string }
     | { ok: false, message: string }
 
-/** One bootstrap stage of the remote-instance assurance pipeline (S3 adds the connection-lifecycle stages on the same channel). */
+/**
+ * One stage of the machine event channel: S2's bootstrap pipeline stages
+ * plus S3's connection-lifecycle stages (`auth`/`reconnect`, declared by
+ * {@link SSH_CONNECTION_EVENT_STAGES} on the same channel).
+ */
 export type SshMachineStage
   = | 'probe'
     | 'download'
@@ -174,6 +178,8 @@ export type SshMachineStage
     | 'launch'
     | 'ready'
     | 'failed'
+    | 'auth'
+    | 'reconnect'
 
 /** Terminal verdict of a machine event, when it settles an operation. */
 export type SshMachineTerminal = 'success' | 'failed'
@@ -232,38 +238,75 @@ export type SshErrorCode
     | 'machine-install-failed'
     | 'machine-ssh-error'
     | 'machine-reconnecting'
+    | 'machine-sync-failed'
 
 /**
  * Connection-lifecycle stages this plugin feeds into the machine-level event
  * channel (C-EVENT). The channel itself — `/api-ssh` `machine.events` — is
- * owned by S2; these are the stages S3 appends to its stage enum, so the
- * merged vocabulary is S2's bootstrap stages plus `auth` and `reconnect`.
+ * owned by S2; this constant declares S3's augmentation of
+ * {@link SshMachineStage}, and the `satisfies` clause keeps it checked
+ * against the merged union (adding a stage here requires it on the union).
  */
-export const SSH_CONNECTION_EVENT_STAGES = ['auth', 'reconnect'] as const
+export const SSH_CONNECTION_EVENT_STAGES = ['auth', 'reconnect'] as const satisfies readonly SshMachineStage[]
 
 /** One connection-lifecycle stage of the machine event channel (S3's slice). */
 export type SshConnectionEventStage = typeof SSH_CONNECTION_EVENT_STAGES[number]
 
-/**
- * One machine event: a displayable, secret-free line on the machine's log
- * stream. `outcome` marks the line that closes a lifecycle run.
- */
-export interface SshMachineEvent {
-  machineId: MachineId
-  stage: SshConnectionEventStage
-  /** Operator-facing text line; never carries secret values. */
-  text: string
-  /** Terminal outcome, present on the line that closes a run. */
-  outcome?: 'success' | 'failure'
+/** Label of one local user-level skill root the sync scans. */
+export type SyncSkillRoot = 'dsh' | 'agents'
+
+/** One plugin sync candidate: a dependency of the local dsh profile. */
+export interface SyncPluginItem {
+  /** Package name as the profile's package.json spells it. */
+  name: string
+  /** The dependency spec to install on the remote (e.g. `github:org/repo`, `^1.2.0`). */
+  spec: string
+  /** Whether the spec can be installed on a remote at all. */
+  syncable: boolean
+  /** Operator-facing reason a non-syncable spec is excluded. */
+  reason?: string
 }
 
-/**
- * Pluggable sink for {@link SshMachineEvent}s — the seam where the event
- * routing lands. Today the default sink is a no-op; when S2's `machine.events`
- * channel merges, the plugin assembly wires a sink that forwards into it.
- */
-export interface SshMachineEventSink {
-  emit: (event: SshMachineEvent) => void
+/** One skill sync candidate: a SKILL.md directory under a user-level root. */
+export interface SyncSkillItem {
+  name: string
+  /** The local root the skill was found under. */
+  root: SyncSkillRoot
+}
+
+/** The `sync.preview` value: what the panel offers for selection. */
+export interface SyncPreview {
+  plugins: SyncPluginItem[]
+  skills: SyncSkillItem[]
+}
+
+/** One plugin the panel asked to sync, as `sync.apply` receives it. */
+export interface SyncPluginRef {
+  name: string
+  spec: string
+}
+
+/** One skill the panel asked to sync, as `sync.apply` receives it. */
+export interface SyncSkillRef {
+  name: string
+  root: SyncSkillRoot
+}
+
+/** Outcome of exactly one synced item — the per-item failure surface. */
+export interface SyncItemResult {
+  kind: 'plugin' | 'skill'
+  /** Display identity, matching the ref the panel sent. */
+  name: string
+  /** Skill root; plugins carry none. */
+  root?: SyncSkillRoot
+  ok: boolean
+  /** Operator-facing failure description; absent on success. */
+  error?: string
+}
+
+/** The `sync.apply` value: every requested item, success and failure alike. */
+export interface SyncApplyResult {
+  items: SyncItemResult[]
 }
 
 /** Typed failure thrown by ssh primitives so consumers map business codes without string matching. */

@@ -411,5 +411,6 @@
   "remote.manager.disconnect": "断开",
   "remote.manager.test": "测试",
   "remote.manager.empty": "还没有远端机器，点「添加机器」创建第一台。",
-  "buttons.close": "关闭"
+  "buttons.close": "关闭",
+  "remote.loading": "正在加载远端界面…"
 }

@@ -75,11 +75,11 @@ describe('buildPreview', () => {
 })
 
 describe('command builders', () => {
-  it('quotes the dsh path and the spec on the add command', () => {
-    expect(pluginAddCommand('/home/u/.local/bin/dsh', 'github:a/b'))
-      .toBe(`'/home/u/.local/bin/dsh' plugin --profile web add 'github:a/b'`)
-    expect(pluginAddCommand('dsh', 'pkg@^1.0.0'))
-      .toBe(`'dsh' plugin --profile web add 'pkg@^1.0.0'`)
+  it('runs the layout entry under the layout node, both quoted', () => {
+    expect(pluginAddCommand('/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js', 'github:a/b'))
+      .toBe(`"$HOME/.dsh-desktop/runtime/bin/node" '/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js' plugin --profile web add 'github:a/b'`)
+    expect(pluginAddCommand('/home/u/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', 'pkg@^1.0.0'))
+      .toBe(`"$HOME/.dsh-desktop/runtime/bin/node" '/home/u/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js' plugin --profile web add 'pkg@^1.0.0'`)
   })
 
   it('extracts the streamed tarball into the remote skill home', () => {
@@ -92,8 +92,9 @@ describe('syncEngine.apply', () => {
 
   it('returns per-item successes when everything lands', async () => {
     const session = fakeSession((command) => {
-      if (command.includes('command -v dsh'))
-        return ok('/home/u/.local/bin/dsh\n')
+      // The entry probe is the only command carrying a printf.
+      if (command.includes('printf'))
+        return ok('/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js\n')
       return ok()
     })
     const packSkills = vi.fn(async () => Buffer.from('TARDATA'))
@@ -119,8 +120,8 @@ describe('syncEngine.apply', () => {
 
   it('reports partial plugin failures per item with the output tail', async () => {
     const session = fakeSession((command) => {
-      if (command.includes('command -v dsh'))
-        return ok('/home/u/.local/bin/dsh\n')
+      if (command.includes('printf'))
+        return ok('/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js\n')
       return command.includes('bad-pkg') ? fail('ERR_PNPM_NO_MATCH') : ok()
     })
     const sync = new SyncEngine({
@@ -142,7 +143,7 @@ describe('syncEngine.apply', () => {
     expect(result.items[1]?.error).toContain('exit 1')
   })
 
-  it('fails every plugin item when the remote has no dsh binary', async () => {
+  it('fails every plugin item when the remote has no dsh entry', async () => {
     const session = fakeSession(() => ok('\n'))
     const sync = new SyncEngine({
       profileDependencies: () => ({}),
@@ -152,7 +153,7 @@ describe('syncEngine.apply', () => {
     })
     const result = await sync.apply(machine, [{ name: 'p', spec: 'github:a/b' }], [])
     expect(result.items).toHaveLength(1)
-    expect(result.items[0]).toMatchObject({ ok: false, error: expect.stringContaining('no dsh binary') })
+    expect(result.items[0]).toMatchObject({ ok: false, error: expect.stringContaining('no dsh entry') })
   })
 
   it('marks unknown skills and local pack failures without touching the remote', async () => {

@@ -61,6 +61,8 @@ const BOOTSTRAP_STAGES: Record<SshMachineStage, true> = {
   launch: true,
   ready: true,
   failed: true,
+  auth: true,
+  reconnect: true,
 }
 
 /** Whether a parsed marker word is one of the known stage tags. */
@@ -496,6 +498,29 @@ export function missingComponentsOf(stdout: string): string[] {
  */
 export function layoutDshEntry(plan?: RemoteInstallPlan): string {
   return `$HOME/${REMOTE_ROOT}/dependencies/dsh/${plan?.dshEntry ?? DSH_ZIP_ENTRY}`
+}
+
+/** The layout's Node binary, double-quoted so `$HOME` still expands under `sh -lc`. */
+export function layoutNodeBinary(): string {
+  return `"$HOME/${REMOTE_ROOT}/runtime/bin/node"`
+}
+
+/**
+ * The installed dsh-entry probe for command-driving callers (the sync
+ * engine): prints the first entry the binary layout actually holds — zip
+ * layout first, npm layout second, the same precedence as
+ * {@link checkMissingCommand} — or nothing when neither is installed.
+ * Unlike the instance launch the plan is unknown here, so the probe resolves
+ * it remotely; the printed path is absolute (`$HOME` already expanded).
+ */
+export function dshEntryProbeCommand(): string {
+  return [
+    `ROOT="$HOME/${REMOTE_ROOT}"`,
+    `if [ -f "$ROOT/dependencies/dsh/${DSH_ZIP_ENTRY}" ]; then printf '%s\\n' "$ROOT/dependencies/dsh/${DSH_ZIP_ENTRY}"`,
+    `elif [ -f "$ROOT/dependencies/dsh/${DSH_NPM_ENTRY}" ]; then printf '%s\\n' "$ROOT/dependencies/dsh/${DSH_NPM_ENTRY}"`,
+    'fi',
+    'true',
+  ].join('\n')
 }
 
 /**

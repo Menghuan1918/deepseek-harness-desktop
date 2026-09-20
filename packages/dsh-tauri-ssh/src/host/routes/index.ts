@@ -17,9 +17,9 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { MachineSaveRow, MachineSecretWrite, MachineView, SshInstallResult, SshMachineEventsPage, SshMachineStatus, SshTestResult } from '../types/index.js'
+import type { MachineSaveRow, MachineSecretWrite, MachineView, SshInstallResult, SshMachineEventsPage, SshMachineStatus, SshTestResult, SyncApplyResult, SyncPluginRef, SyncPreview, SyncSkillRef, SyncSkillRoot } from '../types/index'
 import { Buffer } from 'node:buffer'
-import { MachineId, SshError } from '../types/index.js'
+import { MachineId, SshError } from '../types/index'
 
 /** One request envelope. */
 export interface SshApiRequest {
@@ -34,7 +34,8 @@ export type SshApiResponse
 
 /**
  * The connection-plane method set (CRUD lives here too: the settings RPC only
- *  serves an upstream allowlist, so the page writes through this route).
+ *  serves an upstream allowlist, so the page writes through this route), plus
+ * the S4-owned `sync.*` surface (engine + execution + per-item results).
  */
 export type SshApiMethod
   = | 'machine.list'
@@ -45,6 +46,8 @@ export type SshApiMethod
     | 'machine.events'
     | 'machine.save'
     | 'machine.remove'
+    | 'sync.preview'
+    | 'sync.apply'
 
 /** A machine list row: the redacted profile plus its live status. */
 export interface SshMachineListItem extends MachineView {
@@ -73,6 +76,10 @@ export interface SshApiHost {
   events: (machineId: MachineId, sinceSeq?: number) => SshMachineEventsPage
   save: (machineId: MachineId, row: MachineSaveRow, secrets?: MachineSecretWrite) => Promise<void>
   remove: (machineId: MachineId) => Promise<void>
+  /** The local plugins and skills available to sync (the selection list). */
+  syncPreview: () => SyncPreview
+  /** Sync the selection to one machine; every item settles in the result. */
+  syncApply: (machineId: MachineId, plugins: SyncPluginRef[], skills: SyncSkillRef[]) => Promise<SyncApplyResult>
 }
 
 /** Whether a socket peer is loopback (the only allowed caller of this API). */
@@ -221,6 +228,16 @@ export function createSshApiHandler(host: SshApiHost): (req: IncomingMessage, re
           respond(200, { ok: true, value: {} })
           return
         }
+        case 'sync.preview': {
+          respond(200, { ok: true, value: host.syncPreview() })
+          return
+        }
+        case 'sync.apply': {
+          const machineId = machineIdOf(payload)
+          const value = await host.syncApply(machineId, pluginRefsOf(payload), skillRefsOf(payload))
+          respond(200, { ok: true, value })
+          return
+        }
         default:
           respond(404, { ok: false, error: { code: 'unknown-method', message: `unknown method "${request.method}"` } })
       }
@@ -308,4 +325,40 @@ function secretsOf(payload: Record<string, unknown>): MachineSecretWrite | undef
   if (typeof value.passphrase === 'string' && value.passphrase !== '')
     out.passphrase = value.passphrase
   return out
+}
+
+/** Validate the sync.apply plugin refs; the panel sends its display names along. */
+function pluginRefsOf(payload: Record<string, unknown>): SyncPluginRef[] {
+  const list = payload.plugins
+  if (list === undefined)
+    return []
+  if (!Array.isArray(list))
+    throw new Error('invalid plugins')
+  return list.map((entry) => {
+    if (typeof entry !== 'object' || entry === null)
+      throw new Error('invalid plugin ref')
+    const ref = entry as Record<string, unknown>
+    if (typeof ref.name !== 'string' || typeof ref.spec !== 'string' || ref.spec === '')
+      throw new Error('invalid plugin ref')
+    return { name: ref.name, spec: ref.spec }
+  })
+}
+
+/** Validate the sync.apply skill refs; the root picks the local source tree. */
+function skillRefsOf(payload: Record<string, unknown>): SyncSkillRef[] {
+  const list = payload.skills
+  if (list === undefined)
+    return []
+  if (!Array.isArray(list))
+    throw new Error('invalid skills')
+  return list.map((entry) => {
+    if (typeof entry !== 'object' || entry === null)
+      throw new Error('invalid skill ref')
+    const ref = entry as Record<string, unknown>
+    if (typeof ref.name !== 'string' || ref.name === '')
+      throw new Error('invalid skill ref')
+    if (ref.root !== 'dsh' && ref.root !== 'agents')
+      throw new Error('invalid skill ref: root')
+    return { name: ref.name, root: ref.root as SyncSkillRoot }
+  })
 }

@@ -13,10 +13,10 @@
  */
 
 import type { Buffer } from 'node:buffer'
-import type { MachineId, SyncApplyResult, SyncItemResult, SyncPluginItem, SyncPluginRef, SyncPreview, SyncSkillItem, SyncSkillRef, SyncSkillRoot } from '../types/index.js'
-import type { SshSession } from './transport.js'
-import { firstLineOf, probeDshCommand } from './bootstrap.js'
-import { shQuote } from './transport.js'
+import type { MachineId, SyncApplyResult, SyncItemResult, SyncPluginItem, SyncPluginRef, SyncPreview, SyncSkillItem, SyncSkillRef, SyncSkillRoot } from '../types/index'
+import type { SshSession } from './transport'
+import { dshEntryProbeCommand, firstLineOf, layoutNodeBinary } from './bootstrap'
+import { shQuote } from './transport'
 
 /** The remote profile plugins are installed into (the web-serving one). */
 export const REMOTE_PLUGIN_PROFILE = 'web'
@@ -69,9 +69,16 @@ export function buildPreview(dependencies: Record<string, string>, skillRoots: R
   return { plugins, skills }
 }
 
-/** The remote plugin-install command for one spec (dsh add is pnpm-backed). */
-export function pluginAddCommand(dshPath: string, spec: string): string {
-  return `${shQuote(dshPath)} plugin --profile ${REMOTE_PLUGIN_PROFILE} add ${shQuote(spec)}`
+/**
+ * The remote plugin-install command for one spec (dsh add is pnpm-backed).
+ * The dsh entry is a Node script in the binary layout, so it always runs
+ * under the layout's Node binary (never a bare `dsh` from the login PATH).
+ * @param dshEntry - the absolute entry path the layout probe resolved.
+ * @param spec - the dependency spec to install.
+ * @returns the shell command line.
+ */
+export function pluginAddCommand(dshEntry: string, spec: string): string {
+  return `${layoutNodeBinary()} ${shQuote(dshEntry)} plugin --profile ${REMOTE_PLUGIN_PROFILE} add ${shQuote(spec)}`
 }
 
 /** The remote skill-extract command; the tarball arrives on its stdin. */
@@ -146,18 +153,18 @@ export class SyncEngine {
   private async applyPlugins(session: SshSession, plugins: readonly SyncPluginRef[], items: SyncItemResult[]): Promise<void> {
     if (plugins.length === 0)
       return
-    const dshPath = firstLineOf((await session.exec(probeDshCommand())).stdout)
+    const dshEntry = firstLineOf((await session.exec(dshEntryProbeCommand())).stdout)
     for (const plugin of plugins) {
-      if (dshPath === '') {
+      if (dshEntry === '') {
         items.push({
           kind: 'plugin',
           name: plugin.name,
           ok: false,
-          error: 'no dsh binary on the remote (checked the login PATH, ~/.local/bin and ~/.dsh/source/current); install dsh first',
+          error: 'no dsh entry under the remote ~/.dsh-desktop install layout; run the machine install first',
         })
         continue
       }
-      const result = await session.exec(pluginAddCommand(dshPath, plugin.spec), {
+      const result = await session.exec(pluginAddCommand(dshEntry, plugin.spec), {
         ...this.deps.commandTimeoutMs === undefined ? {} : { timeoutMs: this.deps.commandTimeoutMs },
       })
       items.push(

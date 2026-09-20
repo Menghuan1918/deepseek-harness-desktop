@@ -5,16 +5,33 @@
  * @module dsh-tauri-ssh/e2e/helpers
  */
 
-import type { SshMachineEvent } from '../src/host/types/index.js'
+import type { SshMachineStage, SshMachineTerminal } from '../src/host/types/index'
 import { generateKeyPairSync } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'pathe'
-import { KnownHostsStore } from '../src/host/service/host-keys.js'
-import { SshManager } from '../src/host/service/manager.js'
-import { SshConfigResolver } from '../src/host/service/ssh-config.js'
-import { Ssh2Transport } from '../src/host/service/transport.js'
-import { MachineId } from '../src/host/types/index.js'
+import { SshMachineEvents } from '../src/host/service/events'
+import { KnownHostsStore } from '../src/host/service/host-keys'
+import { SshManager } from '../src/host/service/manager'
+import { SshConfigResolver } from '../src/host/service/ssh-config'
+import { Ssh2Transport } from '../src/host/service/transport'
+import { MachineId } from '../src/host/types/index'
+
+/**
+ * The machine event channel with evidence logging: every appended line is
+ * echoed into the harness log (`event <stage>[/<terminal>]: <line>`) before
+ * it lands in the ring buffer, so spec files can grep the emitted stream.
+ */
+class LoggingMachineEvents extends SshMachineEvents {
+  constructor(private readonly log: (text: string) => void) {
+    super()
+  }
+
+  override append(machineId: MachineId, stage: SshMachineStage, line: string, options: { terminal?: SshMachineTerminal, reason?: string } = {}) {
+    this.log(`event ${stage}${options.terminal === undefined ? '' : `/${options.terminal}`}: ${line}`)
+    return super.append(machineId, stage, line, options)
+  }
+}
 
 /** One timestamped evidence line. */
 export interface EvidenceLine {
@@ -89,7 +106,7 @@ export function bootHarness(options: {
       reconnectMaxDelayMs: options.reconnectMaxDelayMs ?? 5_000,
       reconnectMaxAttempts: options.reconnectMaxAttempts ?? 6,
     },
-    eventSink: { emit: (event: SshMachineEvent) => { log(`event ${event.stage}${event.outcome === undefined ? '' : `/${event.outcome}`}: ${event.text}`) } },
+    events: new LoggingMachineEvents(log),
     emitStatus: (id, status) => {
       const hints = [
         status.state,

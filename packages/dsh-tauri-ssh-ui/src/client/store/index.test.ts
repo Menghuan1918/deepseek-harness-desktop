@@ -119,6 +119,32 @@ describe('machinesStore', () => {
       .toEqual({ state: 'connecting', progress: { phase: 'probing', attempt: 2, total: 30 } })
   })
 
+  it('accumulates the observed phase trail and clears it when the operation settles', async () => {
+    const { store, fetchFn } = boot({
+      ok: true,
+      value: { items: [{ ...machineA, state: 'connecting', progress: { phase: 'handshake' } }] },
+    })
+    await store.load()
+    expect(store.getSnapshot().trails.a).toEqual(['handshake'])
+    fetchFn.mockResolvedValueOnce({
+      json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'connecting', progress: { phase: 'starting' } }] } }),
+    } as unknown as Response)
+    await store.poll()
+    expect(store.getSnapshot().trails.a).toEqual(['handshake', 'starting'])
+    // 同阶段重复不重复入轨
+    fetchFn.mockResolvedValueOnce({
+      json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'connecting', progress: { phase: 'starting' } }] } }),
+    } as unknown as Response)
+    await store.poll()
+    expect(store.getSnapshot().trails.a).toEqual(['handshake', 'starting'])
+    // 操作落定（progress 消失）清轨
+    fetchFn.mockResolvedValueOnce({
+      json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:1' }] } }),
+    } as unknown as Response)
+    await store.poll()
+    expect(store.getSnapshot().trails.a).toBeUndefined()
+  })
+
   it('polls without flipping the loading banner', async () => {
     const { store, fetchFn } = boot({
       ok: true,
@@ -380,13 +406,17 @@ describe('machinesStore', () => {
 })
 
 describe('connection-state vocabulary', () => {
-  it('reads the C-STATE states and the next-retry hint', async () => {
+  it('reads the C-STATE states, the retry instant, and the auth method', async () => {
     const { store } = boot({
       ok: true,
-      value: { items: [{ ...machineA, state: 'reconnecting', nextRetryHint: 'in 8s' }] },
+      value: { items: [{ ...machineA, state: 'reconnecting', nextRetryAt: 1_700_000_008_000, authMethod: 'key' }] },
     })
     await store.load()
-    expect(store.getSnapshot().statuses.a).toMatchObject({ state: 'reconnecting', nextRetryHint: 'in 8s' })
+    expect(store.getSnapshot().statuses.a).toMatchObject({
+      state: 'reconnecting',
+      nextRetryAt: 1_700_000_008_000,
+      authMethod: 'key',
+    })
   })
 
   it('reads unknown wire states as disconnected', async () => {
@@ -402,55 +432,107 @@ describe('connection-state vocabulary', () => {
 describe('machineEventsOf', () => {
   it('parses well-formed events and drops malformed ones', () => {
     expect(machineEventsOf({ events: [
-      { seq: 2, ts: 1700000001, machineId: 'a', stage: 'bootstrap:clone', line: 'cloning' },
-      { seq: 3, ts: 1700000002, machineId: 'a', stage: 'bootstrap:install', line: 'pnpm install', terminal: false },
-      { seq: 4, ts: 1700000003, machineId: 'a', stage: 'connect:failed', line: 'gave up', terminal: true, reason: 'auth failed' },
+      { seq: 2, ts: '2025-09-01T00:00:01.000Z', machineId: 'a', stage: 'probe', line: 'probing' },
+      { seq: 3, ts: '2025-09-01T00:00:02.000Z', machineId: 'a', stage: 'install', line: 'pnpm install', terminal: 'success' },
+      { seq: 4, ts: '2025-09-01T00:00:03.000Z', machineId: 'a', stage: 'auth', line: 'gave up', terminal: 'failed', reason: 'auth failed' },
     ] })).toEqual([
-      { seq: 2, ts: 1700000001, machineId: 'a', stage: 'bootstrap:clone', line: 'cloning' },
-      { seq: 3, ts: 1700000002, machineId: 'a', stage: 'bootstrap:install', line: 'pnpm install' },
-      { seq: 4, ts: 1700000003, machineId: 'a', stage: 'connect:failed', line: 'gave up', terminal: true, reason: 'auth failed' },
+      { seq: 2, ts: '2025-09-01T00:00:01.000Z', machineId: 'a', stage: 'probe', line: 'probing' },
+      { seq: 3, ts: '2025-09-01T00:00:02.000Z', machineId: 'a', stage: 'install', line: 'pnpm install', terminal: 'success' },
+      { seq: 4, ts: '2025-09-01T00:00:03.000Z', machineId: 'a', stage: 'auth', line: 'gave up', terminal: 'failed', reason: 'auth failed' },
     ])
     expect(machineEventsOf(undefined)).toEqual([])
     expect(machineEventsOf({ events: 'nope' })).toEqual([])
     expect(machineEventsOf({ events: [{ machineId: 'a', line: 'x' }, 'junk'] })).toEqual([])
+    // A numeric ts or boolean terminal (the draft shapes) is malformed now.
+    expect(machineEventsOf({ events: [{ seq: 1, ts: 1_700_000_000, machineId: 'a', line: 'x' }] })).toEqual([])
+    expect(machineEventsOf({ events: [{ seq: 1, ts: '2025-09-01T00:00:00.000Z', machineId: 'a', line: 'x', terminal: true }] })[0]).not.toHaveProperty('terminal')
   })
 })
 
 describe('event polling', () => {
-  /** A fetch mock that answers machine.list and sequential machine.events payloads. */
-  function eventsFetch(eventBatches: unknown[][]): FetchMock {
-    let batch = 0
+  it('synthesizes a marker line for terminal events with an empty line', async () => {
+    const fetchFn = eventsFetch({
+      a: [[
+        { seq: 1, ts: '2025-09-01T00:00:00.000Z', machineId: 'a', stage: 'launch', line: '' },
+        { seq: 2, ts: '2025-09-01T00:00:01.000Z', machineId: 'a', stage: 'launch', line: '', terminal: 'failed', reason: 'port busy' },
+      ]],
+    })
+    const store = new MachinesStore(fetchFn)
+    await store.load()
+    await store.poll()
+    // 无 terminal 的空行丢弃；带 terminal 的收尾事件落成可见标记行
+    expect(store.getSnapshot().logs.a).toEqual(['[failed] port busy'])
+  })
+  /**
+   * A fetch mock that answers machine.list (one machine per id) and
+   * per-machine machine.events payloads, keyed by the polled machineId.
+   */
+  function eventsFetch(pagesByMachine: Record<string, unknown[][]>, listItems: MachineRow[] = [machineA]): FetchMock {
+    const batchByMachine = new Map<string, number>()
     return vi.fn<FetchFn>(async (_url, init) => {
-      const body = JSON.parse(String(init.body)) as { method: string }
+      const body = JSON.parse(String(init.body)) as { method: string, payload?: { machineId?: string } }
       if (body.method === 'machine.events') {
-        const events = eventBatches[Math.min(batch, eventBatches.length - 1)] ?? []
-        batch += 1
+        const machineId = body.payload?.machineId ?? ''
+        const pages = pagesByMachine[machineId] ?? []
+        const batch = batchByMachine.get(machineId) ?? 0
+        batchByMachine.set(machineId, batch + 1)
+        const events = pages[Math.min(batch, pages.length - 1)] ?? []
         return { json: async () => ({ ok: true, value: { events } }) } as unknown as Response
       }
-      return { json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'connecting' }] } }) } as unknown as Response
+      return { json: async () => ({ ok: true, value: { items: listItems.map(row => ({ ...row, state: 'connecting' })) } }) } as unknown as Response
     })
   }
 
-  it('folds event lines into the per-machine log tail past the cursor', async () => {
-    const fetchFn = eventsFetch([
-      [
-        { seq: 1, ts: 1, machineId: 'a', stage: 'bootstrap:clone', line: 'line 1' },
-        { seq: 2, ts: 2, machineId: 'a', stage: 'bootstrap:clone', line: 'line 2' },
+  /** The machine.events calls a fetch mock saw, as parsed payloads. */
+  function eventCallsOf(fetchFn: FetchMock): Array<{ machineId?: string, sinceSeq?: number }> {
+    return fetchFn.mock.calls
+      .map(call => JSON.parse(String(call[1]?.body)) as { method: string, payload?: { machineId?: string, sinceSeq?: number } })
+      .filter(call => call.method === 'machine.events')
+      .map(call => call.payload ?? {})
+  }
+
+  it('folds event lines into the per-machine log tail past the per-machine cursor', async () => {
+    const fetchFn = eventsFetch({
+      a: [
+        [
+          { seq: 1, ts: '2025-09-01T00:00:01.000Z', machineId: 'a', stage: 'probe', line: 'line 1' },
+          { seq: 2, ts: '2025-09-01T00:00:02.000Z', machineId: 'a', stage: 'probe', line: 'line 2' },
+        ],
+        [
+          { seq: 3, ts: '2025-09-01T00:00:03.000Z', machineId: 'a', stage: 'ready', line: 'line 3', terminal: 'success' },
+        ],
       ],
-      [
-        { seq: 3, ts: 3, machineId: 'a', stage: 'bootstrap:install', line: 'line 3' },
-      ],
-    ])
+    })
     const store = new MachinesStore(fetchFn)
     await store.poll()
     expect(store.getSnapshot().logs.a).toEqual(['line 1', 'line 2'])
     await store.poll()
     expect(store.getSnapshot().logs.a).toEqual(['line 1', 'line 2', 'line 3'])
-    // The cursor rode along: the second call asked for events after seq 2.
-    const eventsCalls = fetchFn.mock.calls
-      .map(call => JSON.parse(String(call[1]?.body)) as { method: string, payload?: { after?: number } })
-      .filter(call => call.method === 'machine.events')
-    expect(eventsCalls[1]?.payload).toEqual({ after: 2 })
+    // The cursor rode along per machine: the second poll of machine a asked
+    // for events after its own seq 2 (the first poll omitted sinceSeq).
+    const calls = eventCallsOf(fetchFn)
+    expect(calls[0]).toEqual({ machineId: 'a' })
+    expect(calls[1]).toEqual({ machineId: 'a', sinceSeq: 2 })
+  })
+
+  it('advances each machine cursor in its own seq space', async () => {
+    const fetchFn = eventsFetch({
+      a: [[{ seq: 10, ts: '2025-09-01T00:00:01.000Z', machineId: 'a', stage: 'probe', line: 'a line' }]],
+      b: [[{ seq: 2, ts: '2025-09-01T00:00:01.000Z', machineId: 'b', stage: 'auth', line: 'b line' }]],
+    }, [machineA, machineB])
+    const store = new MachinesStore(fetchFn)
+    await store.poll()
+    expect(store.getSnapshot().logs.a).toEqual(['a line'])
+    expect(store.getSnapshot().logs.b).toEqual(['b line'])
+    // Both machines polled from the start on the first round; machine a's
+    // high seq must not starve machine b's lower seq space.
+    const firstRound = eventCallsOf(fetchFn)
+    expect(firstRound).toContainEqual({ machineId: 'a' })
+    expect(firstRound).toContainEqual({ machineId: 'b' })
+    await store.poll()
+    const secondRound = eventCallsOf(fetchFn).slice(firstRound.length)
+    expect(secondRound).toContainEqual({ machineId: 'a', sinceSeq: 10 })
+    expect(secondRound).toContainEqual({ machineId: 'b', sinceSeq: 2 })
   })
 
   it('turns the channel off after the host refuses it once', async () => {
@@ -459,7 +541,7 @@ describe('event polling', () => {
       if (body.method === 'machine.events') {
         return { json: async () => ({ ok: false, error: { code: 'unknown-method', message: 'unknown method "machine.events"' } }) } as unknown as Response
       }
-      return { json: async () => ({ ok: true, value: { items: [] } }) } as unknown as Response
+      return { json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'connecting' }] } }) } as unknown as Response
     })
     const store = new MachinesStore(fetchFn)
     await store.poll()

@@ -74,10 +74,12 @@
     "@types/node": "catalog:types",
     "@types/react": "catalog:types",
     "@types/react-dom": "catalog:types",
+    "anser": "catalog:",
     "dsh-tauri-tsdown": "workspace:*",
     "jsdom": "catalog:testing",
     "react": "catalog:runtime",
     "react-dom": "catalog:runtime",
+    "shiki": "catalog:",
     "tsdown": "catalog:cli",
     "typescript": "catalog:cli",
     "vitest": "catalog:testing"
