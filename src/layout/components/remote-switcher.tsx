@@ -58,7 +58,7 @@ function openInNewWindow(machine: SshMachineRow, onError: (err: unknown) => void
  * 放弃红 → 其余中性灰；未连接行整体降不透明度。本地实例不可达时进入降级
  * 态：远端项禁用 + 顶部提示，恢复后自动复原（轮询静默重试，不弹错误）。
  */
-export function RemoteSwitcher({ onManage }: { onManage: () => void }) {
+export function RemoteSwitcher({ onManage }: { onManage?: () => void }) {
   const { t } = useTranslation()
   useRemoteMachines()
   const { machines, activeId, available, pendingId } = useStore(store.remote)
@@ -200,6 +200,7 @@ export function RemoteSwitcher({ onManage }: { onManage: () => void }) {
             <Dropdown.Item
               className="rounded-md"
               id="remote-manage"
+              isDisabled={onManage == null}
               textValue={t('remote.manage')}
               onAction={onManage}
             >

@@ -27,7 +27,6 @@ import { DesktopUpdateDialog } from '@/ui/dialog/update'
 import { writeClipboardText } from '@/utils/clipboard'
 import { toast } from '@/utils/toast'
 import { ConnectDialog } from './connect-dialog'
-import { RemoteManager } from './remote-manager'
 import { RemoteSwitcher } from './remote-switcher'
 
 /**
@@ -152,12 +151,13 @@ export interface NavbarProps {
   onToggleSidebar?: () => void
   /** 新聊天：向 iframe 发 `dsh://session:new`（dsh 官方「新建会话」）；传入时该项可用 */
   onNewChat?: () => void
+  /** 管理机器：向 iframe 发 `dsh://settings:open` 定位 SSH 分区（统一到设置页） */
+  onOpenMachineManager?: () => void
   /** 打开文件夹：向 iframe 发 `dsh://workspace:add`（dsh 官方「添加工作区」）；传入时该项可用 */
   onOpenFolder?: () => void
 }
 
-export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, onOpenFolder }: NavbarProps) {
-  const [managerOpen, setManagerOpen] = useState(false)
+export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, onOpenFolder, onOpenMachineManager }: NavbarProps) {
   const { t } = useTranslation()
   const isFullscreen = useMacOSFullscreen()
   // 只读取「dsh-tauri 插件是否已安装」；查询键与「插件」面板共用（同一份缓存），
@@ -370,9 +370,8 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
         </Button>
       </If>
       <If cond={onToggleSidebar != null}>
-        <RemoteSwitcher onManage={() => setManagerOpen(true)} />
+        <RemoteSwitcher onManage={onOpenMachineManager} />
         <ConnectDialog />
-        <RemoteManager isOpen={managerOpen} onClose={() => setManagerOpen(false)} />
       </If>
       <If cond={!IS_MACOS}>
         <div className="ml-1">
