@@ -6,7 +6,6 @@ import { Button, Input, Modal, StateDot } from '@deepseek-ai/dsh-client-ui-primi
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { cls } from '../styles/index'
 import { retrySecondsOf } from '../utils/retry'
-import { SyncPanel } from './sync-panel'
 
 /** New-machine form defaults (ssh-ui 既有默认：SSH 22 / 远端 web 3080)。 */
 const DEFAULT_PORT = 22
@@ -1013,7 +1012,6 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
                     </>
                   )
                 : null}
-              <SyncPanel store={store} t={t} />
             </>
           )}
       {addOpen

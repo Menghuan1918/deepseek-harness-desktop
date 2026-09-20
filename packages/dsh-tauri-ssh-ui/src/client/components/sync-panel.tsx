@@ -24,10 +24,12 @@ import { cls } from '../styles'
 export interface SyncPanelProps {
   store: MachinesStore
   t: (key: SshKey) => string
+  /** 侧边栏面板内嵌形态：隐藏大标题/说明（面板标签已表意）。 */
+  embedded?: boolean
 }
 
 /** Render the sync panel over the store snapshot. */
-export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
+export function SyncPanel({ store, t, embedded = false }: SyncPanelProps): ReactNode {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
   const [targetId, setTargetId] = useState<string | null>(null)
@@ -52,10 +54,10 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
 
   return (
     <section className={cls.syncPanel} data-testid="sync-panel">
-      <h3 className={cls.groupTitle}>{t('sync.title')}</h3>
-      <p className={cls.groupHint}>{t('sync.desc')}</p>
+      {embedded ? null : <h3 className={cls.groupTitle}>{t('sync.title')}</h3>}
+      {embedded ? null : <p className={cls.groupHint}>{t('sync.desc')}</p>}
       {connected.length === 0
-        ? <p className={cls.hint}>{t('sync.notConnected')}</p>
+        ? <p className={cls.hint}>{t('sync.notConnectedHint')}</p>
         : (
             <>
               <div className={cls.syncTargets}>

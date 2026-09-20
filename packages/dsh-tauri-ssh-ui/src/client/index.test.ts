@@ -10,7 +10,11 @@ import { MachinesStore } from './store/index'
 // The desktop invoke bridge resolves through the runtime module table, which
 // does not exist under vitest; the registrant tests only need its shape.
 // (vitest hoists vi.mock above the imports, so placement here is safe.)
-vi.mock('dsh-tauri/client', () => ({ invoke: vi.fn(async () => undefined) }))
+vi.mock('dsh-tauri/client', () => ({
+  invoke: vi.fn(async () => undefined),
+  defineRegister: (feature: (controller: unknown) => void) => feature,
+  definePanel: (_ctx: unknown, entry: { id: string }) => ({ id: entry.id, dispose: () => {} }),
+}))
 
 // dsh-tauri-ui/client 的 dist bundle 以 ModuleLoader 工厂包裹，脱离宿主加载器
 // 无法在 node 求值；样式挂载只需要一个可观察的 mountStyle 桩，cssr 用源文件
@@ -50,13 +54,13 @@ describe('ui-ssh client plugin', () => {
   })
 
   it('declares its inject topology', () => {
-    expect(inject).toEqual(['slots', 'locale'])
+    expect(inject).toEqual(['slots', 'locale', 'layout'])
   })
 
   it('registers the ssh dictionaries on activation', () => {
     const { ctx, locale, effects } = scriptedCtx()
     apply(ctx)
-    expect(effects).toHaveLength(2)
+    expect(effects).toHaveLength(3)
     effects[0]?.()
     expect(locale.register).toHaveBeenCalledWith('ssh', { zh, en })
     expect(locale.bind).toHaveBeenCalledWith('ssh')

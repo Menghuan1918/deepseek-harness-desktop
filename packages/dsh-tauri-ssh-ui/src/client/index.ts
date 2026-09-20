@@ -13,12 +13,13 @@ import { mountStyle } from 'dsh-tauri-ui/client'
 import { MachinesSection } from './components/machines-section'
 import { SETTINGS_SECTION_ID, SETTINGS_SECTION_ORDER, SETTINGS_SECTION_SLOT, SSH_LOCALE_NS } from './constants'
 import { en, zh } from './locales'
+import { syncPanelFeature } from './register/sync-panel'
 import { desktopBridge } from './service/bridge'
 import { MachinesStore } from './store'
 import { SSH_STYLE_ID, sshStyle } from './styles'
 
 /** Required services: the settings slot seam and the locale seat. */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'layout']
 
 /**
  * Register the `ssh` dictionaries and the settings section, each once its
@@ -30,6 +31,7 @@ export function apply(ctx: UiContext): void {
   ctx.effect(() => mountStyle(sshStyle, SSH_STYLE_ID), 'dsh-tauri-ssh-ui: styles')
   const t = ctx.locale.bind(SSH_LOCALE_NS)
   const store = new MachinesStore((url, init) => fetch(url, init))
+  ctx.effect(syncPanelFeature(store, t), 'dsh-tauri-ssh-ui: sync panel')
   ctx.slots.inject(SETTINGS_SECTION_SLOT, () => ctx.slots.register({
     name: SETTINGS_SECTION_SLOT,
     id: SETTINGS_SECTION_ID,
