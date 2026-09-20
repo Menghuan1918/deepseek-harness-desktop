@@ -184,6 +184,14 @@ export class SshRemoteService implements SshApiHost {
     return [...this.manualProfiles().values()].map(profileView)
   }
 
+  /** This instance's session role: a remote target (with its origin name) or a local host. */
+  sessionRole(): { remote: boolean, origin?: string } {
+    const origin = process.env.DSH_REMOTE_SESSION_ORIGIN
+    return origin === undefined || origin === ''
+      ? { remote: false }
+      : { remote: true, origin }
+  }
+
   /** Redacted views of the discovered `~/.ssh/config` aliases (read-only). */
   async discoveredViews(): Promise<MachineView[]> {
     const manual = this.manualProfiles()

@@ -46,6 +46,7 @@ export type SshApiMethod
     | 'machine.events'
     | 'machine.save'
     | 'machine.remove'
+    | 'session.role'
     | 'sync.preview'
     | 'sync.apply'
 
@@ -63,6 +64,8 @@ export interface SshMachineListItem extends MachineView {
 
 /** The manager face this API needs (the plugin's service). */
 export interface SshApiHost {
+  /** Whether this host instance is itself a remote target of an SSH session. */
+  sessionRole: () => { remote: boolean, origin?: string }
   profileViews: () => MachineView[]
   /** The read-only `~/.ssh/config` alias machines (awaits the config read). */
   discoveredViews: () => Promise<MachineView[]>
@@ -182,6 +185,10 @@ export function createSshApiHandler(host: SshApiHost): (req: IncomingMessage, re
     const payload = (request.payload ?? {}) as Record<string, unknown>
     try {
       switch (request.method as SshApiMethod) {
+        case 'session.role': {
+          respond(200, { ok: true, value: host.sessionRole() })
+          return
+        }
         case 'machine.list': {
           const items: SshMachineListItem[] = host.profileViews().map(view => listItemOf(host, view))
           const discovered: SshMachineListItem[] = (await host.discoveredViews()).map(view => listItemOf(host, view))

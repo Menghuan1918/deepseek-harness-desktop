@@ -214,7 +214,7 @@ describe('machinesStore', () => {
     )
     const calls = fetchFn.mock.calls
       .map(call => JSON.parse(String(call[1]?.body)) as { method: string, payload: Record<string, unknown> })
-      .filter(call => call.method !== 'machine.list')
+      .filter(call => call.method !== 'machine.list' && call.method !== 'session.role')
     expect(calls).toHaveLength(2)
     expect(calls[0]).toMatchObject({
       method: 'machine.save',
@@ -241,7 +241,7 @@ describe('machinesStore', () => {
     await store.persist([machineA], {})
     const calls = fetchFn.mock.calls
       .map(call => JSON.parse(String(call[1]?.body)) as { method: string, payload: Record<string, unknown> })
-      .filter(call => call.method !== 'machine.list')
+      .filter(call => call.method !== 'machine.list' && call.method !== 'session.role')
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ method: 'machine.save', payload: { machineId: 'a' } })
   })
@@ -263,8 +263,10 @@ describe('machinesStore', () => {
     const state = store.getSnapshot()
     expect(state.notice).toEqual({ kind: 'text', text: 'Linux alpha' })
     expect(state.busy).toEqual({})
-    const [, init] = fetchFn.mock.calls[1] as [string, RequestInit]
-    expect(JSON.parse(String(init.body))).toEqual({ method: 'machine.test', payload: { machineId: 'a' } })
+    const testCall = fetchFn.mock.calls
+      .map(call => JSON.parse(String(call[1]?.body)) as { method: string, payload?: Record<string, unknown> })
+      .find(call => call.method === 'machine.test')
+    expect(testCall).toEqual({ method: 'machine.test', payload: { machineId: 'a' } })
   })
 
   it('falls back to defaults when a probe omits banner or message', async () => {

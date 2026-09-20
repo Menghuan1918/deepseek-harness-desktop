@@ -62,6 +62,21 @@ function mount(overrides: { envelope?: SshApiResponse, bridge?: RemoteBridge } =
 }
 
 describe('machinesSection', () => {
+  it('renders the read-only SSH-in-progress banner on a remote target and hides management', async () => {
+    const fetchFn = vi.fn<FetchFn>(async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as { method: string }
+      if (body.method === 'session.role')
+        return { json: async () => ({ ok: true, value: { remote: true, origin: 'ops' } }) } as unknown as Response
+      return { json: async () => ({ ok: true, value: { items: [{ ...machineA, state: 'disconnected' }] } }) } as unknown as Response
+    })
+    render(<MachinesSection store={new MachinesStore(fetchFn)} t={t} />)
+    await waitFor(() => expect(screen.getByTestId('remote-session-banner')).toBeTruthy())
+    expect(screen.getByText('Currently in an SSH session')).toBeTruthy()
+    expect(screen.getByText(/over SSH from ops/)).toBeTruthy()
+    expect(screen.queryByText('Add machine')).toBeNull()
+    expect(screen.queryByTestId('machine-a')).toBeNull()
+  })
+
   it('renders the loaded machine cards with statuses', async () => {
     const { fetchFn } = mount({
       envelope: { ok: true, value: { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:49152' }] } },

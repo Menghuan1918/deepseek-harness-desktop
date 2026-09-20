@@ -115,6 +115,8 @@ export interface MachinesPageState {
   installResults: Record<string, InstallResult>
   /** The sync-to-remote panel state. */
   sync: SyncPanelState
+  /** This instance's session role (a remote target renders the read-only banner). */
+  role: { remote: boolean, origin?: string } | null
 }
 
 /** The fetch seam (window.fetch in the browser, fakes in tests). */
@@ -375,6 +377,7 @@ export class MachinesStore {
       notice: null,
       installResults: {},
       sync: { status: 'idle', error: null, preview: null, applying: false, results: null },
+      role: null,
     })
   }
 
@@ -452,6 +455,8 @@ export class MachinesStore {
       state.error = null
     })
     try {
+      if (this.store.getSnapshot().role === null)
+        void this.loadRole()
       this.applyList(await this.callApi<{ items?: MachineListItem[], discovered?: MachineListItem[] }>('machine.list', {}))
     }
     catch (error) {
@@ -459,6 +464,19 @@ export class MachinesStore {
         state.status = 'error'
         state.error = messageOf(error)
       })
+    }
+  }
+
+  /** Load this instance's session role once (old hosts without the method keep null). */
+  async loadRole(): Promise<void> {
+    try {
+      const role = await this.callApi<{ remote: boolean, origin?: string }>('session.role', {})
+      this.store.update((state) => {
+        state.role = role.remote === true ? { remote: true, ...role.origin === undefined || role.origin === '' ? {} : { origin: role.origin } } : { remote: false }
+      })
+    }
+    catch {
+      // Older hosts lack session.role; the banner simply stays hidden.
     }
   }
 

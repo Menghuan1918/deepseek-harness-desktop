@@ -850,9 +850,13 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
           <Button variant="outline" size="sm" disabled={state.status === 'loading'} onClick={() => void store.load()}>
             {t('refresh')}
           </Button>
-          <Button variant="primary" size="sm" disabled={state.status === 'loading'} onClick={() => setAddOpen(true)}>
-            {t('addMachine')}
-          </Button>
+          {state.role?.remote === true
+            ? null
+            : (
+                <Button variant="primary" size="sm" disabled={state.status === 'loading'} onClick={() => setAddOpen(true)}>
+                  {t('addMachine')}
+                </Button>
+              )}
         </div>
       </div>
       {state.notice !== null ? <p className={cls.notice} data-testid="notice">{noticeTextOf(state.notice, t)}</p> : null}
@@ -876,127 +880,142 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
       {state.status === 'ready' && state.machines.length === 0 && state.discovered.length === 0
         ? <p className={cls.empty}>{t('empty')}</p>
         : null}
-      <ul className={cls.rows}>
-        {state.machines.map((row) => {
-          const draft = drafts[row.id] ?? { key: row.id, row }
-          return (
-            <RowShell
-              key={row.id}
-              id={row.id}
-              name={row.name === '' ? row.id : row.name}
-              tag={row.host}
-              tintColor={colorOf(row)}
-              tintBorder={row.tintBorder === true}
-              status={state.statuses[row.id]}
-              trail={state.trails[row.id] ?? []}
-              t={t}
-              actions={(
-                <RowActions
-                  id={row.id}
-                  t={t}
-                  status={state.statuses[row.id]}
-                  busy={state.busy[row.id]}
-                  bridgeOpen={bridgeOpen}
-                  bridgePending={bridgePending}
-                  opening={openingId === row.id}
-                  onTest={id => void store.test(id)}
-                  onConnect={id => void store.connect(id)}
-                  onDisconnect={id => void store.disconnect(id)}
-                  onOpen={openRemoteWindow}
-                  extras={(
-                    <>
-                      <Button variant="outline" size="sm" disabled={editingId !== null && editingId !== row.id} onClick={() => editingId === row.id ? closeEditor(row.id) : openEditor(row)}>
-                        {t('edit')}
-                      </Button>
-                      <Button variant="ghost" size="sm" className={cls.dangerAction} disabled={state.busy[row.id] !== undefined} onClick={() => setRemoveTarget({ key: row.id, id: row.id, name: row.name === '' ? row.id : row.name })}>
-                        {t('remove')}
-                      </Button>
-                    </>
-                  )}
-                />
-              )}
-            >
-              {editingId === row.id
-                ? (
-                    <EditPanel
-                      draft={draft}
-                      t={t}
-                      secretSet={secretFlagsOf(row)}
-                      dirty={dirty[row.id] ?? {}}
-                      saving={savingId === row.id}
-                      onChange={patchDraft}
-                      onSecret={patchDirty}
-                      onSave={key => void saveRow(key)}
-                      onCancel={closeEditor}
-                    />
-                  )
-                : null}
-              <RowDetails
-                id={row.id}
-                status={state.statuses[row.id]}
-                busy={state.busy[row.id]}
-                logLines={state.logs[row.id] ?? []}
-                bridgeError={bridgeErrors[row.id]}
-                installResult={state.installResults[row.id]}
-                t={t}
-                onInstall={id => void store.install(id)}
-              />
-            </RowShell>
-          )
-        })}
-      </ul>
-      {state.discovered.length > 0
+      {state.role?.remote === true
         ? (
+            <div className={cls.emptyBlock} data-testid="remote-session-banner">
+              <p className={cls.empty}>{t('session.remoteTitle')}</p>
+              <p className={cls.hint}>
+                {state.role.origin !== undefined && state.role.origin !== ''
+                  ? t('session.remoteHintNamed').replace('{name}', state.role.origin)
+                  : t('session.remoteHint')}
+              </p>
+            </div>
+          )
+        : (
             <>
-              <div className={cls.group}>
-                <h3 className={cls.groupTitle}>{t('configHosts')}</h3>
-                <p className={cls.groupHint}>{t('configHostsHint')}</p>
-              </div>
               <ul className={cls.rows}>
-                {state.discovered.map(row => (
-                  <RowShell
-                    key={row.id}
-                    id={row.id}
-                    name={row.name}
-                    tag={t('configTag')}
-                    tintColor={undefined}
-                    tintBorder={false}
-                    status={state.statuses[row.id]}
-                    trail={state.trails[row.id] ?? []}
-                    t={t}
-                    actions={(
-                      <RowActions
+                {state.machines.map((row) => {
+                  const draft = drafts[row.id] ?? { key: row.id, row }
+                  return (
+                    <RowShell
+                      key={row.id}
+                      id={row.id}
+                      name={row.name === '' ? row.id : row.name}
+                      tag={row.host}
+                      tintColor={colorOf(row)}
+                      tintBorder={row.tintBorder === true}
+                      status={state.statuses[row.id]}
+                      trail={state.trails[row.id] ?? []}
+                      t={t}
+                      actions={(
+                        <RowActions
+                          id={row.id}
+                          t={t}
+                          status={state.statuses[row.id]}
+                          busy={state.busy[row.id]}
+                          bridgeOpen={bridgeOpen}
+                          bridgePending={bridgePending}
+                          opening={openingId === row.id}
+                          onTest={id => void store.test(id)}
+                          onConnect={id => void store.connect(id)}
+                          onDisconnect={id => void store.disconnect(id)}
+                          onOpen={openRemoteWindow}
+                          extras={(
+                            <>
+                              <Button variant="outline" size="sm" disabled={editingId !== null && editingId !== row.id} onClick={() => editingId === row.id ? closeEditor(row.id) : openEditor(row)}>
+                                {t('edit')}
+                              </Button>
+                              <Button variant="ghost" size="sm" className={cls.dangerAction} disabled={state.busy[row.id] !== undefined} onClick={() => setRemoveTarget({ key: row.id, id: row.id, name: row.name === '' ? row.id : row.name })}>
+                                {t('remove')}
+                              </Button>
+                            </>
+                          )}
+                        />
+                      )}
+                    >
+                      {editingId === row.id
+                        ? (
+                            <EditPanel
+                              draft={draft}
+                              t={t}
+                              secretSet={secretFlagsOf(row)}
+                              dirty={dirty[row.id] ?? {}}
+                              saving={savingId === row.id}
+                              onChange={patchDraft}
+                              onSecret={patchDirty}
+                              onSave={key => void saveRow(key)}
+                              onCancel={closeEditor}
+                            />
+                          )
+                        : null}
+                      <RowDetails
                         id={row.id}
-                        t={t}
                         status={state.statuses[row.id]}
                         busy={state.busy[row.id]}
-                        bridgeOpen={bridgeOpen}
-                        bridgePending={bridgePending}
-                        opening={openingId === row.id}
-                        onTest={id => void store.test(id)}
-                        onConnect={id => void store.connect(id)}
-                        onDisconnect={id => void store.disconnect(id)}
-                        onOpen={openRemoteWindow}
+                        logLines={state.logs[row.id] ?? []}
+                        bridgeError={bridgeErrors[row.id]}
+                        installResult={state.installResults[row.id]}
+                        t={t}
+                        onInstall={id => void store.install(id)}
                       />
-                    )}
-                  >
-                    <RowDetails
-                      id={row.id}
-                      status={state.statuses[row.id]}
-                      busy={state.busy[row.id]}
-                      logLines={state.logs[row.id] ?? []}
-                      bridgeError={bridgeErrors[row.id]}
-                      installResult={state.installResults[row.id]}
-                      t={t}
-                      onInstall={id => void store.install(id)}
-                    />
-                  </RowShell>
-                ))}
+                    </RowShell>
+                  )
+                })}
               </ul>
+              {state.discovered.length > 0
+                ? (
+                    <>
+                      <div className={cls.group}>
+                        <h3 className={cls.groupTitle}>{t('configHosts')}</h3>
+                        <p className={cls.groupHint}>{t('configHostsHint')}</p>
+                      </div>
+                      <ul className={cls.rows}>
+                        {state.discovered.map(row => (
+                          <RowShell
+                            key={row.id}
+                            id={row.id}
+                            name={row.name}
+                            tag={t('configTag')}
+                            tintColor={undefined}
+                            tintBorder={false}
+                            status={state.statuses[row.id]}
+                            trail={state.trails[row.id] ?? []}
+                            t={t}
+                            actions={(
+                              <RowActions
+                                id={row.id}
+                                t={t}
+                                status={state.statuses[row.id]}
+                                busy={state.busy[row.id]}
+                                bridgeOpen={bridgeOpen}
+                                bridgePending={bridgePending}
+                                opening={openingId === row.id}
+                                onTest={id => void store.test(id)}
+                                onConnect={id => void store.connect(id)}
+                                onDisconnect={id => void store.disconnect(id)}
+                                onOpen={openRemoteWindow}
+                              />
+                            )}
+                          >
+                            <RowDetails
+                              id={row.id}
+                              status={state.statuses[row.id]}
+                              busy={state.busy[row.id]}
+                              logLines={state.logs[row.id] ?? []}
+                              bridgeError={bridgeErrors[row.id]}
+                              installResult={state.installResults[row.id]}
+                              t={t}
+                              onInstall={id => void store.install(id)}
+                            />
+                          </RowShell>
+                        ))}
+                      </ul>
+                    </>
+                  )
+                : null}
+              <SyncPanel store={store} t={t} />
             </>
-          )
-        : null}
-      <SyncPanel store={store} t={t} />
+          )}
       {addOpen
         ? (
             <AddMachineDialog

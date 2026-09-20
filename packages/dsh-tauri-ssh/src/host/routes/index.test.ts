@@ -27,6 +27,7 @@ log.append(MachineId('m1'), 'ready', '远端实例已就绪', { terminal: 'succe
 
 function fakeHost(overrides: Partial<SshApiHost> = {}): SshApiHost {
   return {
+    sessionRole: () => ({ remote: false }),
     profileViews: () => [view],
     discoveredViews: async () => [],
     status: () => ({ machineId: MachineId('m1'), state: 'disconnected' }),
@@ -137,6 +138,13 @@ describe('/api-ssh handler', () => {
     const missing = await call(fakeHost(), JSON.stringify({ payload: {} }))
     expect(missing.status).toBe(400)
     expect(missing.body).toMatchObject({ ok: false, error: { code: 'bad-request' } })
+  })
+
+  it('answers session.role from the host', async () => {
+    const plain = await call(fakeHost(), JSON.stringify({ method: 'session.role' }))
+    expect(plain.body).toEqual({ ok: true, value: { remote: false } })
+    const remote = await call(fakeHost({ sessionRole: () => ({ remote: true, origin: 'ops' }) }), JSON.stringify({ method: 'session.role' }))
+    expect(remote.body).toEqual({ ok: true, value: { remote: true, origin: 'ops' } })
   })
 
   it('lists machines with live status', async () => {
