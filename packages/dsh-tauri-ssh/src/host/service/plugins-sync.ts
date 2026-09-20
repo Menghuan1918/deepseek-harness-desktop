@@ -46,7 +46,9 @@ const REMOTE_PIDFILE = '.dsh/dsh-remote.pid'
 export const WIRE_SCRIPT = `const fs = require('fs')
 const path = require('path')
 const [profilePkg, base, ...names] = process.argv.slice(2)
-const doc = JSON.parse(fs.readFileSync(profilePkg, 'utf8'))
+const doc = fs.existsSync(profilePkg)
+  ? JSON.parse(fs.readFileSync(profilePkg, 'utf8'))
+  : { name: 'dsh-remote', version: '0.0.0', dependencies: {} }
 doc.dependencies = doc.dependencies || {}
 doc.dsh = doc.dsh || {}
 doc.dsh.profile = doc.dsh.profile || {}
@@ -188,7 +190,7 @@ export function pluginSyncApplyCommand(tree: BundledPluginsTree, hash: string, p
     `mv "$BASE.new" "$BASE"`,
     `rm -rf "$BASE.old"`,
     `echo "${hash}" > "$HOME/${SYNC_MARKER}"`,
-    `mkdir -p "$HOME/${profile}"`,
+    `[ -f "$HOME/${profile}/package.json" ] || "$HOME/${REMOTE_ROOT}/runtime/bin/node" "$HOME/${REMOTE_ROOT}/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile ${profileName} --from-default-profile web --help >/dev/null 2>&1`,
     `"$HOME/${REMOTE_ROOT}/runtime/bin/node" "$BASE/node_modules/_wire.js" "$HOME/${profile}/package.json" "$BASE/node_modules" ${names}`,
     // 实例在跑则重启：pidfile 之外还按安装路径精确清场（pidfile 可能因上次崩溃
     // 指向已死进程），并等 3080 释放后再交还 ensure 拉起，避免新实例 EADDRINUSE

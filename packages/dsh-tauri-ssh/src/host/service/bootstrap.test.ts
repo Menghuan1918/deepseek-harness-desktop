@@ -559,7 +559,7 @@ describe('component probe and launch commands', () => {
   it('launches with the machine profile flag and falls back to remote', async () => {
     const plan = await planRemoteInstall('Linux 6.8 x86_64', {}, healthyFetchers())
     const named = startCommandFor({ ...profile, profileName: 'work' }, plan)
-    expect(named).toContain(`--profile "$5"`)
+    expect(named).toContain(`--profile "$5" --host`)
     expect(named).toContain('work')
     expect(named).toContain('档案: work')
     expect(startCommandFor(profile, plan)).toContain('档案: remote')
