@@ -107,6 +107,14 @@ S5 验收中「数据面全旅程」「壳层命令/单测/lint」「capability�
 - [ ] 合并 v0.14.3 后回归：远端窗口交通灯与新 52px 导航栏对齐（y=28，
       非旧 24）；主/远端窗口均出现「文件/帮助」菜单；远端窗口内插件
       boot 正常（建窗走共享 `build_shell_window`，桥脚本按窗口注入）。
+- [ ] 合并准备四项（09-20）：① 机器「远端档案」字段（默认 remote，含
+      startCommand 覆盖时置灰）——连接日志远端按 `dsh --profile <name>`
+      拉起，远端 ~/.dsh/profiles/<name> 含核心模板 + 桌面插件；② 远端实例
+      的设置「SSH 远程机器」分区显示「目前正在 SSH 中（来自 <机器名>）」
+      横幅且无管理入口（隧道内 POST session.role 应答 remote:true）；
+      ③ 切换器「管理」直达 iframe 设置 SSH 分区（壳层不再有管理弹窗）；
+      ④ dsh 主侧边栏出现「同步到远端」面板（插件/Skill 多选 + 逐项结果），
+      设置页机器列表尾部不再有内嵌同步块。
 - [ ] 插件退役回归（dsh-tauri-panel 并入 core 后）：连接日志出现
       「同步桌面捆绑插件（11 个）」且远端实例按新 profile 正常重启
       （不出现 cannot resolve profile bundle / EADDRINUSE 崩溃）；
