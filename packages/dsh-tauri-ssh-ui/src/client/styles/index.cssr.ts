@@ -339,8 +339,14 @@ export default c([
     color: 'var(--dsw-alias-label-secondary)',
   }),
 
-  /* The Input primitive draws the box; the field makes it fill the grid cell. */
+  /*
+   * The Input primitive draws the box; the field makes it fill the grid cell.
+   * `border-box` is load-bearing: the primitive's `.wrap` is content-box, so a
+   * bare `width: 100%` would add its padding/border on top of the track width
+   * and bleed ~18px into the neighbouring column (adjacent inputs overlapped).
+   */
   c('.dshp-ssh-field-input', {
+    boxSizing: 'border-box',
     width: '100%',
   }),
 
