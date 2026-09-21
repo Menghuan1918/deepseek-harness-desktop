@@ -19,7 +19,7 @@ import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { MachineId, SshError } from '../types/index'
-import { checkMissingCommand, credentialsCopyCommand, describeError, describeExecFailure, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, safeProfileName, skippedVerificationSummary } from './bootstrap'
+import { checkMissingCommand, credentialsCopyCommand, describeError, describeExecFailure, ensurePnpmCommand, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, safeProfileName, skippedVerificationSummary } from './bootstrap'
 import { fingerprintHostKey } from './host-keys'
 import { syncBundledPlugins } from './plugins-sync'
 import { mintTunnelCookie } from './transport'
@@ -449,6 +449,16 @@ export class SshManager {
     }
     catch (error) {
       this.deps.events.append(machineId, 'install', `捆绑插件同步失败（降级原生 UI）: ${describeError(error)}`)
+    }
+    // 远端自带的 pnpm 只在 dependencies/pnpm 下，PATH 上没有裸 `pnpm`——而
+    // `dsh plugin add`（同步面板装第三方插件、远端自己装插件）都找它。补一个
+    // 指向布局自带 pnpm 的垫片（幂等、不需联网），失败只记一行日志。
+    try {
+      await session.exec(ensurePnpmCommand())
+      this.deps.events.append(machineId, 'install', '远端 pnpm 垫片就绪（dsh plugin 依赖它）')
+    }
+    catch (error) {
+      this.deps.events.append(machineId, 'install', `远端 pnpm 垫片写入失败: ${describeError(error)}`)
     }
     try {
       await ensureRemoteInstance(

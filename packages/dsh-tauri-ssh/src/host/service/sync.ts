@@ -16,7 +16,7 @@ import type { Buffer } from 'node:buffer'
 import type { MachineId, SyncApplyResult, SyncItemResult, SyncPluginItem, SyncPluginRef, SyncPreview, SyncSkillItem, SyncSkillRef, SyncSkillRoot } from '../types/index'
 import type { SshSession } from './transport'
 import { DEFAULT_REMOTE_PROFILE } from '../storage/index'
-import { dshEntryProbeCommand, firstLineOf, layoutNodeBinary } from './bootstrap'
+import { dshEntryProbeCommand, firstLineOf, layoutBinDir, layoutNodeBinary } from './bootstrap'
 import { shQuote } from './transport'
 
 /**
@@ -29,6 +29,14 @@ export const REMOTE_PLUGIN_PROFILE = DEFAULT_REMOTE_PROFILE
 
 /** How many output lines an item failure carries (the operator-facing tail). */
 const FAILURE_TAIL_LINES = 5
+
+/**
+ * The desktop's own bundled plugins (`dsh-tauri*`). They ride the connect-time
+ * bundle sync automatically, so the manual sync list must not offer them:
+ * their `link:` specs are local paths that could never resolve remotely, and
+ * listing them as "not syncable" reads as a defect rather than a fact.
+ */
+const BUNDLED_PLUGIN_NAME = /^dsh-tauri(?:-|$)/u
 
 /** Classify one dependency spec: can a remote `dsh plugin add` resolve it? */
 export function classifySpec(spec: string): { syncable: boolean, reason?: string } {
@@ -47,15 +55,16 @@ export function classifySpec(spec: string): { syncable: boolean, reason?: string
 
 /**
  * Build the preview from the local sources: profile dependencies minus the
- * `@deepseek-ai/` core packages (the remote release ships those), and the
- * scanned skill roots. Both halves sorted by name for a stable panel order.
+ * `@deepseek-ai/` core packages (the remote release ships those) and minus
+ * {@link BUNDLED_PLUGIN_NAME} (they sync with the bundle automatically), plus
+ * the scanned skill roots. Both halves sorted by name for a stable panel order.
  * @param dependencies - the profile package.json dependency map.
  * @param skillRoots - per root, the SKILL.md directory names found locally.
  * @returns the preview payload.
  */
 export function buildPreview(dependencies: Record<string, string>, skillRoots: ReadonlyArray<{ root: SyncSkillRoot, names: readonly string[] }>): SyncPreview {
   const plugins: SyncPluginItem[] = Object.entries(dependencies)
-    .filter(([name]) => !name.startsWith('@deepseek-ai/'))
+    .filter(([name]) => !name.startsWith('@deepseek-ai/') && !BUNDLED_PLUGIN_NAME.test(name))
     .map(([name, spec]) => {
       const verdict = classifySpec(spec)
       return {
@@ -76,16 +85,31 @@ export function buildPreview(dependencies: Record<string, string>, skillRoots: R
 }
 
 /**
- * The remote plugin-install command for one spec (dsh add is pnpm-backed).
- * The dsh entry is a Node script in the binary layout, so it always runs
- * under the layout's Node binary (never a bare `dsh` from the login PATH).
+ * The `dsh plugin add` argument for one profile dependency: a git spec is a
+ * complete locator on its own, while a version spec (`^1.0.0`, `latest`) only
+ * means something together with the package name — passing the bare range
+ * makes pnpm reject the install.
+ */
+export function installSpecOf(name: string, spec: string): string {
+  const value = spec.trim()
+  return /^(?:github:|git\+|git@)/u.test(value) ? value : `${name}@${value}`
+}
+
+/**
+ * The remote plugin-install command for one dependency (dsh add is
+ * pnpm-backed). The dsh entry is a Node script in the binary layout, so it
+ * always runs under the layout's Node binary (never a bare `dsh` from the
+ * login PATH).
  * @param dshEntry - the absolute entry path the layout probe resolved.
- * @param spec - the dependency spec to install.
+ * @param target - the install argument, see {@link installSpecOf}.
  * @param profileName - the remote profile to install into.
  * @returns the shell command line.
  */
-export function pluginAddCommand(dshEntry: string, spec: string, profileName: string = REMOTE_PLUGIN_PROFILE): string {
-  return `${layoutNodeBinary()} ${shQuote(dshEntry)} plugin --profile ${shQuote(profileName)} add ${shQuote(spec)}`
+export function pluginAddCommand(dshEntry: string, target: string, profileName: string = REMOTE_PLUGIN_PROFILE): string {
+  // `dsh plugin add` spawns a bare `pnpm`: the layout bin dir carries the
+  // shim the connect pipeline writes (see `ensurePnpmCommand`), so prepend it
+  // to PATH for this command only.
+  return `PATH="${layoutBinDir()}:$PATH" ${layoutNodeBinary()} ${shQuote(dshEntry)} plugin --profile ${shQuote(profileName)} add ${shQuote(target)}`
 }
 
 /** The remote skill-extract command; the tarball arrives on its stdin. */
@@ -204,7 +228,7 @@ export class SyncEngine {
         })
         continue
       }
-      const result = await session.exec(pluginAddCommand(dshEntry, plugin.spec, options.profileName), {
+      const result = await session.exec(pluginAddCommand(dshEntry, installSpecOf(plugin.name, plugin.spec), options.profileName), {
         ...this.deps.commandTimeoutMs === undefined ? {} : { timeoutMs: this.deps.commandTimeoutMs },
       })
       items.push(

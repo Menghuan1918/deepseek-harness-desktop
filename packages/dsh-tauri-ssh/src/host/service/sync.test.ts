@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_REMOTE_PROFILE } from '../storage/index'
 import { MachineId } from '../types/index'
 import { layoutNodeBinary } from './bootstrap'
-import { buildPreview, classifySpec, pluginAddCommand, skillExtractCommand, SyncEngine } from './sync'
+import { buildPreview, classifySpec, installSpecOf, pluginAddCommand, skillExtractCommand, SyncEngine } from './sync'
 
 /** A scripted SSH session: commands dispatched by order or by matcher. */
 function fakeSession(respond: (command: string, options?: { stdinData?: Buffer }) => SshExecResult): SshSession & { execSpy: ReturnType<typeof vi.fn>, closed: () => boolean } {
@@ -79,15 +79,25 @@ describe('buildPreview', () => {
 describe('command builders', () => {
   it('runs the layout entry under the layout node, both quoted', () => {
     expect(pluginAddCommand('/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js', 'github:a/b'))
-      .toBe(`"$HOME/.dsh-desktop/runtime/bin/node" '/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js' plugin --profile '${DEFAULT_REMOTE_PROFILE}' add 'github:a/b'`)
+      .toBe(`PATH="$HOME/.dsh-desktop/runtime/bin:$PATH" "$HOME/.dsh-desktop/runtime/bin/node" '/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js' plugin --profile '${DEFAULT_REMOTE_PROFILE}' add 'github:a/b'`)
     expect(pluginAddCommand('/home/u/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', 'pkg@^1.0.0'))
-      .toBe(`${layoutNodeBinary()} '/home/u/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js' plugin --profile '${DEFAULT_REMOTE_PROFILE}' add 'pkg@^1.0.0'`)
+      .toBe(`PATH="$HOME/.dsh-desktop/runtime/bin:$PATH" ${layoutNodeBinary()} '/home/u/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js' plugin --profile '${DEFAULT_REMOTE_PROFILE}' add 'pkg@^1.0.0'`)
   })
 
   it('installs into the machine profile it is handed, quoted', () => {
     // 隧道只服务这台机器自己的档案：装到别处（历史上的硬编码 web）等于没同步
     expect(pluginAddCommand('/x/bin.js', 'github:a/b', 'work'))
-      .toBe(`${layoutNodeBinary()} '/x/bin.js' plugin --profile 'work' add 'github:a/b'`)
+      .toBe(`PATH="$HOME/.dsh-desktop/runtime/bin:$PATH" ${layoutNodeBinary()} '/x/bin.js' plugin --profile 'work' add 'github:a/b'`)
+  })
+
+  it('composes the install argument: git specs stand alone, version specs need the name', () => {
+    expect(installSpecOf('dsh-market', 'github:omdsh-dev/dsh-market')).toBe('github:omdsh-dev/dsh-market')
+    expect(installSpecOf('p', 'git+https://github.com/a/b.git')).toBe('git+https://github.com/a/b.git')
+    expect(installSpecOf('p', 'git@github.com:a/b.git')).toBe('git@github.com:a/b.git')
+    // 裸范围在远端会被 pnpm 拒（实测 `add '^1.31.1'` 失败、`add 'dshmarket@^1.31.1'` 成功）
+    expect(installSpecOf('dshmarket', '^1.31.1')).toBe('dshmarket@^1.31.1')
+    expect(installSpecOf('p', ' latest ')).toBe('p@latest')
+    expect(installSpecOf('p', '0.16.0')).toBe('p@0.16.0')
   })
 
   it('extracts the streamed tarball into the remote skill home', () => {
@@ -227,6 +237,23 @@ describe('syncEngine.apply', () => {
       [{ name: 'alpha', root: 'dsh' }, { name: 'alpha', root: 'dsh' }],
     )
     expect(deduped.items).toHaveLength(2)
+  })
+
+  it('installs a version-pinned plugin under its package name', async () => {
+    const session = fakeSession((command) => {
+      if (command.includes('printf'))
+        return ok('/dsh\n')
+      return ok()
+    })
+    const sync = new SyncEngine({
+      profileDependencies: () => ({}),
+      scanSkills: () => [],
+      packSkills: async () => Buffer.alloc(0),
+      openSession: async () => session,
+    })
+    await sync.apply(machine, [{ name: 'dshmarket', spec: '^1.31.1' }], [])
+    const add = session.execSpy.mock.calls.map(([command]) => command).find(command => command.includes('plugin --profile'))
+    expect(add).toContain('add \'dshmarket@^1.31.1\'')
   })
 
   it('installs plugins into the profile the options name', async () => {

@@ -507,6 +507,32 @@ export function layoutNodeBinary(): string {
 }
 
 /**
+ * The layout's shared bin directory (unquoted; `$HOME` expands in the remote
+ * shell). It is already on the remote instance's PATH — the start command
+ * exports it — so anything placed here is visible to the instance's own
+ * tooling as well.
+ */
+export function layoutBinDir(): string {
+  return `$HOME/${REMOTE_ROOT}/runtime/bin`
+}
+
+/**
+ * Make the layout's bundled pnpm reachable as a bare `pnpm` on PATH.
+ *
+ * `dsh plugin add` shells out to `pnpm`, but a stock remote install only
+ * ships the binary at `dependencies/pnpm/bin/pnpm.cjs` (the installer uses it
+ * by absolute path) — nothing named `pnpm` exists, so every plugin install
+ * died with `exit 127: dsh: pnpm not found on PATH`. The shim is written
+ * once (an existing one is left alone), runs the layout's own Node and pnpm,
+ * and needs no network: the version is the one the installer already pinned
+ * ({@link PNPM_VERSION}).
+ */
+export function ensurePnpmCommand(): string {
+  const shim = `#!/bin/sh\nexec "$HOME/${REMOTE_ROOT}/runtime/bin/node" "$HOME/${REMOTE_ROOT}/dependencies/pnpm/${PNPM_ENTRY}" "$@"\n`
+  return `B="${layoutBinDir()}"; [ -x "$B/pnpm" ] || { mkdir -p "$B" && printf %s ${shQuote(shim)} > "$B/pnpm" && chmod +x "$B/pnpm"; }`
+}
+
+/**
  * The installed dsh-entry probe for command-driving callers (the sync
  * engine): prints the first entry the binary layout actually holds — zip
  * layout first, npm layout second, the same precedence as

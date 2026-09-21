@@ -92,7 +92,7 @@ class FakeSession implements SshSession {
   private closedCallbacks: Array<() => void> = []
 
   constructor(
-    public healthHealthy: (commandIndex: number) => boolean,
+    public healthHealthy: (probeIndex: number) => boolean,
     public connectError?: Error,
     public startError?: Error,
     public installError?: Error,
@@ -144,11 +144,16 @@ class FakeSession implements SshSession {
           return { code: 127, stdout: '', stderr: this.startError.message }
         return { code: 0, stdout: '远端实例已拉起', stderr: '' }
       }
-      const healthy = this.healthHealthy(this.commands.length - 1)
+      // 探测序号而非命令序号：连接流程里插入与探测无关的命令（pnpm 垫片）不该
+      // 移动「第几次探测」的语义，否则守卫用例会被无关改动带崩。计数只在探测
+      // 分支里推进——落到兜底返回的命令不是探测。
       if (command.includes('/dev/null')) {
-        return healthy ? { code: 0, stdout: '200', stderr: '' } : { code: 7, stdout: '', stderr: 'refused' }
+        return this.healthHealthy(this.probesAnswered++)
+          ? { code: 0, stdout: '200', stderr: '' }
+          : { code: 7, stdout: '', stderr: 'refused' }
       }
       if (command.includes('curl')) {
+        const healthy = this.healthHealthy(this.probesAnswered++)
         if (!healthy)
           return { code: 7, stdout: '', stderr: 'refused' }
         // The bundle probe (status-suffixed) answers JavaScript; the root
@@ -164,6 +169,9 @@ class FakeSession implements SshSession {
       return Promise.resolve(respond())
     return gate.then(respond)
   }
+
+  /** Probes answered so far (the health predicate's argument). */
+  private probesAnswered = 0
 
   /** The stdout the credentials-copy command answers (default: copied). */
   credentialsAnswer = 'copied'
@@ -244,6 +252,15 @@ function tempKnownHosts(): KnownHostsStore {
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
+
+/**
+ * The bootstrap flow's own commands, without the connect-time prelude (the
+ * idempotent pnpm-shim write). Flow assertions stay about the bootstrap, and
+ * a new prelude step never renumbers them.
+ */
+function bootstrapFlowCommands(session: FakeSession): string[] {
+  return session.commands.filter(command => !command.includes('chmod +x "$B/pnpm"'))
+}
 
 /** Wait until the predicate holds (background reconnect races). */
 async function until(predicate: () => boolean, label: string): Promise<void> {
@@ -355,11 +372,12 @@ describe('sshManager', () => {
     const session = new FakeSession(index => index !== 0)
     const { manager } = boot({ sessionFactory: () => session })
     await manager.connect(MachineId('m1'))
-    expect(session.commands[0]).toContain('curl')
-    expect(session.commands[1]).toBe('uname -srm')
-    expect(session.commands[2]).toContain('echo node')
-    expect(session.commands[3]).toContain('dsh-remote.pid')
-    expect(session.commands[3]).toContain('--host 127.0.0.1')
+    const flow = bootstrapFlowCommands(session)
+    expect(flow[0]).toContain('curl')
+    expect(flow[1]).toBe('uname -srm')
+    expect(flow[2]).toContain('echo node')
+    expect(flow[3]).toContain('dsh-remote.pid')
+    expect(flow[3]).toContain('--host 127.0.0.1')
     expect(manager.status(MachineId('m1')).state).toBe('connected')
   })
 
@@ -369,6 +387,17 @@ describe('sshManager', () => {
     expect(manager.profileName(MachineId('m1'))).toBe('remote')
     expect(manager.profileName(MachineId('m2'))).toBe('work')
     expect(manager.profileName(MachineId('unknown'))).toBe('remote')
+  })
+
+  it('writes the remote pnpm shim on connect and reports it on the event channel', async () => {
+    const session = new FakeSession(index => index !== 0)
+    const { manager, events } = boot({ sessionFactory: () => session })
+    await manager.connect(MachineId('m1'))
+    const ensure = session.commands.find(command => command.includes('dependencies/pnpm/bin/pnpm.cjs'))
+    expect(ensure).toBeDefined()
+    expect(ensure).toContain('chmod +x')
+    const lines = events.since(MachineId('m1')).events.map(event => event.line)
+    expect(lines.some(line => line.includes('pnpm 垫片就绪'))).toBe(true)
   })
 
   it('publishes and clears externally driven progress (the sync engine)', () => {
@@ -803,7 +832,7 @@ describe('sshManager install', () => {
     let sessions = 0
     const factory = () => {
       sessions += 1
-      const session = new FakeSession(index => sessions === 2 && index >= 4)
+      const session = new FakeSession(index => sessions === 2 && index >= 1)
       if (sessions === 1)
         session.missingResult = 'node\ndsh\npnpm\n'
       return session
@@ -1183,7 +1212,7 @@ describe('sshManager install', () => {
     let sessions = 0
     const factory = () => {
       sessions += 1
-      const session = new FakeSession(index => sessions >= 2 && index >= 4)
+      const session = new FakeSession(index => sessions >= 2 && index >= 1)
       // The first (failed) connect finds the runtime incomplete; the install
       // and the auto-connect see it whole.
       if (sessions === 1)

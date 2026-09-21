@@ -17,6 +17,7 @@ import {
   createBootstrapLineDispatcher,
   credentialsCopyCommand,
   describeExecFailure,
+  ensurePnpmCommand,
   ensureRemoteInstance,
   firstLineOf,
   legacyProbeCommand,
@@ -527,6 +528,55 @@ describe('install script execution (real POSIX sh)', () => {
     expect(existsSync(join(root, 'dependencies', 'dsh', 'lib', 'bin.js'))).toBe(true)
     expect(existsSync(join(root, 'runtime', 'bin', 'node'))).toBe(true)
     expect(existsSync(join(root, 'dependencies', 'pnpm', 'bin', 'pnpm.cjs'))).toBe(true)
+  })
+})
+
+describe('remote pnpm shim (real POSIX sh)', () => {
+  /** Run a generated command under the real `sh` inside a sandboxed HOME. */
+  async function runCommand(command: string, sandbox: string): Promise<{ code: number, stdout: string, stderr: string }> {
+    const scriptPath = join(sandbox, 'command.sh')
+    writeFileSync(scriptPath, command)
+    const run = promisify(execFile)
+    return run('sh', [scriptPath], { env: { ...process.env, HOME: sandbox } }).then(
+      ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+      (error: { code?: number, stdout?: string, stderr?: string }) =>
+        ({ code: error.code ?? -1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }),
+    )
+  }
+
+  it('writes a shim that runs the layout pnpm under the layout node', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'pnpm-shim-'))
+    try {
+      const bin = join(sandbox, REMOTE_ROOT, 'runtime', 'bin')
+      const entry = join(sandbox, REMOTE_ROOT, 'dependencies', 'pnpm', 'bin', 'pnpm.cjs')
+      mkdirSync(bin, { recursive: true })
+      mkdirSync(join(sandbox, REMOTE_ROOT, 'dependencies', 'pnpm', 'bin'), { recursive: true })
+      // 布局里的 node 与 pnpm 用桩件代替：断言垫片确实按「布局 node + 布局 pnpm」转发
+      writeFileSync(join(bin, 'node'), `#!/bin/sh\nprintf 'node:%s\\n' "$*"\n`)
+      chmodSync(join(bin, 'node'), 0o755)
+      writeFileSync(entry, 'stub')
+
+      const first = await runCommand(ensurePnpmCommand(), sandbox)
+      expect(first.code).toBe(0)
+      const shim = join(bin, 'pnpm')
+      expect(existsSync(shim)).toBe(true)
+      expect(statSync(shim).mode & 0o111).not.toBe(0)
+      expect(readFileSync(shim, 'utf8')).toContain(`exec "$HOME/${REMOTE_ROOT}/runtime/bin/node" "$HOME/${REMOTE_ROOT}/dependencies/pnpm/bin/pnpm.cjs" "$@"`)
+
+      // 垫片可执行，并按布局 node + 布局 pnpm 转发参数
+      const forwarded = await runCommand(`"${shim}" install --prod`, sandbox)
+      expect(forwarded.stdout).toContain(`node:${entry} install --prod`)
+
+      // 幂等：已有垫片不再改写（改成哨兵内容后重跑，内容保持不变）
+      writeFileSync(shim, '#!/bin/sh\necho sentinel\n')
+      chmodSync(shim, 0o755)
+      const second = await runCommand(ensurePnpmCommand(), sandbox)
+      expect(second.code).toBe(0)
+      expect(readFileSync(shim, 'utf8')).toContain('sentinel')
+    }
+    finally {
+      rmSync(sandbox, { recursive: true, force: true })
+    }
   })
 })
 
