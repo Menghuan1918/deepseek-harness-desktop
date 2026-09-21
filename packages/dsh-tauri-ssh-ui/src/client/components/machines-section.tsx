@@ -441,6 +441,7 @@ const STEP_KEY_OF: Record<ProgressPhase, SshKey> = {
   installing: 'step.installing',
   starting: 'step.starting',
   probing: 'step.probing',
+  syncing: 'step.syncing',
 }
 
 /** The step rail: the phases one operation actually walked, latest current. */
@@ -494,6 +495,11 @@ function statusTextOf(status: MachineStatus | undefined, t: (key: SshKey) => str
     return t('progress.installing')
   if (progress?.phase === 'probing') {
     return t('progress.probing')
+      .replace('{attempt}', String(progress.attempt ?? '?'))
+      .replace('{total}', String(progress.total ?? '?'))
+  }
+  if (progress?.phase === 'syncing') {
+    return t('progress.syncing')
       .replace('{attempt}', String(progress.attempt ?? '?'))
       .replace('{total}', String(progress.total ?? '?'))
   }

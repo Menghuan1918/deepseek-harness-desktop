@@ -129,15 +129,17 @@ export type SshConnectionState
 export type SshAuthMethod = 'agent' | 'key' | 'password'
 
 /** One progress phase of a connection-plane operation, shown live in the UI. */
-export type SshProgressPhase = 'handshake' | 'starting' | 'probing' | 'installing'
+export type SshProgressPhase = 'handshake' | 'starting' | 'probing' | 'installing' | 'syncing'
 
 /** Structured progress of an in-flight connection-plane operation. */
 export interface SshProgress {
   phase: SshProgressPhase
-  /** Progress position (e.g. health-probe attempt number). */
+  /** Progress position (health-probe attempt, or the sync item's 1-based index). */
   attempt?: number
-  /** Progress total (e.g. health-probe attempt budget). */
+  /** Progress total (health-probe attempt budget, or the sync item count). */
   total?: number
+  /** Display label of the work in flight (the sync item's name). */
+  item?: string
   /** Recent streaming output of the operation (the install log), newest last. */
   log?: string
 }

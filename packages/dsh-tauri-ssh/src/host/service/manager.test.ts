@@ -25,6 +25,7 @@ const secondProfile: MachineProfile = {
   ...profile,
   id: MachineId('m2'),
   name: 'beta',
+  profileName: 'work',
 }
 
 const config = {
@@ -360,6 +361,26 @@ describe('sshManager', () => {
     expect(session.commands[3]).toContain('dsh-remote.pid')
     expect(session.commands[3]).toContain('--host 127.0.0.1')
     expect(manager.status(MachineId('m1')).state).toBe('connected')
+  })
+
+  it('reports the profile a machine serves, defaulting when unset', () => {
+    const { manager } = boot()
+    // boot()'s m1 has no profileName; the second profile pins one.
+    expect(manager.profileName(MachineId('m1'))).toBe('remote')
+    expect(manager.profileName(MachineId('m2'))).toBe('work')
+    expect(manager.profileName(MachineId('unknown'))).toBe('remote')
+  })
+
+  it('publishes and clears externally driven progress (the sync engine)', () => {
+    const { manager, emits } = boot()
+    manager.setProgress(MachineId('m1'), { phase: 'syncing', attempt: 3, total: 13, item: 'dsh-tauri-ssh' })
+    expect(manager.status(MachineId('m1')).progress).toEqual({ phase: 'syncing', attempt: 3, total: 13, item: 'dsh-tauri-ssh' })
+    manager.setProgress(MachineId('m1'))
+    expect(manager.status(MachineId('m1')).progress).toBeUndefined()
+    expect(emits.map(entry => entry.progress)).toEqual([
+      { phase: 'syncing', attempt: 3, total: 13, item: 'dsh-tauri-ssh' },
+      undefined,
+    ])
   })
 
   it('publishes live progress phases while connecting', async () => {

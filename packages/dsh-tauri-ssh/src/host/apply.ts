@@ -302,7 +302,19 @@ export class SshRemoteService implements SshApiHost {
    */
   async syncApply(machineId: MachineId, plugins: SyncPluginRef[], skills: SyncSkillRef[]): Promise<SyncApplyResult> {
     await this.syncProfiles()
-    return await this.sync.apply(machineId, plugins, skills)
+    try {
+      // 逐条进度经机器状态发布：设置页只轮询 machine.status，同步是本服务里
+      // 唯一「一条请求跑几分钟」的操作，不报进度就只能干等。
+      return await this.sync.apply(machineId, plugins, skills, {
+        // 装进这台机器真正在跑的档案：隧道只服务那一个 profile，装到别处
+        // （历史上的硬编码 web）等于没同步。
+        profileName: this.manager.profileName(machineId),
+        onItem: (position, total, item) => this.manager.setProgress(machineId, { phase: 'syncing', attempt: position, total, item }),
+      })
+    }
+    finally {
+      this.manager.setProgress(machineId)
+    }
   }
 }
 

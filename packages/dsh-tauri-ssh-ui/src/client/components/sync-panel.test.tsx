@@ -72,49 +72,72 @@ function connectedStore(fetchFn: FetchMock): MachinesStore {
 }
 
 describe('syncPanel', () => {
-  it('keeps every independently selected item (multi-select, not a radio group)', async () => {
+  it('starts with every syncable item ticked and keeps independent tick state', async () => {
     const store = connectedStore(routeFetch({ 'machine.list': { items: [] } }))
     render(<SyncPanel store={store} t={t} />)
-    await waitFor(() => expect(screen.getByTestId('sync-plugin-dsh-market')).toBeTruthy())
-    const plugin = screen.getByTestId('sync-plugin-dsh-market')
-    const skill = screen.getByTestId('sync-skill-dsh-alpha')
-    expect(plugin.getAttribute('aria-pressed')).toBe('false')
-    fireEvent.click(plugin)
-    fireEvent.click(skill)
-    expect(screen.getByTestId('sync-plugin-dsh-market').getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByTestId('sync-skill-dsh-alpha').getAttribute('aria-pressed')).toBe('true')
-    // Deselecting one leaves the others selected — the chip defect fix.
-    fireEvent.click(screen.getByTestId('sync-plugin-dsh-market'))
-    expect(screen.getByTestId('sync-plugin-dsh-market').getAttribute('aria-pressed')).toBe('false')
-    expect(screen.getByTestId('sync-skill-dsh-alpha').getAttribute('aria-pressed')).toBe('true')
+    await waitFor(() => expect(screen.getByTestId('sync-row-dsh-market')).toBeTruthy())
+    // 默认=全选可同步项（不可同步的 local-thing 恒不勾）
+    expect(screen.getByTestId('sync-row-dsh-market').getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByTestId('sync-row-alpha').getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByTestId('sync-row-beta').getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByTestId('sync-row-local-thing').getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByTestId('sync-selected').textContent).toContain('1 plugins and 2 skills selected')
+
+    // 取消一项不动其它项（多选而非单选）
+    fireEvent.click(screen.getByTestId('sync-row-dsh-market'))
+    expect(screen.getByTestId('sync-row-dsh-market').getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByTestId('sync-row-alpha').getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByTestId('sync-selected').textContent).toContain('0 plugins and 2 skills selected')
+
+    // 清空 → 全选回来，计数复位
+    fireEvent.click(screen.getByText('Clear'))
+    expect(screen.getByTestId('sync-row-alpha').getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(screen.getByText('Select all'))
+    expect(screen.getByTestId('sync-row-dsh-market').getAttribute('aria-checked')).toBe('true')
   })
 
   it('disables unsyncable plugins and shows their reason', async () => {
     const store = connectedStore(routeFetch({ 'machine.list': { items: [] } }))
     render(<SyncPanel store={store} t={t} />)
-    await waitFor(() => expect(screen.getByTestId('sync-plugin-local-thing')).toBeTruthy())
-    expect(screen.getByTestId('sync-plugin-local-thing').hasAttribute('disabled')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('sync-row-local-thing')).toBeTruthy())
+    expect(screen.getByTestId('sync-row-local-thing').hasAttribute('disabled')).toBe(true)
     expect(screen.getByText(/local-path dependency/)).toBeTruthy()
   })
 
-  it('sends the whole multi-selection to sync.apply', async () => {
+  it('sends the whole ticked selection to sync.apply', async () => {
     const fetchFn = routeFetch({ 'sync.apply': { items: [] } })
     const store = connectedStore(fetchFn)
     render(<SyncPanel store={store} t={t} />)
     await waitFor(() => expect(screen.getByTestId('sync-apply')).toBeTruthy())
-    fireEvent.click(screen.getByTestId('sync-plugin-dsh-market'))
-    fireEvent.click(screen.getByTestId('sync-skill-agents-beta'))
+    // 默认全选：一次点击就该带走全部可同步项，不可同步项被排除在外
     fireEvent.click(screen.getByTestId('sync-apply'))
     await waitFor(() => expect(applyCalls(fetchFn)).toHaveLength(1))
     expect(applyCalls(fetchFn)[0]).toEqual({
       machineId: 'a',
       plugins: [{ name: 'dsh-market', spec: 'github:omdsh/dsh-market' }],
-      skills: [{ name: 'beta', root: 'agents' }],
+      skills: [{ name: 'alpha', root: 'dsh' }, { name: 'beta', root: 'agents' }],
     })
   })
 
-  it('renders partial failures per item with reasons', async () => {
-    const store = connectedStore(routeFetch({}))
+  it('shows per-item live progress while an apply runs', async () => {
+    const store = connectedStore(routeFetch({ 'machine.list': { items: [] } }))
+    store.store.update((state) => {
+      state.sync.applying = true
+      state.statuses = { a: { state: 'connected', progress: { phase: 'syncing', attempt: 3, total: 5, item: 'dsh-tauri-ssh-ui' } } }
+    })
+    render(<SyncPanel store={store} t={t} />)
+    await waitFor(() => expect(screen.getByTestId('sync-progress')).toBeTruthy())
+    expect(screen.getByTestId('sync-progress').textContent).toContain('3/5')
+    expect(screen.getByTestId('sync-progress').textContent).toContain('dsh-tauri-ssh-ui')
+    // 3/5 起跑（已完成 2 项）→ 进度条 40%
+    const fill = screen.getByTestId('sync-progress').querySelector('[class*="sync-bar-fill"]') as HTMLElement
+    expect(fill.style.width).toBe('40%')
+    expect(screen.getByTestId('sync-apply').textContent).toContain('Syncing')
+  })
+
+  it('renders partial failures per item with reasons and a retry that re-sends only them', async () => {
+    const fetchFn = routeFetch({ 'sync.apply': { items: [] }, 'machine.list': { items: [] } })
+    const store = connectedStore(fetchFn)
     store.store.update((state) => {
       state.sync.results = [
         { kind: 'plugin', name: 'dsh-market', ok: true },
@@ -128,7 +151,15 @@ describe('syncPanel', () => {
     expect(failed.dataset.ok).toBe('false')
     expect(failed.textContent).toContain('read-only file system')
     expect(failed.textContent).toContain('(dsh)')
-    expect(screen.getByText(/1\/2 items succeeded/)).toBeTruthy()
+    expect(screen.getByText(/1 succeeded, 1 failed/)).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('sync-retry'))
+    await waitFor(() => expect(applyCalls(fetchFn)).toHaveLength(1))
+    expect(applyCalls(fetchFn)[0]).toEqual({
+      machineId: 'a',
+      plugins: [],
+      skills: [{ name: 'alpha', root: 'dsh' }],
+    })
   })
 
   it('renders a complete failure with every reason visible', async () => {
@@ -141,7 +172,7 @@ describe('syncPanel', () => {
     })
     render(<SyncPanel store={store} t={t} />)
     await waitFor(() => expect(screen.getByTestId('sync-results')).toBeTruthy())
-    expect(screen.getByText(/0\/2 items succeeded/)).toBeTruthy()
+    expect(screen.getByText(/0 succeeded, 2 failed/)).toBeTruthy()
     expect(screen.getByTestId('sync-result-dsh-market').textContent).toContain('ERR_PNPM_NO_MATCH')
     expect(screen.getByTestId('sync-result-alpha').textContent).toContain('read-only file system')
   })
@@ -149,11 +180,45 @@ describe('syncPanel', () => {
   it('surfaces a request-level failure without swallowing previous results', async () => {
     const fetchFn = routeFetch({ 'sync.apply': { items: [] } }, ['sync.apply'])
     const store = connectedStore(fetchFn)
+    store.store.update((state) => {
+      state.sync.results = [{ kind: 'plugin', name: 'dsh-market', ok: true }]
+    })
     render(<SyncPanel store={store} t={t} />)
     await waitFor(() => expect(screen.getByTestId('sync-apply')).toBeTruthy())
-    fireEvent.click(screen.getByTestId('sync-plugin-dsh-market'))
     fireEvent.click(screen.getByTestId('sync-apply'))
     await waitFor(() => expect(screen.getByText(/The sync request failed: sync.apply broke/)).toBeTruthy())
+    expect(screen.getByTestId('sync-result-dsh-market')).toBeTruthy()
+  })
+
+  it('disables apply with an empty tick set', async () => {
+    const store = connectedStore(routeFetch({ 'machine.list': { items: [] } }))
+    render(<SyncPanel store={store} t={t} />)
+    await waitFor(() => expect(screen.getByText('Clear')).toBeTruthy())
+    fireEvent.click(screen.getByText('Clear'))
+    expect(screen.getByTestId('sync-apply').hasAttribute('disabled')).toBe(true)
+  })
+
+  it('loads the machine list itself and offers the connected machine as the target', async () => {
+    // 本分区可以不经机器页直达：store 还没拉过列表时它必须自己拉一次，
+    // 否则已连接的机器在这里看不见（回归：首版漏了这步，页面永远显示空态）。
+    const fetchFn = routeFetch({
+      'machine.list': { items: [{ ...machineA, state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:1' }] },
+      'sync.preview': preview,
+    })
+    const store = new MachinesStore(fetchFn)
+    render(<SyncPanel store={store} t={t} />)
+    await waitFor(() => expect(screen.getByTestId('sync-target-a')).toBeTruthy())
+    expect(apiMethods(fetchFn)).toContain('machine.list')
+    expect(screen.getByTestId('sync-apply').textContent).toContain('Sync to alpha')
+    expect(screen.queryByTestId('sync-empty')).toBeNull()
+  })
+
+  it('points a remote-session instance back at the initiating machine', async () => {
+    const store = new MachinesStore(routeFetch({ 'machine.list': { items: [] }, 'session.role': { remote: true, origin: 'ops' } }))
+    render(<SyncPanel store={store} t={t} />)
+    await waitFor(() => expect(screen.getByTestId('sync-remote-note')).toBeTruthy())
+    expect(screen.getByTestId('sync-remote-note').textContent).toContain('Sync to remote')
+    expect(screen.queryByTestId('sync-apply')).toBeNull()
   })
 
   it('shows the not-connected note when no machine is connected', async () => {
@@ -165,7 +230,8 @@ describe('syncPanel', () => {
       state.sync = { status: 'ready', error: null, preview, applying: false, results: null }
     })
     render(<SyncPanel store={store} t={t} />)
-    await waitFor(() => expect(screen.getByText(/No connected machines/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('sync-empty')).toBeTruthy())
+    expect(screen.getByTestId('sync-empty').textContent).toContain('No connected machines')
     expect(screen.queryByTestId('sync-apply')).toBeNull()
   })
 
@@ -179,6 +245,11 @@ describe('syncPanel', () => {
     await waitFor(() => expect(screen.getByText(/Failed to load the sync list: sync.preview broke/)).toBeTruthy())
   })
 })
+
+/** The /api-ssh methods the fake fetch received, in call order. */
+function apiMethods(fetchFn: ReturnType<typeof vi.fn>): string[] {
+  return fetchFn.mock.calls.map(call => (JSON.parse(String(call[1]?.body)) as { method: string }).method)
+}
 
 /** The sync.apply request bodies the fake fetch received. */
 function applyCalls(fetchFn: ReturnType<typeof vi.fn>): Array<Record<string, unknown>> {

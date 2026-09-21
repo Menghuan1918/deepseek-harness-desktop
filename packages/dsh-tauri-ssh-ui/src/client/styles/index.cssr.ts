@@ -502,16 +502,7 @@ export default c([
     color: 'var(--dsw-alias-label-tertiary)',
   }),
 
-  /* The sync panel (a section-level group under the machine list). */
-  c('.dshp-ssh-sync-panel', {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-    marginTop: '12px',
-    paddingTop: '12px',
-    borderTop: '1px solid var(--dsw-alias-border-l2)',
-  }),
-
+  /* The sync page: target chips, selection rows, progress, outcomes. */
   c('.dshp-ssh-sync-targets', {
     display: 'flex',
     alignItems: 'center',
@@ -519,15 +510,36 @@ export default c([
     flexWrap: 'wrap',
   }),
 
-  c('.dshp-ssh-sync-groups', {
+  /* A target chip's inner line: connection dot + machine name. */
+  c('.dshp-ssh-sync-chip', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+  }),
+
+  c('.dshp-ssh-sync-toolbar', {
     display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+    paddingTop: '2px',
+  }),
+
+  c('.dshp-ssh-sync-count', {
+    fontSize: '12px',
+    lineHeight: '18px',
+    color: 'var(--dsw-alias-label-secondary)',
   }),
 
   c('.dshp-ssh-sync-group', {
     display: 'flex',
     flexDirection: 'column',
+    gap: '6px',
+  }),
+
+  c('.dshp-ssh-sync-group-head', {
+    display: 'flex',
+    alignItems: 'center',
     gap: '6px',
   }),
 
@@ -537,7 +549,7 @@ export default c([
     padding: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: '4px',
+    gap: '2px',
   }),
 
   c('.dshp-ssh-sync-item', {
@@ -547,30 +559,141 @@ export default c([
     flexWrap: 'wrap',
   }),
 
-  c('.dshp-ssh-sync-reason', {
-    fontSize: '12px',
-    lineHeight: '18px',
-    color: 'var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-tertiary))',
+  /*
+   * One selectable row: the whole line is the hit target (checkbox + name +
+   * metadata), so ticking does not require hitting a 12px box. Hover/focus
+   * reuse the interactive tokens the primitives use.
+   */
+  c('.dshp-ssh-sync-row', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flex: 1,
+    minWidth: 0,
+    padding: '5px 8px',
+    border: 0,
+    borderRadius: '6px',
+    background: 'transparent',
+    color: 'inherit',
+    font: 'inherit',
+    textAlign: 'left',
+    cursor: 'pointer',
   }),
 
-  /* The root tag inside a skill pill. */
-  c('.dshp-ssh-sync-root', {
-    marginLeft: '6px',
-    fontSize: '10px',
-    lineHeight: '14px',
+  c('.dshp-ssh-sync-row:hover', {
+    background: 'var(--dsw-alias-interactive-bg-hover)',
+  }),
+
+  c('.dshp-ssh-sync-row:disabled', {
+    cursor: 'not-allowed',
+    opacity: 0.6,
+  }),
+
+  c('.dshp-ssh-sync-box', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    width: '14px',
+    height: '14px',
+    border: '1px solid var(--dsw-alias-border-l4)',
+    borderRadius: '4px',
+    color: 'var(--dsw-alias-label-primary-foreground)',
+  }),
+
+  c('.dshp-ssh-sync-row[aria-checked="true"] .dshp-ssh-sync-box', {
+    borderColor: 'var(--dsw-alias-brand-primary)',
+    background: 'var(--dsw-alias-brand-primary)',
+  }),
+
+  /* 名称与「为何不可同步」的两行文本列：原因收进行内，行宽才对得齐 */
+  c('.dshp-ssh-sync-text', {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '1px',
+    flex: 1,
+    minWidth: 0,
+  }),
+
+  c('.dshp-ssh-sync-name', {
+    fontSize: '13px',
+    lineHeight: '20px',
+    color: 'var(--dsw-alias-label-primary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  }),
+
+  c('.dshp-ssh-sync-meta', {
+    flexShrink: 0,
+    marginLeft: 'auto',
+    paddingLeft: '8px',
+    maxWidth: '40%',
+    fontSize: '11px',
+    lineHeight: '16px',
     color: 'var(--dsw-alias-label-tertiary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  }),
+
+  c('.dshp-ssh-sync-reason', {
+    fontSize: '11px',
+    lineHeight: '16px',
+    color: 'var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-tertiary))',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   }),
 
   c('.dshp-ssh-sync-actions', {
     display: 'flex',
     alignItems: 'center',
+    gap: '10px',
+    flexWrap: 'wrap',
+    paddingTop: '2px',
+  }),
+
+  c('.dshp-ssh-sync-progress', {
+    display: 'flex',
+    alignItems: 'center',
     gap: '8px',
+    flex: 1,
+    minWidth: '220px',
+  }),
+
+  c('.dshp-ssh-sync-bar', {
+    display: 'block',
+    flex: 1,
+    height: '4px',
+    borderRadius: '2px',
+    background: 'var(--dsw-alias-border-l2)',
+    overflow: 'hidden',
+  }),
+
+  c('.dshp-ssh-sync-bar-fill', {
+    display: 'block',
+    height: '100%',
+    borderRadius: '2px',
+    background: 'var(--dsw-alias-brand-primary)',
+    transition: 'width 200ms ease',
+  }),
+
+  c('.dshp-ssh-sync-progress-text', {
+    flexShrink: 0,
+    fontSize: '12px',
+    lineHeight: '18px',
+    color: 'var(--dsw-alias-label-secondary)',
   }),
 
   c('.dshp-ssh-sync-results', {
     display: 'flex',
     flexDirection: 'column',
+    alignItems: 'flex-start',
     gap: '6px',
+    marginTop: '4px',
+    paddingTop: '12px',
+    borderTop: '1px solid var(--dsw-alias-border-l2)',
   }),
 
   c('.dshp-ssh-sync-summary', {

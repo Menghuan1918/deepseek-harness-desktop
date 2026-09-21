@@ -48,7 +48,7 @@ export interface SecretValues {
 }
 
 /** The pipeline phases one connection-plane operation walks through. */
-export type ProgressPhase = 'handshake' | 'installing' | 'starting' | 'probing'
+export type ProgressPhase = 'handshake' | 'installing' | 'starting' | 'probing' | 'syncing'
 
 /** Live transport status of one machine, from the /api-ssh list. */
 export interface MachineStatus {
@@ -63,7 +63,7 @@ export interface MachineStatus {
   /** Whether the last failure was "dsh not installed on the remote" (offers install). */
   dshMissing?: boolean
   /** Live progress of the in-flight operation (phase codes translated by the UI). */
-  progress?: { phase: ProgressPhase, attempt?: number, total?: number, log?: string }
+  progress?: { phase: ProgressPhase, attempt?: number, total?: number, item?: string, log?: string }
 }
 
 /** Outcome of a machine.install call (the host's install result). */
@@ -89,7 +89,11 @@ export interface SyncPanelState {
   preview: SyncPreview | null
   /** Whether a sync.apply is in flight. */
   applying: boolean
-  /** The latest apply outcome, one entry per requested item; null before the first. */
+  /**
+   * Apply outcomes keyed by item (kind:root:name); a retry overwrites its own
+   * entries instead of dropping the earlier batch, so the list stays a running
+   * record of this page. Null before the first apply.
+   */
   results: SyncItemResult[] | null
 }
 
@@ -261,6 +265,45 @@ export function toggleSelection(selected: ReadonlySet<string>, key: string): Set
   else
     next.add(key)
   return next
+}
+
+/**
+ * The selection key of one preview plugin — identical in shape to the outcome
+ * key {@link syncKeyOf} derives, so a selection and its result never drift.
+ */
+export function pluginKeyOf(plugin: { name: string }): string {
+  return `plugin::${plugin.name}`
+}
+
+/** The selection key of one preview skill (same shape as the outcome key). */
+export function skillKeyOf(skill: { name: string, root: string }): string {
+  return `skill:${skill.root}:${skill.name}`
+}
+
+/** The outcome key of one settled sync item. */
+export function syncKeyOf(item: SyncItemResult): string {
+  return `${item.kind}:${item.root ?? ''}:${item.name}`
+}
+
+/**
+ * Merge one apply batch into the running outcome list: an item that ran again
+ * (a retry) replaces its own entry in place, a new item appends. Without this
+ * a retry would wipe the earlier batch and hide which items had succeeded.
+ */
+export function mergeSyncResults(previous: readonly SyncItemResult[], incoming: readonly SyncItemResult[]): SyncItemResult[] {
+  const merged = [...previous]
+  const at = new Map(merged.map((item, index) => [syncKeyOf(item), index]))
+  for (const item of incoming) {
+    const index = at.get(syncKeyOf(item))
+    if (index === undefined) {
+      at.set(syncKeyOf(item), merged.length)
+      merged.push(item)
+    }
+    else {
+      merged[index] = item
+    }
+  }
+  return merged
 }
 
 /** Parse one /api-ssh envelope; non-ok envelopes throw. */
@@ -735,7 +778,7 @@ export class MachinesStore {
       if (result === null)
         throw new Error('malformed sync.apply payload')
       this.store.update((state) => {
-        state.sync.results = result.items
+        state.sync.results = mergeSyncResults(state.sync.results ?? [], result.items)
       })
     }
     catch (error) {

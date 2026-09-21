@@ -1,6 +1,6 @@
 import type { FetchFn, MachineRow, SshApiResponse } from './index'
 import { describe, expect, it, vi } from 'vitest'
-import { machineEventsOf, machineRowOf, MachinesStore, savePayloadOf, toggleSelection } from './index'
+import { machineEventsOf, machineRowOf, MachinesStore, mergeSyncResults, savePayloadOf, toggleSelection } from './index'
 
 type FetchMock = ReturnType<typeof vi.fn<FetchFn>>
 
@@ -628,5 +628,44 @@ describe('sync state', () => {
     const store = new MachinesStore(fetchFn)
     await store.applySync('a', [{ name: 'p', spec: 'github:a/b', syncable: true }], [])
     expect(store.getSnapshot().sync).toMatchObject({ applying: false, error: 'ssh down' })
+  })
+
+  it('merges a retry batch over its own entries and appends new ones', async () => {
+    const fetchFn = syncFetch({
+      'sync.apply': { items: [
+        { kind: 'plugin', name: 'p', ok: false, error: 'exit 1' },
+        { kind: 'skill', name: 's', root: 'dsh', ok: true },
+      ] },
+    })
+    const store = new MachinesStore(fetchFn)
+    await store.applySync('a', [{ name: 'p', spec: 'github:a/b', syncable: true }], [{ name: 's', root: 'dsh' }])
+    // 重试 p：成功，且 s 的既有结论不被抹掉
+    fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: true, value: { items: [{ kind: 'plugin', name: 'p', ok: true }] } }) } as unknown as Response)
+    await store.applySync('a', [{ name: 'p', spec: 'github:a/b', syncable: true }], [])
+    expect(store.getSnapshot().sync.results).toEqual([
+      { kind: 'plugin', name: 'p', ok: true },
+      { kind: 'skill', name: 's', root: 'dsh', ok: true },
+    ])
+  })
+})
+
+describe('mergeSyncResults', () => {
+  const ok = (name: string): { kind: 'plugin', name: string, ok: boolean } => ({ kind: 'plugin', name, ok: true })
+
+  it('keeps the first-seen order and replaces in place', () => {
+    const merged = mergeSyncResults([ok('a'), ok('b')], [{ kind: 'plugin', name: 'b', ok: false, error: 'boom' }])
+    expect(merged).toEqual([ok('a'), { kind: 'plugin', name: 'b', ok: false, error: 'boom' }])
+  })
+
+  it('appends unseen items and separates skills by root', () => {
+    const merged = mergeSyncResults(
+      [{ kind: 'skill', name: 'alpha', root: 'dsh', ok: true }],
+      [{ kind: 'skill', name: 'alpha', root: 'agents', ok: false }, ok('c')],
+    )
+    expect(merged.map(item => `${item.kind}:${item.root ?? ''}:${item.name}`)).toEqual([
+      'skill:dsh:alpha',
+      'skill:agents:alpha',
+      'plugin::c',
+    ])
   })
 })

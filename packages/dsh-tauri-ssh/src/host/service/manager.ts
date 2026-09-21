@@ -141,6 +141,34 @@ export class SshManager {
     return [...this.profiles.keys()].map(id => this.status(id))
   }
 
+  /**
+   * The remote dsh profile this machine serves (its configured name, falling
+   * back to the default). Callers that install plugins on the remote must
+   * target it: the tunnel only ever serves this one profile.
+   * @param machineId - the machine to look up.
+   * @returns the shell-safe profile name.
+   */
+  profileName(machineId: MachineId): string {
+    return safeProfileName(this.profiles.get(machineId)?.profileName)
+  }
+
+  /**
+   * Publish (or clear, with no value) the live progress of an operation the
+   * manager does not own a lifecycle for — the sync engine's item-by-item
+   * pass. The status line is the only channel the settings page polls, so an
+   * externally driven operation reports itself here to stay visible.
+   * @param machineId - the machine the operation runs against.
+   * @param progress - the progress to publish; omit to clear.
+   */
+  setProgress(machineId: MachineId, progress?: SshProgress): void {
+    const state = this.ensureState(machineId)
+    if (progress === undefined)
+      delete state.progress
+    else
+      state.progress = progress
+    this.emit(machineId)
+  }
+
   /** Transport status of one machine; unknown ids report `disconnected`. */
   status(machineId: MachineId): SshMachineStatus {
     const state = this.states.get(machineId)

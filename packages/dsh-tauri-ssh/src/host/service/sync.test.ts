@@ -1,7 +1,9 @@
 import type { SshExecResult, SshSession } from './transport'
 import { Buffer } from 'node:buffer'
 import { describe, expect, it, vi } from 'vitest'
+import { DEFAULT_REMOTE_PROFILE } from '../storage/index'
 import { MachineId } from '../types/index'
+import { layoutNodeBinary } from './bootstrap'
 import { buildPreview, classifySpec, pluginAddCommand, skillExtractCommand, SyncEngine } from './sync'
 
 /** A scripted SSH session: commands dispatched by order or by matcher. */
@@ -77,9 +79,15 @@ describe('buildPreview', () => {
 describe('command builders', () => {
   it('runs the layout entry under the layout node, both quoted', () => {
     expect(pluginAddCommand('/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js', 'github:a/b'))
-      .toBe(`"$HOME/.dsh-desktop/runtime/bin/node" '/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js' plugin --profile web add 'github:a/b'`)
+      .toBe(`"$HOME/.dsh-desktop/runtime/bin/node" '/home/u/.dsh-desktop/dependencies/dsh/lib/bin.js' plugin --profile '${DEFAULT_REMOTE_PROFILE}' add 'github:a/b'`)
     expect(pluginAddCommand('/home/u/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', 'pkg@^1.0.0'))
-      .toBe(`"$HOME/.dsh-desktop/runtime/bin/node" '/home/u/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js' plugin --profile web add 'pkg@^1.0.0'`)
+      .toBe(`${layoutNodeBinary()} '/home/u/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js' plugin --profile '${DEFAULT_REMOTE_PROFILE}' add 'pkg@^1.0.0'`)
+  })
+
+  it('installs into the machine profile it is handed, quoted', () => {
+    // 隧道只服务这台机器自己的档案：装到别处（历史上的硬编码 web）等于没同步
+    expect(pluginAddCommand('/x/bin.js', 'github:a/b', 'work'))
+      .toBe(`${layoutNodeBinary()} '/x/bin.js' plugin --profile 'work' add 'github:a/b'`)
   })
 
   it('extracts the streamed tarball into the remote skill home', () => {
@@ -219,5 +227,49 @@ describe('syncEngine.apply', () => {
       [{ name: 'alpha', root: 'dsh' }, { name: 'alpha', root: 'dsh' }],
     )
     expect(deduped.items).toHaveLength(2)
+  })
+
+  it('installs plugins into the profile the options name', async () => {
+    const session = fakeSession((command) => {
+      if (command.includes('printf'))
+        return ok('/dsh\n')
+      return ok()
+    })
+    const sync = new SyncEngine({
+      profileDependencies: () => ({}),
+      scanSkills: () => [],
+      packSkills: async () => Buffer.alloc(0),
+      openSession: async () => session,
+    })
+    await sync.apply(machine, [{ name: 'p', spec: 'github:a/b' }], [], { profileName: 'work' })
+    const add = session.execSpy.mock.calls.map(([command]) => command).find(command => command.includes('plugin --profile'))
+    expect(add).toContain('--profile \'work\' add')
+  })
+
+  it('announces each item before it runs, 1-based and deduped, skills batched by root', async () => {
+    const session = fakeSession((command) => {
+      if (command.includes('printf'))
+        return ok('/dsh\n')
+      return ok()
+    })
+    const sync = new SyncEngine({
+      profileDependencies: () => ({}),
+      scanSkills: () => [
+        { root: 'dsh', dir: '/root/dsh-skills', names: ['alpha', 'beta'] },
+        { root: 'agents', dir: '/root/agent-skills', names: ['gamma'] },
+      ],
+      packSkills: async () => Buffer.alloc(0),
+      openSession: async () => session,
+    })
+    const seen: string[] = []
+    await sync.apply(
+      machine,
+      [{ name: 'p1', spec: 'github:a/b' }, { name: 'p1 dup', spec: 'github:a/b' }, { name: 'p2', spec: '^1.0.0' }],
+      [{ name: 'alpha', root: 'dsh' }, { name: 'beta', root: 'dsh' }, { name: 'ghost', root: 'dsh' }, { name: 'gamma', root: 'agents' }],
+      { onItem: (position, total, name) => seen.push(`${position}/${total}:${name}`) },
+    )
+    // 去重后 2 插件 + 4 skill；ghost 在本地校验出局（不公告但照样结算），
+    // 每个 root 的 skill 共用一份 tar，故只公告批首那条。
+    expect(seen).toEqual(['1/6:p1', '2/6:p2', '4/6:alpha', '6/6:gamma'])
   })
 })
