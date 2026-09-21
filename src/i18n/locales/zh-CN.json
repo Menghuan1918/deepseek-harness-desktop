@@ -354,6 +354,7 @@
   "remote.switcher": "远端机器",
   "remote.local": "本地",
   "remote.manage": "管理机器",
+  "remote.sync": "同步到远端",
   "remote.manage_hint": "在网页端「设置 → SSH 远端机器」面板中添加或管理机器。",
   "remote.disconnect_active": "断开当前远端连接",
   "remote.retry_in": "（{{seconds}}s 后重试）",

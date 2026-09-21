@@ -97,6 +97,23 @@ describe('remoteSwitcher 渲染', () => {
     })
   })
 
+  it('操作区：管理机器与同步到远端同级且各自回调；缺回调时双双置灰', async () => {
+    const syncSpy = vi.fn()
+    const { unmount } = render(<RemoteSwitcher onManage={manageSpy} onSync={syncSpy} />)
+    const menu = await openMenu()
+    fireEvent.click(within(menu).getByText('remote.sync'))
+    await waitFor(() => {
+      expect(syncSpy).toHaveBeenCalled()
+    })
+    expect(within(menu).getByText('remote.manage')).toBeTruthy()
+    unmount()
+
+    render(<RemoteSwitcher />)
+    const bare = await openMenu()
+    expect(within(bare).getByText('remote.manage').closest('[role="menuitem"]')?.getAttribute('aria-disabled')).toBe('true')
+    expect(within(bare).getByText('remote.sync').closest('[role="menuitem"]')?.getAttribute('aria-disabled')).toBe('true')
+  })
+
   it('机器项：状态点语义（标识色优先内联 / 已连接绿 / 重连琥珀 / 放弃红）与状态文案', async () => {
     seedMachines([
       machineOf({ id: 'colored', name: 'colored', color: '#ff00ff', state: 'reconnecting' }),

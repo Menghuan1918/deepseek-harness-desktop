@@ -4,6 +4,9 @@ import type { IframeOutboundMessage } from '@/hooks/use-iframe-post'
 /** 设置浮层分区 id：SSH 机器管理（dsh-tauri-ssh 插件注册）。 */
 export const SSH_MACHINES_SECTION = 'dsh-tauri-ssh'
 
+/** 设置浮层分区 id：同步到远端（同一插件注册的第二个分区，与上者同级）。 */
+export const SSH_SYNC_SECTION = 'dsh-tauri-ssh-sync'
+
 /**
  * 导航栏回调桥：把每个导航栏动作翻译成一条宿主 → iframe 协议消息。
  *
@@ -23,5 +26,6 @@ export function navBridgeOf(post: (message: IframeOutboundMessage) => void, live
     onNewChat: () => post({ type: 'dsh://session:new' }),
     onOpenFolder: () => post({ type: 'dsh://workspace:add' }),
     onOpenMachineManager: () => post({ type: 'dsh://settings:open', section: SSH_MACHINES_SECTION }),
+    onOpenSyncToRemote: () => post({ type: 'dsh://settings:open', section: SSH_SYNC_SECTION }),
   }
 }

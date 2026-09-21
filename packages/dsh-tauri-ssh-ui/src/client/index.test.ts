@@ -2,6 +2,7 @@ import type { UiContext } from './types/index'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply as hostApply } from '../index'
 import { MachinesSection } from './components/machines-section.tsx'
+import { SyncPanel } from './components/sync-panel.tsx'
 import { apply, inject } from './index'
 import { en, zh } from './locales/index'
 import { desktopBridge } from './service/bridge'
@@ -13,7 +14,6 @@ import { MachinesStore } from './store/index'
 vi.mock('dsh-tauri/client', () => ({
   invoke: vi.fn(async () => undefined),
   defineRegister: (feature: (controller: unknown) => void) => feature,
-  definePanel: (_ctx: unknown, entry: { id: string }) => ({ id: entry.id, dispose: () => {} }),
 }))
 
 // dsh-tauri-ui/client 的 dist bundle 以 ModuleLoader 工厂包裹，脱离宿主加载器
@@ -54,13 +54,13 @@ describe('ui-ssh client plugin', () => {
   })
 
   it('declares its inject topology', () => {
-    expect(inject).toEqual(['slots', 'locale', 'layout'])
+    expect(inject).toEqual(['slots', 'locale'])
   })
 
   it('registers the ssh dictionaries on activation', () => {
     const { ctx, locale, effects } = scriptedCtx()
     apply(ctx)
-    expect(effects).toHaveLength(3)
+    expect(effects).toHaveLength(2)
     effects[0]?.()
     expect(locale.register).toHaveBeenCalledWith('ssh', { zh, en })
     expect(locale.bind).toHaveBeenCalledWith('ssh')
@@ -96,6 +96,27 @@ describe('ui-ssh client plugin', () => {
     const store = injected.store as MachinesStore
     await store.load()
     expect(fetchMock).toHaveBeenCalledWith('/api-ssh', expect.objectContaining({ method: 'POST' }))
+  })
+
+  it('registers the sync section as a sibling of the machines section', () => {
+    const { ctx, slots } = scriptedCtx()
+    apply(ctx)
+    expect(slots.inject).toHaveBeenCalledTimes(2)
+    const contribution = slots.inject.mock.calls[1]?.[1] as () => unknown
+    contribution()
+    const options = slots.register.mock.calls[0]?.[0] as {
+      id: string
+      order: number
+      label: () => string
+      locale: string
+      inject: () => Record<string, unknown>
+    }
+    expect(options.id).toBe('dsh-tauri-ssh-sync')
+    expect(options.order).toBe(51)
+    expect(options.label()).toBe('t:sync.nav')
+    expect(options.locale).toBe('ssh')
+    expect(options.inject().store).toBeInstanceOf(MachinesStore)
+    expect(slots.register.mock.calls[0]?.[1]).toBe(SyncPanel)
   })
 })
 

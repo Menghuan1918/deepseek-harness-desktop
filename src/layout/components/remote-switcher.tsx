@@ -1,5 +1,5 @@
 import type { SshMachineRow } from '@/store/modules/remote'
-import { ArrowUpRightFromSquare, Gear, Globe, House, Power } from '@gravity-ui/icons'
+import { ArrowUpRightFromSquare, ArrowUpToLine, Gear, Globe, House, Power } from '@gravity-ui/icons'
 import { Button, Description, Dropdown, Label } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useTranslation } from 'react-i18next'
@@ -51,14 +51,14 @@ function openInNewWindow(machine: SshMachineRow, onError: (err: unknown) => void
  *
  * 数据面全部来自本地实例 `/api-ssh`（`useRemoteMachines` 启动秒级轮询 +
  * 聚焦刷新）；点击机器行=当前窗口切换（未连接则发起连接，进度弹窗实时
- * 呈现），行尾图标=新窗口打开（已连接机器可用）。管理入口在底部
- * 「管理机器…」（进 iframe 设置浮层的 SSH 机器分区）。
+ * 呈现），行尾图标=新窗口打开（已连接机器可用）。操作区两项同级：底部
+ * 「管理机器…」与「同步到远端…」，各自直达 iframe 设置浮层的对应分区。
  *
  * 色点语义（S3 词汇表）：机器标识色优先 → 已连接绿 → 重连/进行中琥珀 →
  * 放弃红 → 其余中性灰；未连接行整体降不透明度。本地实例不可达时进入降级
  * 态：远端项禁用 + 顶部提示，恢复后自动复原（轮询静默重试，不弹错误）。
  */
-export function RemoteSwitcher({ onManage }: { onManage?: () => void }) {
+export function RemoteSwitcher({ onManage, onSync }: { onManage?: () => void, onSync?: () => void }) {
   const { t } = useTranslation()
   useRemoteMachines()
   const { machines, activeId, available, pendingId } = useStore(store.remote)
@@ -207,6 +207,18 @@ export function RemoteSwitcher({ onManage }: { onManage?: () => void }) {
               <span className="flex w-full items-center gap-2">
                 <Gear className="size-3.5 text-muted" />
                 <Label>{t('remote.manage')}</Label>
+              </span>
+            </Dropdown.Item>
+            <Dropdown.Item
+              className="rounded-md"
+              id="remote-sync"
+              isDisabled={onSync == null}
+              textValue={t('remote.sync')}
+              onAction={onSync}
+            >
+              <span className="flex w-full items-center gap-2">
+                <ArrowUpToLine className="size-3.5 text-muted" />
+                <Label>{t('remote.sync')}</Label>
               </span>
             </Dropdown.Item>
           </Dropdown.Section>

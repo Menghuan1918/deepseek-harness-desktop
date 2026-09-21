@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { navBridgeOf, SSH_MACHINES_SECTION } from './nav-bridge'
+import { navBridgeOf, SSH_MACHINES_SECTION, SSH_SYNC_SECTION } from './nav-bridge'
 
 describe('navBridgeOf', () => {
   it('sends no callbacks while the iframe is absent', () => {
@@ -15,12 +15,14 @@ describe('navBridgeOf', () => {
     bridge.onNewChat?.()
     bridge.onOpenFolder?.()
     bridge.onOpenMachineManager?.()
+    bridge.onOpenSyncToRemote?.()
 
     expect(sent).toEqual([
       { type: 'dsh://sidebar:toggle' },
       { type: 'dsh://session:new' },
       { type: 'dsh://workspace:add' },
       { type: 'dsh://settings:open', section: SSH_MACHINES_SECTION },
+      { type: 'dsh://settings:open', section: SSH_SYNC_SECTION },
     ])
   })
 })

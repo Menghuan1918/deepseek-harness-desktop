@@ -17,6 +17,16 @@ export const SETTINGS_SECTION_ID = 'dsh-tauri-ssh'
 /** Order of this plugin's settings section among the other sections. */
 export const SETTINGS_SECTION_ORDER = 50
 
+/**
+ * Registration id of the plugin/skill sync settings section — a sibling of
+ * {@link SETTINGS_SECTION_ID}, so the desktop switcher can deep-link both
+ * remote-machine surfaces at the same level (`dsh://settings:open` section).
+ */
+export const SYNC_SECTION_ID = 'dsh-tauri-ssh-sync'
+
+/** Order of the sync section, right behind the machines section. */
+export const SYNC_SECTION_ORDER = 51
+
 /** The /api-ssh route the host plugin mounts (same-origin POST envelope). */
 export const SSH_API_PATH = '/api-ssh'
 
