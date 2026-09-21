@@ -18,12 +18,13 @@ import process from 'node:process'
 import { join } from 'pathe'
 import { SSH_API_PREFIX, SSH_PLUGIN_NAME } from '../shared/constants'
 import { createSshApiHandler } from './routes/index'
+import { carryWorkspaceAllowlist } from './service/allowlist'
 import { SshMachineEvents } from './service/events'
 import { KnownHostsStore } from './service/host-keys'
 import { profileView, SshManager } from './service/manager'
 import { discoverableHosts, loadSshConfigBlocks, lookupSshConfig, SshConfigResolver } from './service/ssh-config'
 import { SyncEngine } from './service/sync'
-import { profileDependenciesReader, skillRootsScanner, tarPacker } from './service/sync-local'
+import { profileAllowlistReader, profileDependenciesReader, skillRootsScanner, tarPacker } from './service/sync-local'
 import { Ssh2Transport } from './service/transport'
 import { ConfigSchema, DEFAULT_REMOTE_PORT, DEFAULT_SSH_PORT, MACHINES_NAMESPACE, machinesFromValue, MachinesSchema } from './storage/index'
 import { MachineId } from './types/index'
@@ -88,6 +89,8 @@ export class SshRemoteService implements SshApiHost {
       knownHosts,
       config,
       events: this.machineEvents,
+      // 本机档案的构建放行白名单：连接时带到远端（git 插件 prepare 门禁）
+      localAllowlist: profileAllowlistReader(),
       // v8 ignore next -- deliberately empty status hook: the settings page polls /api-ssh
       emitStatus: () => {
         // The settings page polls status through /api-ssh; no live consumers.
@@ -305,10 +308,17 @@ export class SshRemoteService implements SshApiHost {
     try {
       // 逐条进度经机器状态发布：设置页只轮询 machine.status，同步是本服务里
       // 唯一「一条请求跑几分钟」的操作，不报进度就只能干等。
+      const profileName = this.manager.profileName(machineId)
       return await this.sync.apply(machineId, plugins, skills, {
         // 装进这台机器真正在跑的档案：隧道只服务那一个 profile，装到别处
         // （历史上的硬编码 web）等于没同步。
-        profileName: this.manager.profileName(machineId),
+        profileName,
+        // 连接时已带过一次白名单；这里再兜一次——「刚在本机装了新插件就同步」
+        // 的场景下，连接时刻的名单里还没有它的放行键。
+        beforePlugins: (session) => {
+          return carryWorkspaceAllowlist(session, profileName, this.manager.localAllowlist())
+            .then(() => undefined)
+        },
         onItem: (position, total, item) => this.manager.setProgress(machineId, { phase: 'syncing', attempt: position, total, item }),
       })
     }

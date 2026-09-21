@@ -953,6 +953,9 @@ importers:
       ssh2:
         specifier: catalog:utils
         version: 1.17.0
+      yaml:
+        specifier: catalog:testing
+        version: 2.9.0
     devDependencies:
       '@types/node':
         specifier: catalog:types

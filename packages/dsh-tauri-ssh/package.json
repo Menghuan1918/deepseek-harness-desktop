@@ -51,7 +51,8 @@
   "dependencies": {
     "pathe": "catalog:utils",
     "schemastery": "catalog:utils",
-    "ssh2": "catalog:utils"
+    "ssh2": "catalog:utils",
+    "yaml": "catalog:testing"
   },
   "devDependencies": {
     "@types/node": "catalog:types",

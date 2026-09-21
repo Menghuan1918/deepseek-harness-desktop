@@ -11,6 +11,7 @@ import type { Config } from '../storage/index'
  */
 
 import type { MachineProfile, MachineView, SshInstallResult, SshLink, SshMachineStage, SshMachineStatus, SshProgress, SshTestResult } from '../types/index'
+import type { WorkspaceAllowlist } from './allowlist'
 import type { BootstrapHooks } from './bootstrap'
 import type { SshMachineEvents } from './events'
 import type { KnownHostsStore } from './host-keys'
@@ -19,6 +20,7 @@ import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
 import { MachineId, SshError } from '../types/index'
+import { carryWorkspaceAllowlist, EMPTY_ALLOWLIST } from './allowlist'
 import { checkMissingCommand, credentialsCopyCommand, describeError, describeExecFailure, ensurePnpmCommand, ensureRemoteInstance, firstLineOf, missingComponentsOf, planRemoteInstall, readEnvCredentials, REMOTE_ROOT, remoteWebTokenCommand, runInstallScript, safeProfileName, skippedVerificationSummary } from './bootstrap'
 import { fingerprintHostKey } from './host-keys'
 import { syncBundledPlugins } from './plugins-sync'
@@ -88,6 +90,11 @@ export interface SshManagerDeps {
    */
   mintCookie?: (authenticatedUrl: string) => Promise<string | undefined>
   /**
+   * The local profile's build allowlist to carry to the remote (defaults to
+   * none; the plugin wires the real reader). See {@link carryWorkspaceAllowlist}.
+   */
+  localAllowlist?: () => WorkspaceAllowlist
+  /**
    * Sync the desktop-bundled plugins to the remote (defaults to the real
    * tarball pipeline; tests stub it to stay offline). Returns whether the
    * remote was modified (a running instance gets restarted by the sync).
@@ -139,6 +146,11 @@ export class SshManager {
   /** Transport status of every known machine, in settings order. */
   statuses(): SshMachineStatus[] {
     return [...this.profiles.keys()].map(id => this.status(id))
+  }
+
+  /** The local profile's build allowlist (empty when no reader is wired). */
+  localAllowlist(): WorkspaceAllowlist {
+    return (this.deps.localAllowlist ?? (() => EMPTY_ALLOWLIST))()
   }
 
   /**
@@ -459,6 +471,17 @@ export class SshManager {
     }
     catch (error) {
       this.deps.events.append(machineId, 'install', `远端 pnpm 垫片写入失败: ${describeError(error)}`)
+    }
+    // 本机已放行的构建白名单（桌面端插件安装器写进 profile 的 pnpm-workspace.yaml）
+    // 带到远端：git 托管的插件在远端同样要过 pnpm 的 prepare 门禁，而远端 profile
+    // 是从模板起的、一个放行项都没有。
+    try {
+      const added = await carryWorkspaceAllowlist(session, safeProfileName(profile.profileName), (this.deps.localAllowlist ?? (() => EMPTY_ALLOWLIST))())
+      if (added.length > 0)
+        this.deps.events.append(machineId, 'install', `远端构建放行白名单已补齐 ${added.length} 项（git 插件 prepare 门禁）`)
+    }
+    catch (error) {
+      this.deps.events.append(machineId, 'install', `构建放行白名单同步失败: ${describeError(error)}`)
     }
     try {
       await ensureRemoteInstance(

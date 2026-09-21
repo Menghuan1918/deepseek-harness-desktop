@@ -258,8 +258,11 @@ afterEach(() => {
  * idempotent pnpm-shim write). Flow assertions stay about the bootstrap, and
  * a new prelude step never renumbers them.
  */
+/** The connect-time prelude markers (pnpm shim, build-allowlist carry). */
+const PRELUDE_MARKERS = ['chmod +x "$B/pnpm"', 'pnpm-workspace.yaml']
+
 function bootstrapFlowCommands(session: FakeSession): string[] {
-  return session.commands.filter(command => !command.includes('chmod +x "$B/pnpm"'))
+  return session.commands.filter(command => !PRELUDE_MARKERS.some(marker => command.includes(marker)))
 }
 
 /** Wait until the predicate holds (background reconnect races). */
@@ -288,6 +291,7 @@ function boot(overrides: Partial<{
   planInstall: () => Promise<RemoteInstallPlan>
   mintCookie: (authenticatedUrl: string) => Promise<string | undefined>
   syncPlugins: (session: import('./transport').SshSession, profileName: string, hooks: { onEvent?: (stage: import('../types/index').SshMachineStage, line: string) => void }) => Promise<boolean>
+  localAllowlist: () => import('./allowlist').WorkspaceAllowlist
 }> = {}) {
   const transport = new FakeTransport(overrides.sessionFactory ?? (() => new FakeSession(() => true)))
   transport.rejectKeys = overrides.rejectKeys ?? false
@@ -304,6 +308,7 @@ function boot(overrides: Partial<{
     mintCookie: overrides.mintCookie ?? (() => Promise.resolve(undefined)),
     // 默认离线插件同步：不打本地 tar；个别用例经 overrides 覆盖
     syncPlugins: overrides.syncPlugins ?? (() => Promise.resolve(false)),
+    ...overrides.localAllowlist === undefined ? {} : { localAllowlist: overrides.localAllowlist },
     ...overrides.readEnvCredentials === undefined ? {} : { readEnvCredentials: overrides.readEnvCredentials },
     emitStatus: (id, status) => {
       emits.push({ id, state: status.state, ...status.progress === undefined ? {} : { progress: status.progress } })
@@ -398,6 +403,26 @@ describe('sshManager', () => {
     expect(ensure).toContain('chmod +x')
     const lines = events.since(MachineId('m1')).events.map(event => event.line)
     expect(lines.some(line => line.includes('pnpm 垫片就绪'))).toBe(true)
+  })
+
+  it('carries the local build allowlist into the remote profile on connect', async () => {
+    const session = new FakeSession(index => index !== 0)
+    const { manager, events } = boot({
+      sessionFactory: () => session,
+      localAllowlist: () => ({ allowBuilds: { 'node-pty': true }, onlyBuiltDependencies: [] }),
+    })
+    await manager.connect(MachineId('m1'))
+    const write = session.commands.find(command => command.includes('> "$HOME/.dsh/profiles/remote/pnpm-workspace.yaml"'))
+    expect(write).toBeDefined()
+    expect(write).toContain('node-pty')
+    expect(events.since(MachineId('m1')).events.map(event => event.line).some(line => line.includes('构建放行白名单已补齐 1 项'))).toBe(true)
+  })
+
+  it('leaves the remote workspace alone when the local allowlist is empty', async () => {
+    const session = new FakeSession(index => index !== 0)
+    const { manager } = boot({ sessionFactory: () => session })
+    await manager.connect(MachineId('m1'))
+    expect(session.commands.some(command => command.includes('pnpm-workspace.yaml'))).toBe(false)
   })
 
   it('publishes and clears externally driven progress (the sync engine)', () => {

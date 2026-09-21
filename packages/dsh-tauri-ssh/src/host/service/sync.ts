@@ -16,6 +16,7 @@ import type { Buffer } from 'node:buffer'
 import type { MachineId, SyncApplyResult, SyncItemResult, SyncPluginItem, SyncPluginRef, SyncPreview, SyncSkillItem, SyncSkillRef, SyncSkillRoot } from '../types/index'
 import type { SshSession } from './transport'
 import { DEFAULT_REMOTE_PROFILE } from '../storage/index'
+import { allowlistReadCommand, allowlistWriteCommand, mergeWorkspaceAllowlist, parseBuildAllowKeys } from './allowlist'
 import { dshEntryProbeCommand, firstLineOf, layoutBinDir, layoutNodeBinary } from './bootstrap'
 import { shQuote } from './transport'
 
@@ -158,6 +159,13 @@ export interface SyncApplyOptions {
    * installing anywhere else would leave the synced plugins inert.
    */
   profileName?: string
+  /**
+   * Runs once on the freshly opened session before the first plugin install
+   * (the caller's chance to prepare the remote profile — e.g. carry the local
+   * build allowlist). Best-effort by contract: it must not fail the sync, and
+   * is skipped entirely for skill-only runs.
+   */
+  beforePlugins?: (session: SshSession) => Promise<void>
 }
 
 /**
@@ -197,6 +205,8 @@ export class SyncEngine {
     const progress: SyncProgress = { settled: 0, total: uniquePlugins.length + uniqueSkills.length }
     const session = await this.deps.openSession(machineId)
     try {
+      if (uniquePlugins.length > 0)
+        await options.beforePlugins?.(session).catch(() => undefined)
       await this.applyPlugins(session, uniquePlugins, items, progress, options)
       await this.applySkills(session, uniqueSkills, items, progress, options)
     }
@@ -228,9 +238,17 @@ export class SyncEngine {
         })
         continue
       }
-      const result = await session.exec(pluginAddCommand(dshEntry, installSpecOf(plugin.name, plugin.spec), options.profileName), {
-        ...this.deps.commandTimeoutMs === undefined ? {} : { timeoutMs: this.deps.commandTimeoutMs },
-      })
+      const deadline = this.deps.commandTimeoutMs === undefined ? {} : { timeoutMs: this.deps.commandTimeoutMs }
+      const command = pluginAddCommand(dshEntry, installSpecOf(plugin.name, plugin.spec), options.profileName)
+      let result = await session.exec(command, deadline)
+      if (result.code !== 0) {
+        // pnpm 的 prepare 门禁会打印它要求的 allowBuilds 键（git depPath 钉的是
+        // 解析出来的 commit，本机旧键对不上远端今天解析到的 commit）：补写一次
+        // 白名单再原样重试一次，与桌面端本地安装器的做法一致。
+        const granted = await this.grantBuildKeys(session, options.profileName, `${result.stdout}\n${result.stderr}`)
+        if (granted.length > 0)
+          result = await session.exec(command, deadline)
+      }
       items.push(
         result.code === 0
           ? { kind: 'plugin', name: plugin.name, ok: true }
@@ -238,6 +256,27 @@ export class SyncEngine {
       )
       progress.settled += 1
     }
+  }
+
+  /**
+   * Grant the build keys a failed install asked for, into the remote profile's
+   * `pnpm-workspace.yaml`. Best-effort: a remote file that cannot be parsed, or
+   * output naming no key, simply yields no grant (the item then reports the
+   * original failure — never a masked one).
+   * @returns the keys actually added.
+   */
+  private async grantBuildKeys(session: SshSession, profileName: string | undefined, output: string): Promise<string[]> {
+    const keys = parseBuildAllowKeys(output)
+    if (keys.length === 0)
+      return []
+    const remote = await session.exec(allowlistReadCommand(profileName ?? REMOTE_PLUGIN_PROFILE))
+    const { yaml, added } = mergeWorkspaceAllowlist(
+      remote.stdout,
+      { allowBuilds: Object.fromEntries(keys.map(key => [key, true])), onlyBuiltDependencies: [] },
+    )
+    if (added.length > 0)
+      await session.exec(allowlistWriteCommand(profileName ?? REMOTE_PLUGIN_PROFILE, yaml))
+    return added
   }
 
   /** Copy skills per root: local validation per item, one tar stream per root. */

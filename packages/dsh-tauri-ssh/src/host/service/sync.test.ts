@@ -239,6 +239,51 @@ describe('syncEngine.apply', () => {
     expect(deduped.items).toHaveLength(2)
   })
 
+  it('grants the build keys pnpm asked for and retries the install once', async () => {
+    const guidance = `allowBuilds:\n  ${'p@https://example.com/p.tar.gz/abc'}: true\n`
+    let installs = 0
+    const session = fakeSession((command) => {
+      if (command.includes('printf'))
+        return ok('/dsh\n')
+      if (command.includes('pnpm-workspace.yaml') && command.startsWith('cat '))
+        return ok('packages:\n  - .\n')
+      if (command.includes('plugin --profile')) {
+        installs += 1
+        return installs === 1 ? fail(guidance) : ok()
+      }
+      return ok()
+    })
+    const sync = new SyncEngine({
+      profileDependencies: () => ({}),
+      scanSkills: () => [],
+      packSkills: async () => Buffer.alloc(0),
+      openSession: async () => session,
+    })
+    const result = await sync.apply(machine, [{ name: 'p', spec: 'github:a/b' }], [], { profileName: 'remote' })
+    expect(result.items).toEqual([{ kind: 'plugin', name: 'p', ok: true }])
+    expect(installs).toBe(2)
+    const write = session.execSpy.mock.calls.map(([command]) => command).find(command => command.includes('> "$HOME/.dsh/profiles/remote/pnpm-workspace.yaml"'))
+    expect(write).toContain('p@https://example.com/p.tar.gz/abc')
+  })
+
+  it('reports the original failure when pnpm names no build key', async () => {
+    const session = fakeSession((command) => {
+      if (command.includes('printf'))
+        return ok('/dsh\n')
+      return command.includes('plugin --profile') ? fail('ERR_PNPM_NO_MATCH') : ok()
+    })
+    const sync = new SyncEngine({
+      profileDependencies: () => ({}),
+      scanSkills: () => [],
+      packSkills: async () => Buffer.alloc(0),
+      openSession: async () => session,
+    })
+    const result = await sync.apply(machine, [{ name: 'p', spec: 'github:a/b' }], [], { profileName: 'remote' })
+    expect(result.items[0]).toMatchObject({ ok: false })
+    expect(result.items[0]?.error).toContain('ERR_PNPM_NO_MATCH')
+    expect(session.execSpy.mock.calls.filter(([command]) => command.includes('pnpm-workspace.yaml'))).toHaveLength(0)
+  })
+
   it('installs a version-pinned plugin under its package name', async () => {
     const session = fakeSession((command) => {
       if (command.includes('printf'))

@@ -8,12 +8,14 @@
 
 import type { Buffer } from 'node:buffer'
 import type { SyncSkillRoot } from '../types/index'
+import type { WorkspaceAllowlist } from './allowlist'
 import { execFile } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { promisify } from 'node:util'
 import { join } from 'pathe'
+import { EMPTY_ALLOWLIST, parseAllowlist } from './allowlist'
 
 const execFileAsync = promisify(execFile)
 
@@ -56,6 +58,27 @@ export function profileDependenciesReader(dshHome?: string): () => Record<string
     }
     catch {
       return {}
+    }
+  }
+}
+
+/**
+ * Read the local profile's build allowlist (`pnpm-workspace.yaml` →
+ * `allowBuilds` + `onlyBuiltDependencies`). A missing or unparsable file reads
+ * as empty: nothing to carry is a state, not a failure. Paths go through
+ * `pathe`, so a Windows host resolves the same document as a POSIX one.
+ * @param dshHome - harness-home override (tests).
+ * @param profile - profile-name override (tests); defaults to the `--profile` the process runs under.
+ * @returns the allowlist sections to carry to a remote profile.
+ */
+export function profileAllowlistReader(dshHome?: string, profile?: string): () => WorkspaceAllowlist {
+  return () => {
+    const workspacePath = join(dshHomeOf(dshHome), 'profiles', profile ?? argvProfile() ?? 'web', 'pnpm-workspace.yaml')
+    try {
+      return parseAllowlist(readFileSync(workspacePath, 'utf8'))
+    }
+    catch {
+      return { ...EMPTY_ALLOWLIST }
     }
   }
 }
