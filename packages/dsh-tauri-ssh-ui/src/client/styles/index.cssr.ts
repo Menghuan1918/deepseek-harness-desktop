@@ -717,6 +717,17 @@ export default c([
     color: 'var(--dsw-alias-label-primary)',
   }),
 
+  /* 「查看输出」开关：行内小按钮，展开后是卡片同款的滚动日志块 */
+  c('.dshp-ssh-sync-log-toggle', {
+    padding: '0',
+    border: 0,
+    background: 'transparent',
+    color: 'var(--dsw-alias-state-business-primary)',
+    fontSize: '12px',
+    lineHeight: '18px',
+    cursor: 'pointer',
+  }),
+
   c('.dshp-ssh-sync-ok', {
     fontSize: '12px',
     lineHeight: '18px',

@@ -248,6 +248,7 @@ export function syncApplyResultOf(value: unknown): SyncApplyResult | null {
       ...typeof item.root === 'string' ? { root: item.root } : {},
       ok: item.ok,
       ...typeof item.error === 'string' ? { error: item.error } : {},
+      ...typeof item.log === 'string' ? { log: item.log } : {},
     })
   }
   return { items: out }

@@ -239,6 +239,69 @@ describe('syncEngine.apply', () => {
     expect(deduped.items).toHaveLength(2)
   })
 
+  it('leads the failure with the cause and keeps the whole output for display', async () => {
+    // 真机输出（ops 上 dsh-better-sidebar 的 node-pty 构建失败）：真正的原因在
+    // 长长的安装日志中间，末尾反而是 pnpm/dsh 的通用指引——只取末几行会把
+    // 操作者引到错误的结论上。
+    const stdout = [
+      '... pnpm-install: Progress: resolved 584, downloaded 584, added 584, done',
+      '... pnpm-install: .../node-pty@1.1.0/node_modules/node-pty install: gyp info it worked if it ends with ok',
+      '... pnpm-install: .../node-pty install: make: *** [pty.target.mk:119: Release/obj.target/pty/src/unix/pty.o] Error 127',
+      '... pnpm-install: .../node-pty install: gyp ERR! stack Error: `make` failed with exit code: 2',
+      '... pnpm-install: [ELIFECYCLE] Command failed with exit code 1.',
+      '[ERR_PNPM_PREPARE_PACKAGE] Failed to prepare git-hosted package fetched from "https://codeload.github.com/omdsh-dev/DSH-better-sidebar/tar.gz/1fcf43cc": dsh-better-sidebar@0.19.1 pnpm-install: `pnpm install`',
+      'Exit status 1',
+      'This error happened while installing a direct dependency of /root/.dsh/profiles/remote',
+    ].join('\n')
+    const stderr = [
+      'dsh: pnpm failed in profile directory /root/.dsh/profiles/remote',
+      'dsh: git-hosted plugins build on install via their prepare script, which pnpm blocks until allowed — add the exact key pnpm printed above',
+    ].join('\n')
+    const session = fakeSession(command => command.includes('printf') ? ok('/dsh\n') : { code: 1, stdout, stderr })
+    const sync = new SyncEngine({
+      profileDependencies: () => ({}),
+      scanSkills: () => [],
+      packSkills: async () => Buffer.alloc(0),
+      openSession: async () => session,
+    })
+    const result = await sync.apply(machine, [{ name: 'dsh-better-sidebar', spec: 'github:a/b' }], [], { profileName: 'remote' })
+    const item = result.items[0]!
+    expect(item.ok).toBe(false)
+    // 头一条是真正的原因（缺 make/g++ 的编译失败），且不掺末尾那句会误导人的通用指引
+    expect(item.error).toContain('gyp ERR! stack Error: `make` failed with exit code: 2')
+    expect(item.error).toContain('Error 127')
+    expect(item.error?.startsWith('exit 1: ')).toBe(true)
+    expect(item.error).not.toContain('add the exact key pnpm printed above')
+    expect(item.error).not.toContain('This error happened while installing')
+    // 完整输出随条目返回（供「查看输出」展开）
+    expect(item.log).toContain('ERR_PNPM_PREPARE_PACKAGE')
+    expect(item.log).toContain('make: ***')
+    expect(item.log?.split('\n').length).toBe(10)
+  })
+
+  it('caps the carried output and skips it on success', async () => {
+    const huge = Array.from({ length: 200 }, (_, index) => `line ${index}`).join('\n')
+    const session = fakeSession(command => command.includes('printf') ? ok('/dsh\n') : { code: 1, stdout: huge, stderr: '' })
+    const sync = new SyncEngine({
+      profileDependencies: () => ({}),
+      scanSkills: () => [],
+      packSkills: async () => Buffer.alloc(0),
+      openSession: async () => session,
+    })
+    const failed = await sync.apply(machine, [{ name: 'p', spec: 'github:a/b' }], [], { profileName: 'remote' })
+    expect(failed.items[0]?.log?.split('\n').length).toBe(60)
+    expect(failed.items[0]?.log).toContain('line 199')
+
+    const healthy = fakeSession(() => ok('/dsh\n'))
+    const fine = await new SyncEngine({
+      profileDependencies: () => ({}),
+      scanSkills: () => [],
+      packSkills: async () => Buffer.alloc(0),
+      openSession: async () => healthy,
+    }).apply(machine, [{ name: 'p', spec: 'github:a/b' }], [], { profileName: 'remote' })
+    expect(fine.items[0]?.log).toBeUndefined()
+  })
+
   it('grants the build keys pnpm asked for and retries the install once', async () => {
     const guidance = `allowBuilds:\n  ${'p@https://example.com/p.tar.gz/abc'}: true\n`
     let installs = 0

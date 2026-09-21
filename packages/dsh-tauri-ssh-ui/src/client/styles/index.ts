@@ -94,4 +94,5 @@ export const cls = {
   syncResult: 'dshp-ssh-sync-result',
   syncResultName: 'dshp-ssh-sync-result-name',
   syncOk: 'dshp-ssh-sync-ok',
+  syncLogToggle: 'dshp-ssh-sync-log-toggle',
 } as const

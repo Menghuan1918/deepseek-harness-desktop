@@ -74,7 +74,10 @@ export interface SyncItemResult {
   name: string
   root?: string
   ok: boolean
+  /** Operator-facing failure: cause first, tail as context. */
   error?: string
+  /** The remote command's own output (trimmed), shown on demand. */
+  log?: string
 }
 
 /** The `sync.apply` value. */

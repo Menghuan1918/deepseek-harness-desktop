@@ -309,8 +309,17 @@ export interface SyncItemResult {
   /** Skill root; plugins carry none. */
   root?: SyncSkillRoot
   ok: boolean
-  /** Operator-facing failure description; absent on success. */
+  /**
+   * Operator-facing failure description; absent on success. It leads with the
+   * cause line(s) and keeps the tail as context — a long install log buries
+   * the real error well above the end.
+   */
   error?: string
+  /**
+   * The command's own output (trimmed, newest kept) for on-demand display;
+   * absent on success and when the command printed nothing.
+   */
+  log?: string
 }
 
 /** The `sync.apply` value: every requested item, success and failure alike. */

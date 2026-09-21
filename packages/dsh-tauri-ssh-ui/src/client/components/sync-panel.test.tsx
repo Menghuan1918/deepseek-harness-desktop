@@ -162,6 +162,31 @@ describe('syncPanel', () => {
     })
   })
 
+  it('keeps the failure headline cause-first and shows the raw output on demand', async () => {
+    const store = connectedStore(routeFetch({}))
+    store.store.update((state) => {
+      state.sync.results = [{
+        kind: 'plugin',
+        name: 'dsh-better-sidebar',
+        ok: false,
+        error: 'exit 1: make: *** [pty.target.mk:119] Error 127 | gyp ERR! stack Error: `make` failed with exit code: 2',
+        log: 'Progress: resolved 584\nmake: *** [pty.target.mk:119] Error 127\n[ERR_PNPM_PREPARE_PACKAGE] failed',
+      }]
+    })
+    render(<SyncPanel store={store} t={t} />)
+    await waitFor(() => expect(screen.getByTestId('sync-results')).toBeTruthy())
+    const row = screen.getByTestId('sync-result-dsh-better-sidebar')
+    expect(row.textContent).toContain('Error 127')
+    expect(row.textContent).not.toContain('Progress: resolved')
+    // 完整输出默认收起，点开才显示（长日志不糊在行内）
+    const toggle = screen.getByTestId('sync-log-toggle-dsh-better-sidebar')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByTestId('sync-log')).toBeNull()
+    fireEvent.click(toggle)
+    expect(screen.getByTestId('sync-log-toggle-dsh-better-sidebar').getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByTestId('sync-log').textContent).toContain('ERR_PNPM_PREPARE_PACKAGE')
+  })
+
   it('renders a complete failure with every reason visible', async () => {
     const store = connectedStore(routeFetch({}))
     store.store.update((state) => {

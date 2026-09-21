@@ -313,6 +313,7 @@ function SyncResults({ results, applying, t, onRetry }: {
 }): ReactNode {
   const okCount = results.filter(item => item.ok).length
   const failed = results.length - okCount
+  const [openLogOf, setOpenLogOf] = useState<string | null>(null)
   return (
     <div className={cls.syncResults} data-testid="sync-results">
       <p className={cls.syncSummary}>
@@ -334,10 +335,25 @@ function SyncResults({ results, applying, t, onRetry }: {
             {item.ok
               ? <span className={cls.syncOk}>{t('sync.itemOk')}</span>
               : (
-                  <span className={cls.statusError} role="alert">
-                    {t('sync.itemFailed')}
-                    {item.error === undefined ? '' : `：${item.error}`}
-                  </span>
+                  <>
+                    <span className={cls.statusError} role="alert">
+                      {t('sync.itemFailed')}
+                      {item.error === undefined ? '' : `：${item.error}`}
+                    </span>
+                    {item.log === undefined
+                      ? null
+                      : (
+                          <button
+                            type="button"
+                            className={cls.syncLogToggle}
+                            aria-expanded={openLogOf === syncKeyOf(item)}
+                            data-testid={`sync-log-toggle-${item.name}`}
+                            onClick={() => setOpenLogOf(current => current === syncKeyOf(item) ? null : syncKeyOf(item))}
+                          >
+                            {openLogOf === syncKeyOf(item) ? t('sync.hideOutput') : t('sync.showOutput')}
+                          </button>
+                        )}
+                  </>
                 )}
           </li>
         ))}
@@ -349,6 +365,13 @@ function SyncResults({ results, applying, t, onRetry }: {
             </Button>
           )
         : null}
+      {openLogOf === null
+        ? null
+        : (
+            <pre className={cls.logStream} data-testid="sync-log">
+              {results.find(item => syncKeyOf(item) === openLogOf)?.log ?? ''}
+            </pre>
+          )}
     </div>
   )
 }

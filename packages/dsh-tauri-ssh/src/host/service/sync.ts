@@ -31,6 +31,16 @@ export const REMOTE_PLUGIN_PROFILE = DEFAULT_REMOTE_PROFILE
 /** How many output lines an item failure carries (the operator-facing tail). */
 const FAILURE_TAIL_LINES = 5
 
+/** How many cause lines the headline carries: the earliest ones are the root cause. */
+const FAILURE_CAUSE_LINES = 2
+
+/** The lines a cause is picked from: every real error signature pnpm/node-gyp emit. */
+const FAILURE_CAUSE = /ERR_PNPM_|gyp ERR!|error:|Error:|Error \d|not ok|not found|No such file|Permission denied|exit code|Command failed|ELIFECYCLE/u
+
+/** The full output an item carries for on-demand display (lines, then bytes). */
+const FAILURE_LOG_LINES = 60
+const FAILURE_LOG_BYTES = 8000
+
 /**
  * The desktop's own bundled plugins (`dsh-tauri*`). They ride the connect-time
  * bundle sync automatically, so the manual sync list must not offer them:
@@ -118,16 +128,47 @@ export function skillExtractCommand(): string {
   return `mkdir -p "$HOME/.dsh/skills" && tar -xf - -C "$HOME/.dsh/skills"`
 }
 
-/** The last few non-empty lines of a command's output, joined for an error message. */
-function tailOf(text: string): string {
-  const lines = text.split('\n').map(line => line.trim()).filter(line => line !== '')
-  return lines.slice(-FAILURE_TAIL_LINES).join(' | ')
+/**
+ * The lines of one command's output, trimmed, blanks dropped.
+ * @param stdout - captured stdout.
+ * @param stderr - captured stderr.
+ * @returns stdout lines first, then stderr lines.
+ */
+function outputLines(stdout: string, stderr: string): string[] {
+  return `${stdout}\n${stderr}`.split('\n').map(line => line.trim()).filter(line => line !== '')
 }
 
-/** One operator-facing failure for a finished remote command. */
+/**
+ * One operator-facing failure for a finished remote command.
+ *
+ * The headline names the *cause* first: a multi-minute install buries the real
+ * error (`gyp ERR! stack Error: make failed…`, `ERR_PNPM_PREPARE_PACKAGE`) well
+ * above the last few lines, and the sweeping guidance pnpm/dsh print last is
+ * generic — reading only the tail tells the operator the wrong story. The tail
+ * still rides along as context, and the full output travels in the item's
+ * `log` for on-demand display.
+ * @param code - the command's exit code.
+ * @param stdout - captured stdout.
+ * @param stderr - captured stderr.
+ * @returns the operator-facing message.
+ */
 function describeFailure(code: number | null, stdout: string, stderr: string): string {
-  const tail = [tailOf(stdout), tailOf(stderr)].filter(part => part !== '').join(' | ')
-  return `exit ${code ?? '?'}${tail === '' ? '' : `: ${tail}`}`
+  const lines = outputLines(stdout, stderr)
+  // 有原因行就只报原因（最早的几条=根因），不再掺末尾的通用指引——那句往往
+  // 与真实原因无关（真机案例：构建门禁已放行，末尾仍在讲门禁，真因是缺 g++）。
+  const causes = lines.filter(line => FAILURE_CAUSE.test(line)).slice(0, FAILURE_CAUSE_LINES)
+  const picked = causes.length > 0 ? causes : lines.slice(-FAILURE_TAIL_LINES)
+  const parts = picked.map(line => (line.length > 300 ? `${line.slice(0, 300)}…` : line))
+  return `exit ${code ?? '?'}${parts.length === 0 ? '' : `: ${parts.join(' | ')}`}`
+}
+
+/** The trimmed full output an item keeps for on-demand display (newest kept). */
+function failureLogOf(stdout: string, stderr: string): string | undefined {
+  const lines = outputLines(stdout, stderr)
+  if (lines.length === 0)
+    return undefined
+  const kept = lines.slice(-FAILURE_LOG_LINES).join('\n')
+  return kept.length > FAILURE_LOG_BYTES ? `${kept.slice(kept.length - FAILURE_LOG_BYTES)}` : kept
 }
 
 /** Engine seams — the fs/ssh touchpoints, injectable for tests. */
@@ -249,11 +290,19 @@ export class SyncEngine {
         if (granted.length > 0)
           result = await session.exec(command, deadline)
       }
-      items.push(
-        result.code === 0
-          ? { kind: 'plugin', name: plugin.name, ok: true }
-          : { kind: 'plugin', name: plugin.name, ok: false, error: describeFailure(result.code, result.stdout, result.stderr) },
-      )
+      if (result.code === 0) {
+        items.push({ kind: 'plugin', name: plugin.name, ok: true })
+      }
+      else {
+        const log = failureLogOf(result.stdout, result.stderr)
+        items.push({
+          kind: 'plugin',
+          name: plugin.name,
+          ok: false,
+          error: describeFailure(result.code, result.stdout, result.stderr),
+          ...log === undefined ? {} : { log },
+        })
+      }
       progress.settled += 1
     }
   }
@@ -332,11 +381,19 @@ export class SyncEngine {
         stdinData: tar,
         ...this.deps.commandTimeoutMs === undefined ? {} : { timeoutMs: this.deps.commandTimeoutMs },
       })
+      const log = result.code === 0 ? undefined : failureLogOf(result.stdout, result.stderr)
       for (const skill of transferable) {
         items.push(
           result.code === 0
             ? { kind: 'skill', name: skill.name, root, ok: true }
-            : { kind: 'skill', name: skill.name, root, ok: false, error: describeFailure(result.code, result.stdout, result.stderr) },
+            : {
+                kind: 'skill',
+                name: skill.name,
+                root,
+                ok: false,
+                error: describeFailure(result.code, result.stdout, result.stderr),
+                ...log === undefined ? {} : { log },
+              },
         )
       }
       progress.settled += transferable.length
