@@ -838,6 +838,31 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
   // 纯 Web 端移除，避免按钮闪现造成布局跳动。
   const bridgePending = availability === 'unknown'
 
+  // 远端会话：本实例自己就是 SSH 目标，机器管理在发起端——整页只剩告示卡
+  // （列表/添加/刷新全部让位），并点明回发起端用「同步到远端…」搬插件与 Skill。
+  if (state.role?.remote === true) {
+    return (
+      <div className={cls.section} data-testid="remote-session">
+        <h2 className={cls.title}>{t('title')}</h2>
+        <div className={cls.remoteCard} data-testid="remote-session-banner">
+          <span className={cls.remoteIcon} aria-hidden="true">
+            <svg fill="none" height="22" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" viewBox="0 0 24 24" width="22">
+              <path d="M4 17l6-6-6-6" />
+              <path d="M12 19h8" />
+            </svg>
+          </span>
+          <p className={cls.remoteTitle}>{t('session.remoteTitle')}</p>
+          <p className={cls.remoteHint}>
+            {state.role.origin !== undefined && state.role.origin !== ''
+              ? t('session.remoteHintNamed').replace('{name}', state.role.origin)
+              : t('session.remoteHint')}
+          </p>
+          <p className={cls.remoteNote} data-testid="remote-session-sync-hint">{t('session.remoteSyncHint')}</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={cls.section}>
       <div className={cls.sectionHead}>
@@ -849,13 +874,9 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
           <Button variant="outline" size="sm" disabled={state.status === 'loading'} onClick={() => void store.load()}>
             {t('refresh')}
           </Button>
-          {state.role?.remote === true
-            ? null
-            : (
-                <Button variant="primary" size="sm" disabled={state.status === 'loading'} onClick={() => setAddOpen(true)}>
-                  {t('addMachine')}
-                </Button>
-              )}
+          <Button variant="primary" size="sm" disabled={state.status === 'loading'} onClick={() => setAddOpen(true)}>
+            {t('addMachine')}
+          </Button>
         </div>
       </div>
       {state.notice !== null ? <p className={cls.notice} data-testid="notice">{noticeTextOf(state.notice, t)}</p> : null}
@@ -879,30 +900,92 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
       {state.status === 'ready' && state.machines.length === 0 && state.discovered.length === 0
         ? <p className={cls.empty}>{t('empty')}</p>
         : null}
-      {state.role?.remote === true
-        ? (
-            <div className={cls.emptyBlock} data-testid="remote-session-banner">
-              <p className={cls.empty}>{t('session.remoteTitle')}</p>
-              <p className={cls.hint}>
-                {state.role.origin !== undefined && state.role.origin !== ''
-                  ? t('session.remoteHintNamed').replace('{name}', state.role.origin)
-                  : t('session.remoteHint')}
-              </p>
-            </div>
-          )
-        : (
-            <>
-              <ul className={cls.rows}>
-                {state.machines.map((row) => {
-                  const draft = drafts[row.id] ?? { key: row.id, row }
-                  return (
+      <>
+        <ul className={cls.rows}>
+          {state.machines.map((row) => {
+            const draft = drafts[row.id] ?? { key: row.id, row }
+            return (
+              <RowShell
+                key={row.id}
+                id={row.id}
+                name={row.name === '' ? row.id : row.name}
+                tag={row.host}
+                tintColor={colorOf(row)}
+                tintBorder={row.tintBorder === true}
+                status={state.statuses[row.id]}
+                trail={state.trails[row.id] ?? []}
+                t={t}
+                actions={(
+                  <RowActions
+                    id={row.id}
+                    t={t}
+                    status={state.statuses[row.id]}
+                    busy={state.busy[row.id]}
+                    bridgeOpen={bridgeOpen}
+                    bridgePending={bridgePending}
+                    opening={openingId === row.id}
+                    onTest={id => void store.test(id)}
+                    onConnect={id => void store.connect(id)}
+                    onDisconnect={id => void store.disconnect(id)}
+                    onOpen={openRemoteWindow}
+                    extras={(
+                      <>
+                        <Button variant="outline" size="sm" disabled={editingId !== null && editingId !== row.id} onClick={() => editingId === row.id ? closeEditor(row.id) : openEditor(row)}>
+                          {t('edit')}
+                        </Button>
+                        <Button variant="ghost" size="sm" className={cls.dangerAction} disabled={state.busy[row.id] !== undefined} onClick={() => setRemoveTarget({ key: row.id, id: row.id, name: row.name === '' ? row.id : row.name })}>
+                          {t('remove')}
+                        </Button>
+                      </>
+                    )}
+                  />
+                )}
+              >
+                {editingId === row.id
+                  ? (
+                      <EditPanel
+                        draft={draft}
+                        t={t}
+                        secretSet={secretFlagsOf(row)}
+                        dirty={dirty[row.id] ?? {}}
+                        saving={savingId === row.id}
+                        onChange={patchDraft}
+                        onSecret={patchDirty}
+                        onSave={key => void saveRow(key)}
+                        onCancel={closeEditor}
+                      />
+                    )
+                  : null}
+                <RowDetails
+                  id={row.id}
+                  status={state.statuses[row.id]}
+                  busy={state.busy[row.id]}
+                  logLines={state.logs[row.id] ?? []}
+                  bridgeError={bridgeErrors[row.id]}
+                  installResult={state.installResults[row.id]}
+                  t={t}
+                  onInstall={id => void store.install(id)}
+                />
+              </RowShell>
+            )
+          })}
+        </ul>
+        {state.discovered.length > 0
+          ? (
+              <>
+                <div className={cls.group}>
+                  <h3 className={cls.groupTitle}>{t('configHosts')}</h3>
+                  <p className={cls.groupHint}>{t('configHostsHint')}</p>
+                </div>
+                <ul className={cls.rows}>
+                  {state.discovered.map(row => (
                     <RowShell
                       key={row.id}
                       id={row.id}
-                      name={row.name === '' ? row.id : row.name}
-                      tag={row.host}
-                      tintColor={colorOf(row)}
-                      tintBorder={row.tintBorder === true}
+                      name={row.name}
+                      tag={t('configTag')}
+                      tintColor={undefined}
+                      tintBorder={false}
                       status={state.statuses[row.id]}
                       trail={state.trails[row.id] ?? []}
                       t={t}
@@ -919,34 +1002,9 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
                           onConnect={id => void store.connect(id)}
                           onDisconnect={id => void store.disconnect(id)}
                           onOpen={openRemoteWindow}
-                          extras={(
-                            <>
-                              <Button variant="outline" size="sm" disabled={editingId !== null && editingId !== row.id} onClick={() => editingId === row.id ? closeEditor(row.id) : openEditor(row)}>
-                                {t('edit')}
-                              </Button>
-                              <Button variant="ghost" size="sm" className={cls.dangerAction} disabled={state.busy[row.id] !== undefined} onClick={() => setRemoveTarget({ key: row.id, id: row.id, name: row.name === '' ? row.id : row.name })}>
-                                {t('remove')}
-                              </Button>
-                            </>
-                          )}
                         />
                       )}
                     >
-                      {editingId === row.id
-                        ? (
-                            <EditPanel
-                              draft={draft}
-                              t={t}
-                              secretSet={secretFlagsOf(row)}
-                              dirty={dirty[row.id] ?? {}}
-                              saving={savingId === row.id}
-                              onChange={patchDraft}
-                              onSecret={patchDirty}
-                              onSave={key => void saveRow(key)}
-                              onCancel={closeEditor}
-                            />
-                          )
-                        : null}
                       <RowDetails
                         id={row.id}
                         status={state.statuses[row.id]}
@@ -958,62 +1016,12 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
                         onInstall={id => void store.install(id)}
                       />
                     </RowShell>
-                  )
-                })}
-              </ul>
-              {state.discovered.length > 0
-                ? (
-                    <>
-                      <div className={cls.group}>
-                        <h3 className={cls.groupTitle}>{t('configHosts')}</h3>
-                        <p className={cls.groupHint}>{t('configHostsHint')}</p>
-                      </div>
-                      <ul className={cls.rows}>
-                        {state.discovered.map(row => (
-                          <RowShell
-                            key={row.id}
-                            id={row.id}
-                            name={row.name}
-                            tag={t('configTag')}
-                            tintColor={undefined}
-                            tintBorder={false}
-                            status={state.statuses[row.id]}
-                            trail={state.trails[row.id] ?? []}
-                            t={t}
-                            actions={(
-                              <RowActions
-                                id={row.id}
-                                t={t}
-                                status={state.statuses[row.id]}
-                                busy={state.busy[row.id]}
-                                bridgeOpen={bridgeOpen}
-                                bridgePending={bridgePending}
-                                opening={openingId === row.id}
-                                onTest={id => void store.test(id)}
-                                onConnect={id => void store.connect(id)}
-                                onDisconnect={id => void store.disconnect(id)}
-                                onOpen={openRemoteWindow}
-                              />
-                            )}
-                          >
-                            <RowDetails
-                              id={row.id}
-                              status={state.statuses[row.id]}
-                              busy={state.busy[row.id]}
-                              logLines={state.logs[row.id] ?? []}
-                              bridgeError={bridgeErrors[row.id]}
-                              installResult={state.installResults[row.id]}
-                              t={t}
-                              onInstall={id => void store.install(id)}
-                            />
-                          </RowShell>
-                        ))}
-                      </ul>
-                    </>
-                  )
-                : null}
-            </>
-          )}
+                  ))}
+                </ul>
+              </>
+            )
+          : null}
+      </>
       {addOpen
         ? (
             <AddMachineDialog

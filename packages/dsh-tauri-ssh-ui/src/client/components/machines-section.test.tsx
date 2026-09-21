@@ -73,7 +73,12 @@ describe('machinesSection', () => {
     await waitFor(() => expect(screen.getByTestId('remote-session-banner')).toBeTruthy())
     expect(screen.getByText('Currently in an SSH session')).toBeTruthy()
     expect(screen.getByText(/over SSH from ops/)).toBeTruthy()
+    // 告示卡点明回发起端用「同步到远端…」搬插件与 Skill
+    expect(screen.getByTestId('remote-session-sync-hint').textContent).toContain('Sync to remote')
+    // 其余内容整块让位：添加/刷新/说明/机器列表都不渲染
     expect(screen.queryByText('Add machine')).toBeNull()
+    expect(screen.queryByText('Refresh')).toBeNull()
+    expect(screen.queryByText(/Connect straight through your local/)).toBeNull()
     expect(screen.queryByTestId('machine-a')).toBeNull()
   })
 

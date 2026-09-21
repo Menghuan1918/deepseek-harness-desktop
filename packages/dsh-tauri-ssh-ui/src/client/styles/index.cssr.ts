@@ -446,6 +446,62 @@ export default c([
     gap: '8px',
   }),
 
+  /*
+   * 远端会话页（本实例自己就是 SSH 目标）：整个分区只剩这张告示卡——机器
+   * 列表、添加/刷新全部让位，标题刻意放大到页面级，一眼看清「这里没有可管
+   * 理的东西，回发起端去配」。
+   */
+  c('.dshp-ssh-remote-card', {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '12px',
+    marginTop: '4px',
+    padding: '40px 24px',
+    border: '0.5px solid var(--dsw-alias-border-l2)',
+    borderRadius: '12px',
+    background: 'var(--dsw-alias-bg-layer-1)',
+    textAlign: 'center',
+  }),
+
+  c('.dshp-ssh-remote-icon', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '44px',
+    height: '44px',
+    borderRadius: '50%',
+    background: 'var(--dsw-alias-surface-tinted)',
+    color: 'var(--dsw-alias-state-success-primary)',
+  }),
+
+  c('.dshp-ssh-remote-title', {
+    margin: 0,
+    fontSize: '22px',
+    lineHeight: '32px',
+    fontWeight: 600,
+    color: 'var(--dsw-alias-label-primary)',
+  }),
+
+  c('.dshp-ssh-remote-hint', {
+    margin: 0,
+    maxWidth: '460px',
+    fontSize: '13px',
+    lineHeight: '21px',
+    color: 'var(--dsw-alias-label-secondary)',
+  }),
+
+  c('.dshp-ssh-remote-note', {
+    margin: 0,
+    maxWidth: '460px',
+    padding: '8px 12px',
+    borderRadius: '8px',
+    background: 'var(--dsw-alias-surface-tinted)',
+    fontSize: '12px',
+    lineHeight: '19px',
+    color: 'var(--dsw-alias-label-tertiary)',
+  }),
+
   /* The sync panel (a section-level group under the machine list). */
   c('.dshp-ssh-sync-panel', {
     display: 'flex',
