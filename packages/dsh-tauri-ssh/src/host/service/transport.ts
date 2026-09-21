@@ -541,7 +541,10 @@ class Ssh2Session implements SshSession {
           stdout += text
           options?.onData?.(text)
         })
-        stream.on('stderr', (chunk: Buffer) => {
+        // ssh2 exposes stderr as a Readable *property* (`stream.stderr`); it
+        // never emits a `'stderr'` event, so a listener for one silently drops
+        // every remote error message and failures degrade to a bare exit code.
+        stream.stderr.on('data', (chunk: Buffer) => {
           stderr += chunk.toString('utf8')
         })
         stream.on('close', (code: number | null) => {

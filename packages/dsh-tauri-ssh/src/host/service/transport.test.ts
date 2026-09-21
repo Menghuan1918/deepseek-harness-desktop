@@ -125,7 +125,10 @@ class FakeClient extends EventEmitter {
         callback(this.execError)
         return
       }
-      const stream = new EventEmitter() as EventEmitter & { exitCode?: number | null }
+      // 真 ssh2 把 stderr 挂在 `stream.stderr`（Readable），不是 'stderr' 事件；
+      // 替身照此建模，否则会被「只在替身上成立」的写法骗过（历史 bug）。
+      const stream = new EventEmitter() as EventEmitter & { exitCode?: number | null, stderr: PassThrough }
+      stream.stderr = new PassThrough()
       this.lastStream = stream
       callback(undefined, stream)
       if (this.execHang)
@@ -139,8 +142,10 @@ class FakeClient extends EventEmitter {
       }
       queueMicrotask(() => {
         stream.emit('data', Buffer.from('hello'))
-        stream.emit('stderr', Buffer.from('oops'))
-        stream.emit('close', 0)
+        stream.stderr.write('oops')
+        // PassThrough 的 data 在下一拍才到：close 必须等它，否则真实时序里
+        // 「先 error 后 close」的 stderr 反而会丢。
+        setImmediate(() => stream.emit('close', 0))
       })
     })
     return this
