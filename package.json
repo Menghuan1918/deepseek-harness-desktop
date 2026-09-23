@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-desktop",
   "type": "module",
-  "version": "0.16.0-beta.1",
+  "version": "0.16.0",
   "private": true,
   "packageManager": "pnpm@11.7.0",
   "description": "Desktop application for DeepSeek Harness (dsh) — one-click local install and launch, no Node.js setup required.",
@@ -56,7 +56,8 @@
     "@deepseek-ai/cordis": "catalog:dsh",
     "@deepseek-ai/dsh-agent": "catalog:dsh",
     "@deepseek-ai/dsh-agent-default-model": "catalog:dsh",
-    "@deepseek-ai/dsh-agent-presets": "catalog:dsh",
+    "@deepseek-ai/dsh-agent-preset": "catalog:dsh",
+    "@deepseek-ai/dsh-agent-preset-registry": "catalog:dsh",
     "@deepseek-ai/dsh-api-session-controller": "catalog:dsh",
     "@deepseek-ai/dsh-api-workspace-controller": "catalog:dsh",
     "@deepseek-ai/dsh-client-connection": "catalog:dsh",

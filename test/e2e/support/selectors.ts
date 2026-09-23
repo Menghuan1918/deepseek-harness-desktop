@@ -44,5 +44,5 @@ export const SETUP_PREINSTALL_SKIP = '[data-testid="dsh-setup-preinstall-skip"]'
 /** 内嵌 dsh 页面的 iframe 宿主文档由用例 `page.route` 提供，见 `browser.ts`。 */
 export const EMBEDDED_DOCUMENT = '[id="dsh"]'
 
-/** 设置侧栏根（`packages/dsh-tauri-ui/src/client/components/sidebar.tsx:92`，插件包属性）。 */
+/** 设置侧栏根（`packages/dsh-tauri-ui/src/client/ui/sidebar.tsx:92`，插件包属性）。 */
 export const SETTINGS_SIDEBAR_ATTRIBUTE = '[data-slot-sidebar="dsh-tauri-ui"]'

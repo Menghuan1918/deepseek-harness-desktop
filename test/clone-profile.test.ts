@@ -46,15 +46,16 @@ describe('cloneProfile mutation shape', () => {
 })
 
 describe('clone Chip + naming dialog in ConfigProfile', () => {
-  it('renders a Clone Chip on non-default rows with profiles.clone label', () => {
+  it('renders Clone + Delete Chips on non-default rows and a Reset Chip on the default row', () => {
     const source = profileSource()
 
     expect(source).toMatch(/profiles\.clone['"]/)
     expect(source).toMatch(/profiles\.remove['"]/)
-    // 删除芯片常驻所有行：默认档案渲染为灰色不可用，而非整体隐藏。
+    // 默认档案渲染「重置」（不可删除），非默认档案渲染「删除」。
+    expect(source).toMatch(/profiles\.reset['"]/)
     expect(chipOf(source, `t('profiles.remove')`)).toContain('cursor-not-allowed opacity-50')
 
-    // Clone Chip 必须排在删除 Chip 之前。
+    // Clone Chip 必须排在删除/重置 Chip 之前。
     const cloneIndex = source.indexOf(`t('profiles.clone')`)
     const removeIndex = source.indexOf(`t('profiles.remove')`)
     expect(cloneIndex).toBeGreaterThan(-1)
@@ -107,6 +108,47 @@ describe('clone Chip + naming dialog in ConfigProfile', () => {
   })
 })
 
+describe('reset profile (default row)', () => {
+  it('invokes reset_profile and gates it behind a danger confirm dialog', () => {
+    const source = profileSource()
+
+    expect(source).toMatch(/invoke\s*<\s*void\s*>\s*\(\s*['"]reset_profile['"]/)
+    expect(source).toMatch(/profiles\.reset_confirm_title/)
+    expect(source).toMatch(/profiles\.reset_confirm_desc/)
+  })
+
+  it('swaps the default-row Chip label from remove to reset', () => {
+    const source = profileSource()
+
+    expect(source).toMatch(/profile\.default\s*\?\s*t\(\s*['"]profiles\.reset['"]\s*\)\s*:\s*t\(\s*['"]profiles\.remove['"]\s*\)/)
+  })
+
+  it('stops the harness and waits before resetting, then relaunches', () => {
+    const source = profileSource()
+    const resetIndex = source.indexOf('async function onReset')
+    expect(resetIndex).toBeGreaterThan(-1)
+    const handler = source.slice(resetIndex, source.indexOf('// 备份子视图', resetIndex))
+
+    expect(handler).toContain('shutdown_harness')
+    expect(handler).toContain('waitForHarnessStopped')
+    expect(handler).toContain('resetProfile(id)')
+    expect(handler).toContain('launch_harness')
+    // 重置是不可撤销的破坏性操作，必须走 danger 确认。
+    expect(handler).toMatch(/status:\s*['"]danger['"]/)
+    // 只有使用中的档案会被运行中的服务锁住目录，停/起服务必须以此为条件，
+    // 否则重置非当前档案会白白打断在跑的服务。
+    expect(handler).toMatch(/if\s*\(\s*target\.active\s*\)/)
+  })
+
+  it('keeps the reset Chip disabled while busy', () => {
+    const source = profileSource()
+    const busyIndex = source.indexOf('const busy =')
+    const busy = source.slice(busyIndex, source.indexOf('\n', busyIndex))
+
+    expect(busy).toContain('reset.isPending')
+  })
+})
+
 describe('i18n parity', () => {
   const keys = [
     'profiles.clone',
@@ -122,6 +164,14 @@ describe('i18n parity', () => {
     'profiles.clone_exists',
     'profiles.clone_empty',
     'profiles.clone_invalid',
+    'profiles.reset',
+    'profiles.reset_confirm_title',
+    'profiles.reset_confirm_desc',
+    'profiles.reset_confirm',
+    'profiles.reset_stopped_toast',
+    'profiles.reset_success',
+    'profiles.reset_success_hint',
+    'profiles.reset_failed',
   ]
 
   for (const locale of ['zh-CN', 'en-US']) {

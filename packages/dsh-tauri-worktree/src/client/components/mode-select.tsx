@@ -1,8 +1,7 @@
 import type { ReactElement } from 'react'
 import type { InputActions } from '../service/session-switch.types'
 import type { ModeSelectProps } from './mode-select.types'
-import { IconChevronDownOutline14 as ChevronDown, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CircleTree, Icon } from 'dsh-tauri-ui/client'
+import { ChevronDown, Chip, CircleTree, Icon, Menu } from 'dsh-tauri-ui/client'
 import { forEach, get } from 'dsh-tauri/client'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -223,20 +222,18 @@ function WorktreeModeControl({ sessionId, useInput, inputActions, sessionsRuntim
   const pending = state.mode === 'pending'
   const activeLabel = pending ? locale.text('modeNewWorktree') : locale.text('modeLocal')
   const trigger = (
-    <button
-      type="button"
+    <Chip
+      variant="composerTrigger"
       aria-label={locale.text('modeLabel')}
       aria-haspopup="menu"
       aria-expanded={open}
+      open={open}
+      icon={<Icon as={CircleTree} size={14} />}
+      chevron={<Icon as={ChevronDown} />}
       onClick={() => setOpen(value => !value)}
-      className={open ? 'dshp-mode-select__trigger dshp-mode-select__trigger--open' : 'dshp-mode-select__trigger'}
     >
-      <span className="dshp-mode-select__icon">
-        <Icon as={CircleTree} size={13} />
-      </span>
       <span className="dshp-mode-select__label">{activeLabel}</span>
-      <Icon as={ChevronDown} className={open ? 'dshp-mode-select__chevron dshp-mode-select__chevron--open' : 'dshp-mode-select__chevron'} />
-    </button>
+    </Chip>
   )
 
   return (

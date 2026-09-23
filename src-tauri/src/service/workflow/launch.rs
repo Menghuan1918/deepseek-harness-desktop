@@ -207,7 +207,7 @@ fn is_duplicate_loader_exit(exit_code: u32, stderr: &str) -> bool {
 pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     let mut setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
-    // 活动核心的 dsh 入口（本地核心优先，未检测到走预打包）
+    let _transition_guard = super::process::acquire_core_transition().await?;
     let dsh_binary_path = crate::service::core::active_dsh_binary(&app_handle);
 
     log::debug!("Checking Node.js path: {:?}", node_binary_path);
@@ -223,7 +223,6 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     // 从这里开始持有与核心切换共用的互斥锁：最终状态检查、启动守卫、残留清扫
     // 及新进程登记必须处于同一临界区，避免切换在检查后插入。
-    let _transition_guard = super::process::acquire_core_transition().await?;
 
     // 避免重复启动（配合启动守卫，确保并发调用只拉起一个进程）
     if has_owned_process() {
@@ -528,7 +527,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
 
     // 内嵌 WebView 是 `tauri.localhost` 下的跨源沙箱 iframe，`SameSite=Strict` 的
-    // browser-session Cookie 不会被携带。载体标记交给 dsh-tauri-connection 插件：
+    // browser-session Cookie 不会被携带。载体标记交给 dsh-tauri 插件（载体鉴权适配）：
     // 只有该标记在场时它才覆写 connection 的鉴权闸门，因此同一 profile 下独立运行
     // 的 `dsh web` 不受影响（取代原先对核心 JS 打的 `--skip-auth` 磁盘补丁）。
     envs.insert("DSH_TAURI_EMBEDDED".to_string(), "1".to_string());
@@ -573,6 +572,16 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
     let active_profile = crate::service::profile::active_profile(&app_handle);
+    let app_core_dir = config::get_dsh_install_path(&app_handle);
+    let core_dir = if dsh_binary_path == config::get_dsh_binary_path(&app_handle) {
+        app_core_dir
+    } else {
+        dsh_binary_path
+            .parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or(app_core_dir)
+    };
     let spawn_result: SpawnResult = {
         #[cfg(windows)]
         {
@@ -599,7 +608,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                     super::win_spawn::spawn_with_hidden_console_owned(
                         &node_binary_path,
                         &args,
-                        Some(&config::get_dsh_install_path(&app_handle)),
+                        Some(&core_dir),
                         &envs,
                     )
                 };
@@ -699,7 +708,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 .arg(&setting.port.to_string());
             cmd.arg("--no-open");
             cmd.envs(&envs)
-                .current_dir(config::get_dsh_install_path(&app_handle))
+                .current_dir(&core_dir)
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
                 .stdin(Stdio::null())
                 // 使用管道捕获输出，以便在子线程中读取
@@ -740,7 +749,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                                             .arg(setting.port.to_string());
                                         cmd.arg("--no-open");
                                         cmd.envs(&envs)
-                                            .current_dir(config::get_dsh_install_path(&app_handle))
+                                            .current_dir(&core_dir)
                                             .stdin(Stdio::null())
                                             .stdout(Stdio::piped())
                                             .stderr(Stdio::piped())

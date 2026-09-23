@@ -14,16 +14,20 @@ const HERO_WORKSPACE_FLOW_SLOT = 'conversation.hero.workspace.directoryFlow'
 const HERO_WORKSPACE_PRIORITY = -1
 
 const mocks = vi.hoisted(() => ({
-  createWorkspace: vi.fn(),
+  workspaceService: {
+    model: { create: vi.fn() },
+    create(input: { path: string }) { return this.model.create(input) },
+  },
   startUngroupedSession: vi.fn(),
   registrations: [] as Array<{ key: string, options: Record<string, unknown>, component: unknown }>,
   composerWorkspaceLess: true,
+  workspaceServiceAvailable: true,
 }))
 
 vi.mock('../service/ungrouped-session', () => ({ startUngroupedSession: mocks.startUngroupedSession }))
 
 // 组件树会拉起官方 primitives（含 `.module.css`，node 环境下不可加载）：这里只验注册契约，替身即可。
-vi.mock('../components/hero-workspace', () => ({ HeroWorkspace: () => null }))
+vi.mock('../ui/hero-workspace', () => ({ HeroWorkspace: () => null }))
 
 vi.mock('dsh-tauri/client', () => ({
   defineRegister: (ctxOrSetup: unknown, maybeSetup?: unknown) => {
@@ -45,7 +49,9 @@ vi.mock('dsh-tauri/client', () => ({
         },
       }
       setup(controller, this, {
-        service: (name: string) => name === 'workspaces' ? { create: mocks.createWorkspace } : undefined,
+        service: (name: string) => name === 'workspaces' && mocks.workspaceServiceAvailable
+          ? mocks.workspaceService
+          : undefined,
         has: () => mocks.composerWorkspaceLess,
       })
       return () => controller.dispose()
@@ -77,6 +83,7 @@ function createCtx(options: { flowOccupied?: boolean } = {}) {
 afterEach(() => {
   mocks.registrations.length = 0
   mocks.composerWorkspaceLess = true
+  mocks.workspaceServiceAvailable = true
   vi.restoreAllMocks()
   vi.clearAllMocks()
 })
@@ -99,18 +106,22 @@ describe('heroWorkspaceFeature', () => {
     dispose()
   })
 
-  it('inject 工厂交出官方建工作区能力、未分组新建动作与目录流程占用源', () => {
+  it('inject 工厂绑定官方建工作区服务、未分组新建动作与目录流程占用源', async () => {
     const { ctx, subscribe } = createCtx({ flowOccupied: true })
 
     const dispose = heroWorkspaceFeature.call(ctx)
     const injectFactory = mocks.registrations[0]?.options.inject as () => {
-      createWorkspace?: unknown
+      createWorkspace?: (input: { path: string }) => Promise<{ workspaceId: string }>
       startUngrouped: () => void
       hooks: { directoryFlow: { getSnapshot: () => boolean, subscribe: (listener: () => void) => () => void } }
     }
     const injected = injectFactory()
 
-    expect(injected.createWorkspace, '建工作区能力直接来自适配层的官方 workspaces.create').toBe(mocks.createWorkspace)
+    const workspace = { workspaceId: 'workspace-new' }
+    mocks.workspaceService.model.create.mockResolvedValue(workspace)
+    expect(injected.createWorkspace).toBeTypeOf('function')
+    await expect(injected.createWorkspace!({ path: '/tmp/example' })).resolves.toBe(workspace)
+    expect(mocks.workspaceService.model.create).toHaveBeenCalledWith({ path: '/tmp/example' })
 
     injected.startUngrouped()
     expect(mocks.startUngroupedSession).toHaveBeenCalledTimes(1)
@@ -119,6 +130,23 @@ describe('heroWorkspaceFeature', () => {
     const listener = vi.fn()
     injected.hooks.directoryFlow.subscribe(listener)
     expect(subscribe).toHaveBeenCalledWith(HERO_WORKSPACE_FLOW_SLOT, listener)
+    dispose()
+  })
+
+  it('工作区服务晚于适配层就绪时仍可创建，缺席时不暴露入口', async () => {
+    const { ctx } = createCtx()
+    mocks.workspaceServiceAvailable = false
+    const dispose = heroWorkspaceFeature.call(ctx)
+    const injectFactory = mocks.registrations[0]?.options.inject as () => {
+      createWorkspace?: (input: { path: string }) => Promise<{ workspaceId: string }>
+    }
+
+    expect(injectFactory().createWorkspace).toBeUndefined()
+    mocks.workspaceServiceAvailable = true
+    const workspace = { workspaceId: 'workspace-late' }
+    mocks.workspaceService.model.create.mockResolvedValue(workspace)
+    await expect(injectFactory().createWorkspace!({ path: '/tmp/late' })).resolves.toBe(workspace)
+    expect(mocks.workspaceService.model.create).toHaveBeenCalledWith({ path: '/tmp/late' })
     dispose()
   })
 

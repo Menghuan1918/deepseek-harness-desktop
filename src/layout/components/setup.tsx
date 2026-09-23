@@ -1,6 +1,6 @@
 import type { IconComponent } from './loadable'
 import type { SetupStatus } from '@/store/modules/harness'
-import { ArrowDownToLine, CircleCheck, CircleExclamation, CircleInfo, Copy, Magnifier, Rocket, ShieldCheck } from '@gravity-ui/icons'
+import { ArrowRightFromSquare, CircleCheck, CircleExclamation, CircleInfo, Copy, Magnifier, Rocket, ShieldCheck } from '@gravity-ui/icons'
 import { invoke } from '@tauri-apps/api/core'
 import { useTranslation } from 'react-i18next'
 import { If, Then } from 'react-if-lite'
@@ -15,7 +15,7 @@ import { Loadable } from './loadable'
 // 各阶段对应不同图标，保持与 logo 一致的黑白中性色调
 const STATUS_ICONS: Record<SetupStatus, IconComponent> = {
   checking: Magnifier,
-  installing: ArrowDownToLine,
+  installing: ArrowRightFromSquare,
   starting: Rocket,
   preinstall: CircleInfo,
   ready: CircleCheck,

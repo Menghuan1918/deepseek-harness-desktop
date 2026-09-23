@@ -1,10 +1,8 @@
 import type { ReactElement } from 'react'
 import type { SessionsRuntime, WorkspacesRuntime } from '../service/session-switch.types'
 import type { WorktreeDialogProps } from './dialog.types'
-import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
-import { useMountStyle } from 'dsh-tauri-ui/client'
+import { Button, Input, Modal } from 'dsh-tauri-ui/client'
 import { find } from 'dsh-tauri/client'
-import { DIALOG_STYLE_ID } from '../constants'
 import { useCurrentSession } from '../hooks/use-current-session'
 import { useDiscard } from '../hooks/use-discard'
 import { useWaiter } from '../hooks/use-waiter'
@@ -13,11 +11,9 @@ import { locale } from '../locales'
 import { openSession, waitForSessionListed } from '../service/session-switch'
 import { checkout } from '../service/worktree'
 import { store } from '../store'
-import dialogStyle from './dialog.cssr'
 
 export function WorktreeDialog({ workspacesRuntime, sessionsRuntime }: WorktreeDialogProps): ReactElement | null {
   locale.useLocale()
-  useMountStyle(dialogStyle, DIALOG_STYLE_ID)
   const sessionId = useCurrentSession(sessionsRuntime)
   const state = useWorktreeSession(sessionId)
   const discardWorktree = useDiscard(sessionId)
@@ -121,15 +117,12 @@ function CheckoutDialog(props: {
       <div className="dshp-worktree__dialog-form">
         <div className="dshp-worktree__dialog-field">
           <label className="dshp-worktree__dialog-field-label" htmlFor="wt-checkout-branch">{locale.text('checkoutBranchLabel')}</label>
-          <div className="dshp-worktree__dialog-input-wrap">
-            <input
-              id="wt-checkout-branch"
-              className="dshp-worktree__dialog-input"
-              value={branchName}
-              placeholder={locale.text('branchPlaceholder')}
-              onChange={event => updateBranch(event.target.value)}
-            />
-          </div>
+          <Input
+            id="wt-checkout-branch"
+            value={branchName}
+            placeholder={locale.text('branchPlaceholder')}
+            onChange={event => updateBranch(event.target.value)}
+          />
         </div>
         <div className="dshp-worktree__dialog-path-row">
           <span className="dshp-worktree__dialog-path-key">{locale.text('checkoutCurrentPath')}</span>

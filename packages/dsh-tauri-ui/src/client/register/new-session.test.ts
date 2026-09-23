@@ -7,7 +7,7 @@
  */
 import type { ClientContext } from 'dsh-tauri/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { sidebarNewSessionFeature } from './new-session'
+import { sidebarNewSessionFeature, ungroupedNewSessionFeature } from './new-session'
 
 const mocks = vi.hoisted(() => ({
   startUngroupedSession: vi.fn(),
@@ -64,7 +64,11 @@ interface ControllerStub {
 }
 
 class FakeElement {
-  closest: (selector: string) => FakeButton | null = () => null
+  closest: (selector: string) => FakeElement | null = () => null
+
+  getAttribute(_name: string): string | null {
+    return null
+  }
 }
 
 class FakeButton extends FakeElement {
@@ -197,5 +201,106 @@ describe('sidebarNewSessionFeature', () => {
     expect(warn, '告警只打一次，不刷屏').toHaveBeenCalledTimes(1)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('composer.workspace-less'))
     dispose()
+  })
+})
+
+/**
+ * 官方「未分组」分组行的「+」在未分组桶里是空实现（`group.workspaceId === undefined`），
+ * 点击没有任何效果；这里锁住「与侧边栏『新建会话』一致」的接管行为与两代判据。
+ */
+describe('ungroupedNewSessionFeature', () => {
+  /** 官方分组行：0.1.7 起带 `data-row-key`（未分组桶为 `workspace:`）。 */
+  function rowWith(rowKey: string | null): FakeElement {
+    const row = new FakeElement()
+    row.getAttribute = name => (name === 'data-row-key' ? rowKey : null)
+    return row
+  }
+
+  /** 分组行的「+」：最近的 `button[aria-label]` 是自己，最近的 `[data-row-key]` 是分组行。 */
+  function plusIn(row: FakeElement | null, label: string | null): FakeButton {
+    const button = new FakeButton(label)
+    button.closest = (selector) => {
+      if (selector === 'button[aria-label]')
+        return button
+      if (selector === '[data-row-key]')
+        return row
+      return null
+    }
+    return button
+  }
+
+  it('0.1.7：未分组分组行的「+」按行键命中并改走未分组新建', () => {
+    const dispose = ungroupedNewSessionFeature.call(ctx)
+    const controller = mocks.controller as ControllerStub
+
+    const event = clickEvent(plusIn(rowWith('workspace:'), '在“未分组”中新建会话'))
+    controller.click(event)
+
+    expect(event.preventDefault, '官方空实现必须被拦下').toHaveBeenCalledTimes(1)
+    expect(event.stopImmediatePropagation, '官方 onClick 挂在 React 根容器上，必须阻断传播').toHaveBeenCalledTimes(1)
+    expect(mocks.startUngroupedSession).toHaveBeenCalledTimes(1)
+    dispose()
+  })
+
+  it('0.1.7：真实工作区分组行的「+」不命中', () => {
+    const dispose = ungroupedNewSessionFeature.call(ctx)
+    const controller = mocks.controller as ControllerStub
+
+    const event = clickEvent(plusIn(rowWith('workspace:ws-1'), '在“dsh-tauri-desktop”中新建会话'))
+    controller.click(event)
+
+    expect(event.preventDefault, '真实工作区的分组行行为必须保持不变').not.toHaveBeenCalled()
+    expect(mocks.startUngroupedSession).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it('≤0.1.6：没有 data-row-key 时退化按「未分组」文案命中', () => {
+    const dispose = ungroupedNewSessionFeature.call(ctx)
+    const controller = mocks.controller as ControllerStub
+
+    controller.click(clickEvent(plusIn(null, '在“未分组”中新建会话')))
+    expect(mocks.startUngroupedSession).toHaveBeenCalledTimes(1)
+
+    controller.click(clickEvent(plusIn(null, 'New session in Ungrouped')))
+    expect(mocks.startUngroupedSession).toHaveBeenCalledTimes(2)
+    dispose()
+  })
+
+  it('≤0.1.6：真实工作区的「+」与侧边栏「新建会话」都不命中', () => {
+    const dispose = ungroupedNewSessionFeature.call(ctx)
+    const controller = mocks.controller as ControllerStub
+
+    controller.click(clickEvent(plusIn(null, '在“dsh-tauri-desktop”中新建会话')))
+    controller.click(clickEvent(plusIn(null, '新建会话')))
+
+    expect(mocks.startUngroupedSession).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it('缺 composer 补丁时放行官方分支，只告警一次', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.composerWorkspaceLess = false
+    const dispose = ungroupedNewSessionFeature.call(ctx)
+    const controller = mocks.controller as ControllerStub
+
+    const first = clickEvent(plusIn(rowWith('workspace:'), '在“未分组”中新建会话'))
+    controller.click(first)
+    controller.click(clickEvent(plusIn(rowWith('workspace:'), '在“未分组”中新建会话')))
+
+    expect(first.preventDefault, '能力缺席时不得拦官方点击').not.toHaveBeenCalled()
+    expect(mocks.startUngroupedSession).not.toHaveBeenCalled()
+    expect(warn, '告警只打一次，不刷屏').toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('composer.workspace-less'))
+    dispose()
+  })
+
+  it('dispose 后不再响应点击', () => {
+    const dispose = ungroupedNewSessionFeature.call(ctx)
+    const controller = mocks.controller as ControllerStub
+    dispose()
+
+    controller.click(clickEvent(plusIn(rowWith('workspace:'), '在“未分组”中新建会话')))
+
+    expect(mocks.startUngroupedSession).not.toHaveBeenCalled()
   })
 })

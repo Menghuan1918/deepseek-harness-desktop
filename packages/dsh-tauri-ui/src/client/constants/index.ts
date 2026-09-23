@@ -13,15 +13,8 @@ export const SETTINGS_ONBOARDING_SLOT = 'settings.onboarding'
 
 export const SETTINGS_SIDEBAR_ID = 'dsh-tauri-ui-settings'
 export const SETTINGS_SIDEBAR_CLASS = 'dshp-settings-sidebar'
-export const SETTINGS_STYLE_ID = 'dsh-tauri-ui-settings-sidebar-styles'
-export const SETTINGS_TRIGGER_STYLE_ID = 'dsh-tauri-ui-settings-trigger-styles'
-export const SETTINGS_NAV_ICON_STYLE_ID = 'dsh-tauri-ui-settings-nav-icon-styles'
-export const MENU_SELECT_STYLE_ID = 'dsh-tauri-ui-menu-select-styles'
-export const HERO_WORKSPACE_STYLE_ID = 'dsh-tauri-ui-hero-workspace-styles'
-export const TURN_NAVIGATION_STYLE_ID = 'dsh-tauri-ui-turn-navigation-styles'
-export const GLOBAL_STYLE_ID = 'dsh-tauri-ui-global-styles'
 
-/** 接管后的英雄区工作区选择控件（官方 chip 由样式隐藏，见 `components/hero-workspace.cssr.ts`）。 */
+/** 接管后的英雄区工作区选择控件（官方 chip 由样式隐藏，见 `ui/hero-workspace.cssr.ts`）。 */
 export const HERO_WORKSPACE_CHIP_CLASS = 'dshp-hero-workspace'
 
 /**
@@ -38,6 +31,17 @@ export const HERO_WORKSPACE_PRIORITY = -1
  */
 export const NEW_SESSION_LABELS = ['新建会话', 'New session'] as const
 
+/**
+ * 官方「未分组」分组行「+」的 aria-label（中英双语，逐字取自官方 ui-workspace 词典的
+ * `actions.newSession.aria` 与 `group.ungrouped` 组合）。
+ *
+ * 0.1.7 起分组行带 `data-row-key`，优先按行键判定；此文案只作为 ≤0.1.6 的退化判据。
+ */
+export const UNGROUPED_NEW_SESSION_LABELS = ['在“未分组”中新建会话', 'New session in Ungrouped'] as const
+
+/** 官方未分组分组行的行键：`workspace:` + 官方 `UNGROUPED_KEY`（后者为空串）。 */
+export const UNGROUPED_ROW_KEY = 'workspace:'
+
 /** dsh-im 客户端插件经 `ctx.provide` 发布的反射服务名（4.22.0 起）。 */
 export const DSH_IM_CLIENT_SERVICE = 'dshImClient'
 
@@ -51,6 +55,7 @@ export const SETTINGS_OPEN_EFFECT = `${PLUGIN_ID}: settings deep-link`
 export const IM_PANEL_EFFECT = `${PLUGIN_ID}: im panel`
 export const HERO_WORKSPACE_EFFECT = `${PLUGIN_ID}: hero workspace picker`
 export const NEW_SESSION_EFFECT = `${PLUGIN_ID}: sidebar new session`
+export const UNGROUPED_NEW_SESSION_EFFECT = `${PLUGIN_ID}: sidebar ungrouped new session`
 
 export const TURN_NAVIGATION_LABEL_ZH = '轮次导航'
 export const TURN_NAVIGATION_LABEL_EN = 'Turn navigation'

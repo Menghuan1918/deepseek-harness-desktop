@@ -158,6 +158,9 @@ mod tests {
             recommended: false,
             fix: false,
             default_checked: false,
+            default_unchecked: false,
+            dsh_supported_version: None,
+            version: None,
             win_only: false,
             internal,
         }
@@ -334,7 +337,7 @@ mod tests {
     fn spec_argument_keeps_space_spec_bare_for_argv_cores() {
         // issue #647：0.1.6-alpha.2 起 spec 作为单个 argv 直达 pnpm，Windows 上的
         // cmd 转义由 CLI 自己完成，预加引号会让 pnpm 收到带字面引号的 spec
-        let spec = "link:D:/Deepseek Harness Desktop/resources/node_modules/dsh-tauri-connection";
+        let spec = "link:D:/Deepseek Harness Desktop/resources/node_modules/dsh-tauri";
         assert_eq!(spec_argument(spec, Some("0.1.6-alpha.2")), spec);
         assert_eq!(spec_argument(spec, None), spec);
         assert_eq!(spec_argument(spec, Some("not-a-version")), spec);

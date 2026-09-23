@@ -113,6 +113,8 @@ $$\text{client/index.ts} \longrightarrow \begin{bmatrix} \text{register/} \\ \te
 ### 6. UI 与样式 (`components/`, `styles/`, `hooks/`)
 
 * 组件全小写 kebab-case，仅读 store 和调用 service，禁止直接修改 store 或发网络请求[cite: 1]。
+* **资源化优先 `dsh-tauri-ui`**：通用控件（按钮、图标按钮、chip、tag、开关、复选框、下拉菜单、输入、分段控件、面板容器）与图标一律从 `dsh-tauri-ui/client` 取用；严禁在包内自建同名通用组件，也严禁直接 import 官方 `@deepseek-ai/dsh-client-ui-primitives`（官方组件的跨内核版本差异由 `dsh-tauri-ui` 统一吸收）。缺什么就补进 `dsh-tauri-ui` 的组件层，不在消费包里各写一份。
+* 包内 `components/` 只保留业务组件与包专属布局样式；任何可能被第二个包复用的组件，上提到 `dsh-tauri-ui`。
 * `.cssr.ts` **只导出 `CNode**`，挂载统一通过 `useMountStyle` 或收敛至 `register/styles.ts`[cite: 1]。
 * Hook 命名为 `use-<thing>.ts`，优先复用 `@reause/core` 原语（如 `useIntervalFn`）[cite: 1]。
 
@@ -155,4 +157,5 @@ $$\text{client/index.ts} \longrightarrow \begin{bmatrix} \text{register/} \\ \te
 * [ ] **依赖与本地化**：无第三方库直接 import；本地化统一采用 `defineLocale`[cite: 1]。
 * [ ] **类型/工具归属**：单一模块专属的类型/工具是否与所属模块**同目录同名**（`<module>.types.ts` / `<module>.utils.ts`），`types/`、`utils/` 是否只留真正跨模块共享的文件？
 * [ ] **零无意义封装**：不存在 `function f(x) { return lodashFn(x) }` 这类纯转调包装；手写处理逻辑（裁剪、比较、排序、去重、取值、判空）一律改用 `dsh-tauri/client` 转出的 `lodash-es`。
+* [ ] **组件资源化**：通用控件与图标全部来自 `dsh-tauri-ui/client`，包内无重复实现、无对官方 `@deepseek-ai/dsh-client-ui-primitives` 的直连 import。
 * [ ] **工程校验**：`pnpm --filter <pkg> typecheck` / `lint` / `test` / `build` 全部通过[cite: 2]。

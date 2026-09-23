@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn spaced_argument_round_trips_to_child_argv() {
         let node = find_node_on_path().expect("node.exe not found for the test");
-        let spec = "link:D:/Deepseek Harness Desktop/resources/node_modules/dsh-tauri-connection";
+        let spec = "link:D:/Deepseek Harness Desktop/resources/node_modules/dsh-tauri";
         let args = vec![
             OsString::from("-e"),
             OsString::from("process.stdout.write(JSON.stringify(process.argv.slice(1)))"),

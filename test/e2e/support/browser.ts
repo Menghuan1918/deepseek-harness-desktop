@@ -39,8 +39,7 @@ export const WORKTREE_MODE_ANCHOR = '[data-dsh-tauri-worktree-mode-anchor]'
 export const WORKTREE_SURFACE = '[data-dsh-worktree-surface]'
 export const SESSION_ARCHIVE_ITEM = '[data-dsh-tauri-session-archive-item]'
 export const SESSION_ARCHIVE_MENU_PATCHED = '[data-dsh-tauri-session-archive-menu-patched="1"]'
-export const TURNREWIND_CARD = '[data-turnrewind-card]'
-export const TURNREWIND_RUNNING = '[data-turnrewind-running]'
+export const RUNNING_CHANGES = '[data-running-changes]'
 
 /** dsh 内部结构（上游产物）：可用稳定结构性锚点。 */
 export const SIDEBAR = '[data-slot="sidebar"]'

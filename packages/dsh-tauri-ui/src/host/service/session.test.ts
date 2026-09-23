@@ -37,7 +37,7 @@ describe('session.resume', () => {
     const { followed } = setup({ events: [{ type: 'turn/start' }, turnEnd('aborted')] })
     expect(await session.resume('s1')).toEqual({ ok: true })
     expect(followed).toHaveLength(1)
-    expect(followed[0]?.source).toEqual({ kind: 'plugin', plugin: 'continue' })
+    expect(followed[0]?.source).toEqual({ kind: 'continue' })
   })
 
   it('continues interrupted and errored turns', async () => {

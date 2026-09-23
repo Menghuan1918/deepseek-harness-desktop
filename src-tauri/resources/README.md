@@ -69,16 +69,33 @@ that adds one entry to the JSON array:
 | ------------- | -------- | ----------------------------------------------------------------------- |
 | `id`          | yes      | Unique front-end key; must be a legal npm dependency name               |
 | `spec`        | yes      | Dependency form passed to `dsh plugin add` (npm name or `github:owner/repo`) |
+| `version`     | no       | Inclusive installed-plugin version cap for core-driven automatic removal; not an installation pin |
+| `dshSupportedVersion` | no | Highest supported core version; a newer core disables the preset in the UI and makes it eligible for automatic cleanup |
 | `name`        | yes      | Display name                                                            |
 | `description` | yes      | Shown in the wizard; bilingual (`en. · 中文`) is encouraged             |
 | `repoUrl`     | yes      | Repository page, opened via the "open repo" button                      |
 | `recommended` | no       | Green "recommended" chip, checked by default (defaults to `false`)      |
 | `fix`         | no       | Yellow "fix" chip, checked by default — reserved for Windows minimal-mode fixes (defaults to `false`) |
+| `defaultUnchecked` | no  | Listed with the "recommended" chip but **not** pre-checked in the wizard (defaults to `false`) |
 | `winOnly`     | no       | Only listed on Windows (defaults to `false`)                            |
 
 `id` must be unique across the file. The plugin itself is **not** vendored into
 this repository — it is installed on the user's machine from `spec` at setup
 time, so the PR only needs to add the JSON entry.
+
+### Core-driven automatic removal
+
+When the running core is newer than `dshSupportedVersion`, startup cleanup can
+remove the installed plugin. An optional `version` limits this cleanup to installed
+versions **less than or equal to** that cap, using semantic-version precedence.
+Higher installed versions are kept. If a cap is present but the installed version
+is unknown or invalid, or the cap itself is invalid, core-driven cleanup is skipped.
+Omitting `version` retains the previous uncapped cleanup behavior.
+
+`version` is metadata for automatic removal, **not** an installation pin: installation
+still uses `spec`. It does not change the core-based UI compatibility check or manual
+uninstall. The separate `deprecated-plugins.json` list is unaffected and continues
+to remove listed plugins independently of these version caps.
 
 ### Built-in (internal) plugins
 

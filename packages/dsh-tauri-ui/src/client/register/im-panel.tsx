@@ -2,10 +2,10 @@ import type { ClientContext } from 'dsh-tauri/client'
 import { definePanel, defineRegister } from 'dsh-tauri/client'
 import { Icon } from '../components/icon'
 import { Comments } from '../components/icons'
-import { PanelPage } from '../components/panel-page'
 import { DSH_IM_CLIENT_SERVICE } from '../constants'
 import { locale } from '../locales'
 import { readDshImClient } from '../service/dsh-im'
+import { PanelPage } from '../ui/panel-page'
 
 /** 带插件前缀：dsh-im 源码仓库另有一个手动安装的同名接入（id `dsh-im`），同 id 会撞槽位。 */
 const IM_PANEL_ID = 'dsh-tauri-ui-im'

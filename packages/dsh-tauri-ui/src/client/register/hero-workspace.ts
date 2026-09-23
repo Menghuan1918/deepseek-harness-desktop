@@ -1,13 +1,13 @@
 import type { AdapterWorkspaces, ClientAdapter, ClientContext } from 'dsh-tauri/client'
 import { defineRegister } from 'dsh-tauri/client'
 import { PLUGIN_ID } from '../../shared/constants'
-import { HeroWorkspace } from '../components/hero-workspace'
 import {
   HERO_WORKSPACE_FLOW_SLOT,
   HERO_WORKSPACE_PRIORITY,
   HERO_WORKSPACE_SLOT,
 } from '../constants'
 import { startUngroupedSession } from '../service/ungrouped-session'
+import { HeroWorkspace } from '../ui/hero-workspace'
 
 /**
  * 接管官方 `conversation.hero.workspace`（single/root）：按更低 priority 顶掉官方 `WorkspacePicker`，
@@ -37,7 +37,7 @@ export const heroWorkspaceFeature = defineRegister<ClientContext>((controller, c
         priority: HERO_WORKSPACE_PRIORITY,
         inject: () => ({
           createWorkspace: readCreateWorkspace(adapter),
-          startUngrouped: () => startUngroupedSession(ctx),
+          startUngrouped: () => startUngroupedSession(ctx, adapter),
           hooks: { directoryFlow },
         }),
       } as never,
@@ -48,5 +48,6 @@ export const heroWorkspaceFeature = defineRegister<ClientContext>((controller, c
 
 /** 调用期解析：适配层创建期的 `adapter.workspaces` 快照可能因服务晚到而永久缺席。 */
 function readCreateWorkspace(adapter: ClientAdapter): AdapterWorkspaces['create'] {
-  return adapter.service<AdapterWorkspaces>('workspaces')?.create
+  const workspaces = adapter.service<AdapterWorkspaces>('workspaces')
+  return workspaces?.create?.bind(workspaces)
 }

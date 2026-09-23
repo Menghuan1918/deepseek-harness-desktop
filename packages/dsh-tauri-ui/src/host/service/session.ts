@@ -5,7 +5,9 @@ import { getCurrentHostInstance } from '../config/runtime'
 
 const CONTINUE_INSTRUCTION = 'Continue the interrupted task from where it stopped. Do not repeat work that is already complete.'
 
-const CONTINUE_SOURCE = { kind: 'plugin', plugin: 'continue' } as const
+// dsh ≥0.1.7 的 v4 准入拒绝 `kind: 'plugin'` 包装（format v4 message requires a producer-owned
+// source kind），且上下文行标签直接取 `kind`；两代内核的默认分支都渲染 `kind`。
+const CONTINUE_SOURCE = { kind: 'continue' } as const
 
 const SETTLED_TURN_END_KINDS = ['completed', 'blocked', 'max-tokens']
 

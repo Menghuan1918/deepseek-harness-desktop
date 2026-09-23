@@ -37,6 +37,8 @@ interface InvokeBridgeRequest {
  * 回环 http——见 src-tauri/src/bridge/remote.rs）。
  */
 const ALLOWED_INVOKE_CMDS = new Set([
+  // 只读布尔量，供 dsh-tauri-ui 决定是否挂载仅 dev 可见的调试面板。
+  'is_dev_build',
   'get_pet_status',
   'set_pet_enabled',
   'set_active_pet',

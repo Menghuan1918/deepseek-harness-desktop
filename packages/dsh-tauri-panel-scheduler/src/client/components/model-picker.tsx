@@ -1,18 +1,10 @@
-/**
- * components/model-picker.tsx — 模型选择器（对齐 dsh-automation create-modal 的 ModelPicker：
- * root / model / effort 三 pane + provider 分组），弹层走官方 primitives `Menu`。
- */
-
-import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MenuEntry } from 'dsh-tauri-ui/client'
 import type { ReactElement } from 'react'
 import type { Translate } from '../locales/index.types'
 import type { ModelCatalogFailure, ModelOption } from '../types'
-import { IconChevronDownOutline14 as ChevronDown, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
-import { Icon, useMountStyle } from 'dsh-tauri-ui/client'
+import { ChevronDown, Chip, Icon, Menu } from 'dsh-tauri-ui/client'
 import { groupBy } from 'dsh-tauri/client'
 import { useEffect, useState } from 'react'
-import { MODEL_PICKER_STYLE_ID } from '../constants'
-import modelPickerStyle from './model-picker.cssr'
 
 type Pane = 'root' | 'model' | 'effort'
 
@@ -49,7 +41,6 @@ export function ModelPicker({
   readonly reasoningEffort: string
   readonly onSelection: (modelKey: string, reasoningEffort: string) => void
 }) {
-  useMountStyle(modelPickerStyle, MODEL_PICKER_STYLE_ID)
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<Pane>('root')
   const selected = models.find(item => `${item.provider}::${item.model}` === modelKey)
@@ -69,8 +60,7 @@ export function ModelPicker({
     models: group,
   }))
 
-  // 弹层打开时的 Escape 一律由本组件消费：子 pane 回 root，root 关闭弹层。
-  // 必须拦在 capture 阶段，否则事件会同时触达外层 Modal 的 Escape（连带关掉对话框）。
+  // Escape 必须拦在 capture 阶段，否则会同时触达外层 Modal 并连带关掉对话框
   useEffect(() => {
     if (!open)
       return
@@ -165,7 +155,6 @@ export function ModelPicker({
       portal
       side="top"
       align="end"
-      className={`${'dshp-scheduler__model-select'}${open ? ` ${'dshp-scheduler__model-select--open'}` : ''}`}
       items={items}
       selectedId={selectedId}
       onSelect={onSelect}
@@ -174,9 +163,9 @@ export function ModelPicker({
         setPane('root')
       }}
       anchor={(
-        <button
-          type="button"
-          className="dshp-scheduler__model-trigger"
+        <Chip
+          variant="composerTrigger"
+          open={open}
           aria-label={selected === undefined
             ? t('trigger.selectAria')
             : effortLabel === undefined
@@ -193,11 +182,13 @@ export function ModelPicker({
             setPane('root')
             setOpen(true)
           }}
+          badge={effortLabel === undefined
+            ? undefined
+            : <span className="dshp-scheduler__model-trigger-effort">{effortLabel}</span>}
+          chevron={<Icon as={ChevronDown} />}
         >
-          <span>{trigger}</span>
-          {effortLabel !== undefined && <span className="dshp-scheduler__model-trigger-effort">{effortLabel}</span>}
-          <Icon as={ChevronDown} className={`${'dshp-scheduler__model-trigger-chevron'}${open ? ` ${'dshp-scheduler__model-trigger-chevron--open'}` : ''}`} />
-        </button>
+          <span className="dshp-scheduler__model-trigger-label">{trigger}</span>
+        </Chip>
       )}
     />
   )

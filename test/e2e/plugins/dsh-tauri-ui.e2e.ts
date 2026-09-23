@@ -11,6 +11,8 @@
  */
 
 import type { Browser } from 'playwright'
+import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import {
   COMPOSER_CARD,
@@ -26,12 +28,15 @@ import {
 /** 与 `packages/dsh-tauri-ui/src/host/routes/index.ts:5` 的唯一路由对齐。 */
 const RESUME_PATH = '/api/desktop/dsh-tauri-ui/session/resume'
 
+/** 未分组目录解析路由（`packages/dsh-tauri-ui/src/host/routes/ungrouped/get.ts`）。 */
+const UNGROUPED_PATH = '/api/desktop/dsh-tauri-ui/ungrouped'
+
 /** `/api/**` 要求浏览器会话；Cookie 由编排在根路径用一次性 token 换得。 */
 function headers(): Record<string, string> {
   return { 'cookie': inject('dshCookie'), 'content-type': 'application/json' }
 }
 
-/** 插件接管后的英雄区工作区 chip（`components/hero-workspace.tsx` 渲染）。 */
+/** 插件接管后的英雄区工作区 chip（`ui/hero-workspace.tsx` 渲染）。 */
 const HERO_WORKSPACE_CHIP = '.dshp-hero-workspace'
 
 /**
@@ -57,6 +62,11 @@ interface ResumeBody {
   ok?: boolean
 }
 
+interface UngroupedBody {
+  cwd?: string
+  error?: string
+}
+
 describe('L2 宿主路由', () => {
   it('[反向] 验证续跑缺 sessionId 返回 400', async () => {
     const response = await fetch(url(), { method: 'POST', headers: headers(), body: '{}' })
@@ -80,6 +90,27 @@ describe('L2 宿主路由', () => {
     const body = await response.json() as ResumeBody
     expect(body.error, '会话不存在文案必须逐字相等').toBe('会话不存在或尚未运行')
     expect(JSON.stringify(body), '未知会话不得走到注入成功分支').not.toContain('"ok":true')
+  })
+
+  it('验证未分组目录解析路由落在 scratch DSH_HOME 下的 ungrouped，且不是核心安装目录', async () => {
+    const home = inject('dshHome')
+    const response = await fetch(`${inject('dshBaseUrl')}${UNGROUPED_PATH}`, { headers: headers() })
+
+    expect(response.status, '目录解析是只读推导，必须 200').toBe(200)
+
+    const body = await response.json() as UngroupedBody
+    expect(Object.keys(body).sort(), '成功响应必须恰为 cwd 一个字段').toEqual(['cwd'])
+    expect(typeof body.cwd, 'cwd 必须是字符串路径').toBe('string')
+    expect(body.cwd, 'cwd 必须是绝对路径').toMatch(/^[A-Z]:\\|^\//)
+    // 症状本身：桌面壳把 dsh 进程的 cwd 固定为核心安装目录（`dependencies/dsh`），
+    // 不显式给 cwd 的未分组会话就会落进那个目录，形成伪项目分组。
+    expect(body.cwd, '必须落在宿主自己的 DSH_HOME 之下，而不是进程 cwd（核心安装目录）').not.toMatch(/dependencies[\\/]dsh$/)
+    expect(
+      String(body.cwd).startsWith(home),
+      `cwd 必须位于 scratch DSH_HOME 之下（实测 cwd=${String(body.cwd)} home=${home}）`,
+    ).toBe(true)
+    expect(String(body.cwd).split(/[\\/]/).at(-1), '未分组目录名必须是 ungrouped').toBe('ungrouped')
+    expect(body.error, '成功响应不得带 error').toBeUndefined()
   })
 })
 
@@ -311,8 +342,40 @@ describe('L2 客户端', () => {
         async () => await app.frame.evaluate(() => document.querySelector('[data-composer-card] [aria-label="选择工作区"]') !== null),
         { timeout: 20_000, message: '会话已就位，composer 不得再停在「必须先选工作区」的不可用态' },
       ).toBe(false)
+
       expectNoSyntheticFallbacks(app)
       expect(app.errors, '未分组新建会话不得抛出应用级错误').toEqual([])
+    }
+    finally {
+      await app.close()
+    }
+  })
+
+  // chip 文案依赖官方列表快照的 `current` 投影，与本用例的观测面（磁盘）无关，因此独立成条：
+  // 即便 chip 断言在别的环境里失败，cwd 的端到端证据仍然会执行。
+  it('验证未分组新会话的 cwd 落在 scratch DSH_HOME/ungrouped，而非宿主进程 cwd', async () => {
+    const home = inject('dshHome')
+    const app = await newDshPage(browser, { ready: HERO_WORKSPACE_CHIP })
+    try {
+      await app.frame.locator(SIDEBAR_NEW_SESSION).first().click()
+
+      // 会话的项目目录由 cwd 决定，而空白会话尚未落盘（persistence 的 materialize 只在
+      // 首个事件批次时发生），因此磁盘上能观测到的最早产物是宿主建会话前的
+      // `mkdir -p cwd`（`dsh-api-session-controller` 的 ensureSession）。不显式传 cwd 时
+      // 宿主退回 `process.cwd()`——那是既有目录，绝不会新建出 ungrouped。
+      await expect.poll(
+        () => existsSync(join(home, 'ungrouped')),
+        { timeout: 20_000, message: '未分组会话的 cwd 必须是 DSH_HOME/ungrouped（宿主据此目录建会话）' },
+      ).toBe(true)
+
+      // 反向证据：宿主进程 cwd（scratch 车道里是 profile 目录 `<home>/profiles/web`）不得
+      // 出现会话痕迹。空白会话尚未 materialize，所以这里断言的是「没有它的项目目录」。
+      const sessionsRoot = join(home, 'sessions')
+      const projectDirs = existsSync(sessionsRoot) ? readdirSync(sessionsRoot) : []
+      expect(projectDirs.filter(entry => entry.includes('profiles-web')), '未分组会话不得落进宿主进程 cwd 对应的项目目录').toEqual([])
+
+      expectNoSyntheticFallbacks(app)
+      expect(app.errors, '未分组新会话不得抛出应用级错误').toEqual([])
     }
     finally {
       await app.close()

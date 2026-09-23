@@ -1,15 +1,17 @@
 /**
- * 批次 10 · `dsh-tauri-model-config` 的宿主路由（L1/L2 契约见 `docs/specs/plugin.test.md`）。
+ * 批次 10 · `dsh-tauri-model-config` 的模型设置页 + `dsh-tauri-ui` 承载的自有宿主路由
+ * （L1/L2 契约见 `docs/specs/plugin.test.md`）。
  *
- * 插件顶替官方模型设置页：宿主侧只有 5 条路由，本批覆盖其中 4 条的无会话分支——预设表结构、
- * 端点探测无 endpoint、打开配置文件、设置文件缺失时退回目录。`settings.yaml` 的真实解析与
- * `POST /presets?force=true` 的上游下载由 `packages/dsh-tauri-model-config/src/host/service/`
- * 下的 unit 用例覆盖，不在 L2 重复。
+ * 插件是官方 `ui-settings-models` 的原样 fork（宿主半区只有 `webserver/index-inject`
+ * 的页面全局注入，没有 HTTP 路由）。本仓库自有的 5 条路由随自动配置 / 打开配置文件
+ * 能力迁到 `dsh-tauri-ui`，因此宿主契约在这里按 `dsh-tauri-ui` 的 base 断言。
+ * `settings.yaml` 的真实解析与 `POST /presets?force=true` 的上游下载由
+ * `packages/dsh-tauri-ui/src/host/service/` 下的 unit 用例覆盖，不在 L2 重复。
  *
  * 断言对象是外部世界（HTTP 状态码、响应字节、scratch `DSH_HOME` 的文件状态、真实 DOM 结构），
  * 不采信插件自报。
  *
- * 宿主复用 globalSetup 的共享实例（已挂载 dsh-tauri-model-config），不另起进程。
+ * 宿主复用 globalSetup 的共享实例，不另起进程。
  */
 
 import type { Browser } from 'playwright'
@@ -28,11 +30,11 @@ import {
   waitForCredentialModal,
 } from '../support/browser'
 
-const PRESETS_PATH = '/api/desktop/dsh-tauri-model-config/presets'
-const ENDPOINT_MODELS_PATH = '/api/desktop/dsh-tauri-model-config/endpoint/models'
-const CONFIG_OPEN_PATH = '/api/desktop/dsh-tauri-model-config/config/open'
+const PRESETS_PATH = '/api/desktop/dsh-tauri-ui/presets'
+const ENDPOINT_MODELS_PATH = '/api/desktop/dsh-tauri-ui/endpoint/models'
+const CONFIG_OPEN_PATH = '/api/desktop/dsh-tauri-ui/config/open'
 
-/** 设置文件名（`packages/dsh-tauri-model-config/src/shared/constants.ts:4`）。 */
+/** 设置文件名（`packages/dsh-tauri-ui/src/shared/constants.ts`）。 */
 const SETTINGS_FILE = 'settings.yaml'
 
 /** 成功响应必须**恰为**这六个字段——多一个都说明契约变了。 */
@@ -42,15 +44,16 @@ const PRESETS_FIELDS = ['ok', 'source', 'fetchedAt', 'stale', 'count', 'presets'
 const SECRET_FIELDS = ['apiKey', 'api_key', 'key', 'token'] as const
 
 /**
- * 模型页的结构锚点：CSS Module 运行期类名保留原语义
- * （`packages/dsh-tauri-model-config/src/client/models/styles.ts:69,79,82,14`）。
+ * 模型页的结构锚点：cssr 运行期类名保留官方语义
+ * （`packages/dsh-tauri-model-config/src/client/models/styles.ts`）。
+ * 官方模型页没有标题行类名，标题是 `<h2 class="…title">`。
  */
-const MODELS_TITLE_ROW = '[class*="titleRow"]'
+const MODELS_TITLE = '[class*="title"]'
 const MODELS_PROVIDER_CARD = '[class*="rowCard"],[class*="setupCard"]'
 const MODELS_ADD_ACTIONS = '[class*="addActions"]'
 
-/** 空态下页脚操作区的按钮文案（`models/locales.ts:151,212`），不含任何宽泛词。 */
-const MODELS_ADD_LABELS = ['添加提供方', '添加自定义提供方'] as const
+/** 空态下页脚操作区的按钮文案（官方 0.1.7 文案），不含任何宽泛词。 */
+const MODELS_ADD_LABELS = ['添加模型提供商', '自定义模型 API'] as const
 
 interface PresetsBody {
   ok?: boolean
@@ -89,9 +92,9 @@ function secretFieldsIn(body: unknown): string[] {
 describe('宿主路由：预设表', () => {
   it('验证预设端点返回六个字段且 count 与 presets 长度一致', async () => {
     // 预设表来自公网上游：不种缓存就会在离线机器上退化成 502（实测），断言随机器漂移。
-    // 这里按被测实现自己的缓存格式（`$DSH_HOME/dsh-tauri-model-config/model-presets.json`，
+    // 这里按被测实现自己的缓存格式（`$DSH_HOME/dsh-tauri-ui/model-presets.json`，
     // 24h TTL 内命中即返回）种一份新鲜载荷，让「200 + 六字段契约」确定性可验、与外网解耦。
-    const cachePath = join(inject('dshHome'), 'dsh-tauri-model-config', 'model-presets.json')
+    const cachePath = join(inject('dshHome'), 'dsh-tauri-ui', 'model-presets.json')
     mkdirSync(dirname(cachePath), { recursive: true })
     writeFileSync(cachePath, JSON.stringify({
       source: 'https://e2e.invalid/presets.json',
@@ -253,23 +256,23 @@ describe('L2 客户端', () => {
       await openSettings(app.page, app.frame, app.syntheticFallbacks)
       await selectSettingsSection(app.page, app.frame, '模型', app.syntheticFallbacks)
 
-      const state = await app.frame.evaluate(({ titleRow, providerCard, addActions }) => {
+      const state = await app.frame.evaluate(({ title, providerCard, addActions }) => {
         const content = document.querySelector('[class*="content-inner"]')
         const footer = content?.querySelector(addActions)
         return {
-          titleRows: content?.querySelectorAll(titleRow).length ?? 0,
+          titles: content?.querySelectorAll(title).length ?? 0,
           providerCards: content?.querySelectorAll(providerCard).length ?? 0,
           footerButtons: Array.from(footer?.querySelectorAll('button') ?? []).map(button => button.textContent?.trim() ?? ''),
           buttons: content?.querySelectorAll('button').length ?? 0,
           alerts: Array.from(content?.querySelectorAll('[role="alert"]') ?? []).map(alert => alert.textContent?.trim()),
           navLabels: Array.from(document.querySelectorAll('nav[aria-label] button')).map(button => button.textContent?.trim()),
         }
-      }, { titleRow: MODELS_TITLE_ROW, providerCard: MODELS_PROVIDER_CARD, addActions: MODELS_ADD_ACTIONS })
+      }, { title: MODELS_TITLE, providerCard: MODELS_PROVIDER_CARD, addActions: MODELS_ADD_ACTIONS })
 
-      expect(state.titleRows, '模型页必须渲染标题行（证明走的是正常分支而非加载失败分支）').toBeGreaterThan(0)
+      expect(state.titles, '模型页必须渲染标题行（证明走的是正常分支而非加载失败分支）').toBeGreaterThan(0)
       expect(
         state.providerCards > 0 || MODELS_ADD_LABELS.some(label => state.footerButtons.includes(label)),
-        `模型页必须为提供商渲染卡片 ${MODELS_PROVIDER_CARD}，或渲染带「添加提供方」按钮的明确空态`
+        `模型页必须为提供商渲染卡片 ${MODELS_PROVIDER_CARD}，或渲染带「添加模型提供商」按钮的明确空态`
         + `（实际页脚按钮：${JSON.stringify(state.footerButtons)}）`,
       ).toBe(true)
       expect(state.buttons, '模型页必须渲染可交互的页脚操作区').toBeGreaterThan(0)
@@ -283,7 +286,7 @@ describe('L2 客户端', () => {
     }
   })
 
-  it('[反向] 验证预设上游不可用时模型页仍可交互', async () => {
+  it('[反向] 验证模型页不依赖预设上游（预设只在显式触发时拉取）', async () => {
     const app = await newDshPage(browser)
     let stubbedCalls = 0
     try {
@@ -310,7 +313,7 @@ describe('L2 客户端', () => {
         }
       })
 
-      expect(stubbedCalls, '夹具必须真的拦到预设请求，否则这条断言是空转').toBeGreaterThan(0)
+      expect(stubbedCalls, '模型页不得在加载时拉取预设上游：预设只由「自动配置所有模型」显式触发（该能力已迁到 dsh-tauri-ui）').toBe(0)
       expect(state.text, '预设上游不可用时页面其余部分仍必须渲染（不是整页崩溃）').not.toBe('')
       expect(state.buttons, '失败时仍必须保留可交互入口').toBeGreaterThan(0)
       expect(state.inputs, '失败时仍必须保留可编辑字段').toBeGreaterThan(0)

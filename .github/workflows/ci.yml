@@ -111,6 +111,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dsh-cli"
           cd "$RUNNER_TEMP/dsh-cli"
           npm init -y >/dev/null
+          # 0.1.5-rc.3 起该发布代的依赖区间引用了一个从未发布的版本
+          # （dsh-client-ui-sidebar-documentpreview@^0.1.5-rc.3），整条 0.1.5-rc.x
+          # 直接安装都会 ETARGET；用 overrides 夹回已发布的 rc.2（同一发布代）。
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.overrides={'@deepseek-ai/dsh-client-ui-sidebar-documentpreview':'0.1.5-rc.2'};fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
+          # 插件 L2 用例的文案/分区断言按 0.1.5-rc 基线写就（也是 README 声明的最低兼容基线）；
+          # 0.1.6 起上游改了设置侧栏分区名与未分组 chip 等文案，另需一轮 e2e 适配。
           npm install --no-audit --no-fund @deepseek-ai/dsh@0.1.5-rc.2
 
       - name: Plugin L2 test

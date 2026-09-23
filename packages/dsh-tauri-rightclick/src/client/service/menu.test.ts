@@ -6,11 +6,14 @@ import {
   archiveSessions,
   deleteWorkspace,
   forkSession,
+  isSessionPinned,
   loadUngroupedSessions,
   loadWorkspaceSessions,
   openExternalUrl,
   openInExplorer,
   renameSession,
+  supportsSessionPin,
+  togglePinSession,
 } from './menu'
 
 vi.mock('../apis', () => ({ postOpenPath: vi.fn(), postOpenUrl: vi.fn() }))
@@ -289,5 +292,88 @@ describe('deleteWorkspace', () => {
     await expect(deleteWorkspace({ workspaces, workspaceId: WORKSPACE_ID }))
       .resolves
       .toEqual({ ok: false, error: 'busy' })
+  })
+})
+
+describe('session pin (official 0.1.7 capability)', () => {
+  const workspacesWith = (
+    overrides: Record<string, unknown>,
+    pinnedSessionIds?: SessionId[],
+  ): WorkspacesRuntimeLike =>
+    ({
+      ...overrides,
+      list: { getSnapshot: () => ({ items: [], archivedSessionIds: [], pinnedSessionIds }) },
+    }) as unknown as WorkspacesRuntimeLike
+
+  it('reports the capability only when pin and unpin both exist', () => {
+    expect(supportsSessionPin(workspacesWith({ pinSession: vi.fn(), unpinSession: vi.fn() }))).toBe(true)
+    expect(supportsSessionPin(workspacesWith({ pinSession: vi.fn() }))).toBe(false)
+    expect(supportsSessionPin(workspacesWith({ unpinSession: vi.fn() }))).toBe(false)
+    expect(supportsSessionPin(workspacesWith({}))).toBe(false)
+  })
+
+  it('reads the pinned set from the workspace snapshot', () => {
+    const workspaces = workspacesWith({}, [sid('s-1')])
+    expect(isSessionPinned({ workspaces, sessionId: sid('s-1') })).toBe(true)
+    expect(isSessionPinned({ workspaces, sessionId: sid('s-2') })).toBe(false)
+  })
+
+  it('treats a pre-0.1.7 snapshot without a pinned set as unpinned', () => {
+    const workspaces = {
+      list: { getSnapshot: () => ({ items: [], archivedSessionIds: [] }) },
+    } as unknown as WorkspacesRuntimeLike
+
+    expect(isSessionPinned({ workspaces, sessionId: sid('s-1') })).toBe(false)
+  })
+
+  it('pins an unpinned session and unpins a pinned one', async () => {
+    const pinSession = vi.fn(async () => undefined)
+    const unpinSession = vi.fn(async () => undefined)
+    const workspaces = workspacesWith({ pinSession, unpinSession })
+
+    await expect(togglePinSession({ workspaces, sessionId: sid('s-1'), pinned: false }))
+      .resolves
+      .toEqual({ ok: true })
+    expect(pinSession).toHaveBeenCalledWith('s-1')
+    expect(unpinSession).not.toHaveBeenCalled()
+
+    await expect(togglePinSession({ workspaces, sessionId: sid('s-1'), pinned: true }))
+      .resolves
+      .toEqual({ ok: true })
+    expect(unpinSession).toHaveBeenCalledWith('s-1')
+  })
+
+  it('invokes the official method with the service as receiver', async () => {
+    const seen: unknown[] = []
+    const workspaces = workspacesWith({
+      pinSession(sessionId: SessionId) {
+        seen.push(this)
+        expect(sessionId).toBe('s-1')
+        return Promise.resolve()
+      },
+      unpinSession: async () => undefined,
+    })
+
+    await togglePinSession({ workspaces, sessionId: sid('s-1'), pinned: false })
+    expect(seen[0]).toBe(workspaces)
+  })
+
+  it('refuses to run when the capability is absent', async () => {
+    await expect(togglePinSession({ workspaces: workspacesWith({}), sessionId: sid('s-1'), pinned: false }))
+      .resolves
+      .toEqual({ ok: false, error: 'pinSessionUnavailable' })
+  })
+
+  it('returns the thrown message when the official call rejects', async () => {
+    const workspaces = workspacesWith({
+      pinSession: async () => {
+        throw new Error('archive-conflict')
+      },
+      unpinSession: async () => undefined,
+    })
+
+    await expect(togglePinSession({ workspaces, sessionId: sid('s-1'), pinned: false }))
+      .resolves
+      .toEqual({ ok: false, error: 'archive-conflict' })
   })
 })

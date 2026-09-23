@@ -45,7 +45,7 @@ const DEFAULT_ALSO = [
   'dsh-tauri-ui',
   'dsh-tauri-panel-extension',
   'dsh-tauri-panel-scheduler',
-  'dsh-tauri-turnrewind',
+  'dsh-tauri-running-changes',
   'dsh-tauri-model-config',
 ].join(',')
 
