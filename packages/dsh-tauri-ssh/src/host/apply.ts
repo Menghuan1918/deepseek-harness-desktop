@@ -260,6 +260,8 @@ export class SshRemoteService implements SshApiHost {
     }
     if (row.startCommand !== undefined && row.startCommand !== '')
       next.startCommand = row.startCommand
+    if (row.profileName !== undefined && row.profileName !== '')
+      next.profileName = row.profileName
     if (row.color !== undefined && row.color !== '')
       next.color = row.color
     if (row.tintBorder === true)

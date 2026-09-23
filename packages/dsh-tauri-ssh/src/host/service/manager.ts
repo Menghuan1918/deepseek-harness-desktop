@@ -99,7 +99,7 @@ export interface SshManagerDeps {
    * tarball pipeline; tests stub it to stay offline). Returns whether the
    * remote was modified (a running instance gets restarted by the sync).
    */
-  syncPlugins?: (session: SshSession, profileName: string, hooks: { onEvent?: (stage: SshMachineStage, line: string) => void }) => Promise<boolean>
+  syncPlugins?: (session: SshSession, profileName: string, remotePort: number, hooks: { onEvent?: (stage: SshMachineStage, line: string) => void }) => Promise<boolean>
 }
 
 /** The sentinel rethrown when an in-flight attempt loses to a disconnect. */
@@ -452,7 +452,7 @@ export class SshManager {
     // 上传并重启实例，随后的 ensure 按新 profile 拉起。best-effort：同步
     // 失败降级为原生远端 UI，连接本身不受影响。
     try {
-      await (this.deps.syncPlugins ?? syncBundledPlugins)(session, safeProfileName(profile.profileName), {
+      await (this.deps.syncPlugins ?? syncBundledPlugins)(session, safeProfileName(profile.profileName), profile.remotePort, {
         onEvent: (stage, line) => {
           if (generation === state.generation)
             this.deps.events.append(machineId, stage, line)

@@ -290,7 +290,7 @@ function boot(overrides: Partial<{
   config: typeof config
   planInstall: () => Promise<RemoteInstallPlan>
   mintCookie: (authenticatedUrl: string) => Promise<string | undefined>
-  syncPlugins: (session: import('./transport').SshSession, profileName: string, hooks: { onEvent?: (stage: import('../types/index').SshMachineStage, line: string) => void }) => Promise<boolean>
+  syncPlugins: (session: import('./transport').SshSession, profileName: string, remotePort: number, hooks: { onEvent?: (stage: import('../types/index').SshMachineStage, line: string) => void }) => Promise<boolean>
   localAllowlist: () => import('./allowlist').WorkspaceAllowlist
 }> = {}) {
   const transport = new FakeTransport(overrides.sessionFactory ?? (() => new FakeSession(() => true)))

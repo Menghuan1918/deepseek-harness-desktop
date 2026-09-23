@@ -674,9 +674,13 @@ function pipeChannelWithCookie(
   const buffered: Buffer[] = []
   let bufferedLength = 0
   let injected = false
+  const writeToChannel = (data: Buffer): void => {
+    if (!channel.write(data))
+      socket.pause()
+  }
   socket.on('data', (chunk: Buffer) => {
     if (injected) {
-      channel.write(chunk)
+      writeToChannel(chunk)
       return
     }
     buffered.push(chunk)
@@ -686,16 +690,17 @@ function pipeChannelWithCookie(
     if (headEnd === -1) {
       if (bufferedLength > TUNNEL_HEAD_CAP) {
         injected = true
-        channel.write(whole)
+        writeToChannel(whole)
       }
       return
     }
     injected = true
     const head = whole.subarray(0, headEnd).toString('latin1')
     const rest = whole.subarray(headEnd)
-    channel.write(Buffer.concat([Buffer.from(injectCookieHead(head, cookie), 'latin1'), rest]))
+    writeToChannel(Buffer.concat([Buffer.from(injectCookieHead(head, cookie), 'latin1'), rest]))
   })
   socket.on('end', () => channel.end())
+  channel.on('drain', () => socket.resume())
   channel.on('end', () => socket.end())
   channel.pipe(socket)
 }

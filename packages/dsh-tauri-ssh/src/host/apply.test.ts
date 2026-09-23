@@ -312,6 +312,31 @@ describe('ssh-remote plugin', () => {
     })
   })
 
+  it('stores the remote profile name on save and clears it when the row omits it', async () => {
+    const settings = scriptedSettings()
+    settings.set(String(MACHINES_NAMESPACE), { machines: { a: { ...machine('a'), profileName: 'alpha' } } })
+    const { service } = boot({ settings })
+    await service.save('a' as never, {
+      name: 'alpha',
+      host: '10.0.0.1',
+      port: 22,
+      user: 'root',
+      remotePort: 3080,
+      profileName: 'beta',
+    })
+    // 回归守护：save 必须搬运 row.profileName，否则每次编辑都会把远端 profile
+    // 名清掉、静默退回默认 `remote` profile。
+    expect(service.profileViews()[0]).toMatchObject({ profileName: 'beta' })
+    await service.save('a' as never, {
+      name: 'alpha',
+      host: '10.0.0.1',
+      port: 22,
+      user: 'root',
+      remotePort: 3080,
+    })
+    expect(service.profileViews()[0]).not.toHaveProperty('profileName')
+  })
+
   it('keeps whichever stored secrets exist and rewrites only typed ones', async () => {
     const settings = scriptedSettings()
     settings.set(String(MACHINES_NAMESPACE), {

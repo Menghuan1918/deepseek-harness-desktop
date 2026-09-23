@@ -58,7 +58,7 @@ describe('plugin sync commands', () => {
   })
 
   it('apply command: atomic swap + hash marker + profile wiring + instance restart', () => {
-    const command = pluginSyncApplyCommand(tree, 'abc123', 'remote')
+    const command = pluginSyncApplyCommand(tree, 'abc123', 'remote', 3080)
     // 原子交换：staging → 正式位
     expect(command).toContain('$BASE.new')
     expect(command).toContain('mv "$BASE.new" "$BASE"')
@@ -69,11 +69,13 @@ describe('plugin sync commands', () => {
     expect(command).toContain('.dsh/profiles/remote/package.json')
     expect(command).toContain('dsh-tauri dsh-tauri-ssh')
     // 实例在跑则按 pidfile 重启（ensure 探测落空后按新 profile 拉起）；
-    // pidfile 之外按安装路径精确清场，并等 3080 释放避免新实例 EADDRINUSE
+    // pidfile 之外按安装路径精确清场，并等远端实例端口释放避免新实例 EADDRINUSE
     expect(command).toContain('.dsh/dsh-remote.pid')
     expect(command).toContain('kill')
     expect(command).toContain('pkill -f')
     expect(command).toContain('/dev/tcp/127.0.0.1/3080')
+    // 等待循环探测的是该机器自己的 remotePort，不是硬编码的 3080
+    expect(pluginSyncApplyCommand(tree, 'abc123', 'remote', 3082)).toContain('/dev/tcp/127.0.0.1/3082')
     expect(command).toContain('PLUGINS_SYNCED')
   })
 

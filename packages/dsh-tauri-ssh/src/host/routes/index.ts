@@ -60,6 +60,8 @@ export interface SshMachineListItem extends MachineView {
   nextRetryAt?: number
   /** Which credential the live (or last successful) connection used. */
   authMethod?: SshMachineStatus['authMethod']
+  /** Live progress of the in-flight operation. */
+  progress?: SshMachineStatus['progress']
 }
 
 /** The manager face this API needs (the plugin's service). */
