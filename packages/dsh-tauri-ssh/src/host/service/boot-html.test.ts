@@ -51,6 +51,22 @@ describe('clientUrlsFromBootHtml', () => {
     const html = '<script>globalThis[\'__DSH_BOOT__\'] = {"entries":[{"url":"/plugins/x/client.js"}]} ;</script>'
     expect(clientUrlsFromBootHtml(3080, html)).toEqual(['http://127.0.0.1:3080/plugins/x/client.js'])
   })
+
+  it('parses the relative bundle paths a 0.1.7+ boot page serves under <base href="./">', () => {
+    const html = [
+      '<script src="plugins/??@deepseek-ai/dsh-client-modules/client.js&amp;rev=1"></script>',
+      '<script>globalThis["__DSH_BOOT__"] = {"entries":[{"url":"./plugins/@deepseek-ai/dsh-client-ui-layout/client.js"}]}</script>',
+    ].join('')
+    expect(clientUrlsFromBootHtml(3082, html)).toEqual([
+      'http://127.0.0.1:3082/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=1',
+      'http://127.0.0.1:3082/plugins/@deepseek-ai/dsh-client-ui-layout/client.js',
+    ])
+  })
+
+  it('dedupes the absolute and relative spellings of one bundle', () => {
+    const html = '<script>globalThis["__DSH_BOOT__"] = {"entries":[{"url":"/plugins/x/client.js"},{"url":"./plugins/x/client.js"},{"url":"plugins/x/client.js"}]}</script>'
+    expect(clientUrlsFromBootHtml(3080, html)).toEqual(['http://127.0.0.1:3080/plugins/x/client.js'])
+  })
 })
 
 describe('isClientBundlePath', () => {
@@ -59,10 +75,17 @@ describe('isClientBundlePath', () => {
     expect(isClientBundlePath('/plugins/??@scope/pkg/client.js&rev=1')).toBe(true)
   })
 
+  it('accepts the relative form a 0.1.7+ boot page serves', () => {
+    expect(isClientBundlePath('plugins/@scope/pkg/client.js')).toBe(true)
+    expect(isClientBundlePath('./plugins/??@scope/pkg/client.js&rev=1')).toBe(true)
+  })
+
   it('rejects foreign, protocol-relative, and non-bundle paths', () => {
     expect(isClientBundlePath('https://evil.test/client.js')).toBe(false)
     expect(isClientBundlePath('//evil.test/plugins/x/client.js')).toBe(false)
     expect(isClientBundlePath('/assets/index.js')).toBe(false)
+    expect(isClientBundlePath('./assets/index.js')).toBe(false)
+    expect(isClientBundlePath('plugins/@scope/pkg/index.js')).toBe(false)
   })
 })
 

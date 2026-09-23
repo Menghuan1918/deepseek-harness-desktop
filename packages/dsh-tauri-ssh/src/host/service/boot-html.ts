@@ -52,7 +52,7 @@ export function clientUrlsFromBootHtml(port: number, html: string): string[] | u
       continue
     const src = decodeHtmlAttribute(rest.slice(0, srcEnd))
     if (isClientBundlePath(src))
-      paths.push(src)
+      paths.push(normalizeClientBundlePath(src))
   }
   for (const entry of entries) {
     const url = (entry as { url?: unknown }).url
@@ -60,7 +60,7 @@ export function clientUrlsFromBootHtml(port: number, html: string): string[] | u
       continue
     const decoded = decodeHtmlAttribute(url)
     if (isClientBundlePath(decoded))
-      paths.push(decoded)
+      paths.push(normalizeClientBundlePath(decoded))
   }
   const unique = [...new Set(paths)].sort()
   if (unique.length === 0)
@@ -100,11 +100,39 @@ export function decodeHtmlAttribute(value: string): string {
 }
 
 /**
+ * Drop the leading `./` segments a relative bundle path carries.
+ * @param path - the raw path.
+ */
+function trimRelativePrefix(path: string): string {
+  let rest = path
+  while (rest.startsWith('./'))
+    rest = rest.slice(2)
+  return rest
+}
+
+/**
+ * The canonical same-origin `/plugins/...` form. From 0.1.7 the kernel boot
+ * page injects `<base href="./">`, so the same bundle addresses appear in the
+ * HTML as **relative** paths (`plugins/...`, `./plugins/...`); accepting only
+ * the absolute form makes the parse fall through to the hardcoded probe. Both
+ * forms converge here, so dedupe and sort run on one set of addresses.
+ * @param path - an accepted client-bundle path.
+ */
+function normalizeClientBundlePath(path: string): string {
+  return `/${trimRelativePrefix(path).replace(/^\/+/u, '')}`
+}
+
+/**
  * Whether a path is a same-origin client-bundle path: under `/plugins/`,
  * naming `client.js` (the combo route's `/plugins/??<pkg>/client.js&rev=…`
- * included), and never protocol-relative.
+ * included), never protocol-relative or foreign. Both the absolute form and
+ * the relative form a 0.1.7+ boot page serves are accepted.
  * @param path - the candidate path.
  */
 export function isClientBundlePath(path: string): boolean {
-  return path.startsWith('/plugins/') && path.includes('client.js') && !path.startsWith('//')
+  const normalized = trimRelativePrefix(path)
+  if (normalized.startsWith('//'))
+    return false
+  return (normalized.startsWith('/plugins/') || normalized.startsWith('plugins/'))
+    && normalized.includes('client.js')
 }

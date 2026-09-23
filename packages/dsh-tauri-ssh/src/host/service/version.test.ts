@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   FALLBACK_DSH_TAG,
@@ -14,7 +15,7 @@ import {
 /** A realistic newest-first release list (test tags republishing included). */
 const RELEASES = [
   { tag: 'dsh-0.2.0-preview.1-32490000001', prerelease: true },
-  { tag: 'dsh-0.1.5-rc.2-34495473237', prerelease: false },
+  { tag: 'dsh-0.1.5-rc.3-35833820356', prerelease: false },
   { tag: 'dsh-0.1.2-rc.1-33729514615', prerelease: false },
   { tag: 'dsh-0.1.1-rc.1-32342588166', prerelease: false },
   { tag: 'dsh-0.1.0-rc.8-32342588167', prerelease: false },
@@ -52,7 +53,7 @@ describe('isPreviewTag', () => {
 describe('pickReleaseTag', () => {
   it('resolves the recommended version onto its release tag (recommended path)', () => {
     const resolved = pickReleaseTag(RELEASES)
-    expect(resolved).toMatchObject({ tag: 'dsh-0.1.5-rc.2-34495473237', version: RECOMMENDED_DSH_VERSION, source: 'recommended' })
+    expect(resolved).toMatchObject({ tag: 'dsh-0.1.5-rc.3-35833820356', version: RECOMMENDED_DSH_VERSION, source: 'recommended' })
     expect(resolved.notes).toEqual([])
   })
 
@@ -93,7 +94,7 @@ describe('pickReleaseTag', () => {
   it('falls back to the newest stable release when the recommended version is absent', () => {
     const resolved = pickReleaseTag(RELEASES, { recommended: '0.3.0' })
     expect(resolved.source).toBe('latest-stable')
-    expect(resolved.tag).toBe('dsh-0.1.5-rc.2-34495473237')
+    expect(resolved.tag).toBe('dsh-0.1.5-rc.3-35833820356')
     expect(resolved.notes[0]).toContain('回退最新稳定')
   })
 
@@ -120,6 +121,15 @@ describe('pickReleaseTag', () => {
     const resolved = pickReleaseTag(RELEASES, { ref: '9.9.9' })
     expect(resolved.source).toBe('recommended')
     expect(resolved.notes[0]).toContain('回退推荐/最新稳定版')
+  })
+})
+
+describe('recommended version lockstep', () => {
+  it('follows the desktop mainline version-recommend.json', () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL('../../../../../src-tauri/resources/version-recommend.json', import.meta.url), 'utf8'),
+    ) as { dsh: string }
+    expect(RECOMMENDED_DSH_VERSION).toBe(manifest.dsh)
   })
 })
 

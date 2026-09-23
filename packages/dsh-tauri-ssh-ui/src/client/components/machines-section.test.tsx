@@ -11,10 +11,11 @@ import { MachinesSection } from './machines-section'
 
 // dsh-tauri-ui/client 的 dist bundle 以 ModuleLoader 工厂包裹，脱离宿主加载器
 // 无法在 node 求值；mock 到同一 cssr 实例的源文件（与 dsh-tauri-panel 同款做法），
-// 组件渲染只消费 cls 字符串，不需要真实样式。
+// 组件渲染只消费 cls 字符串，不需要真实样式；通用控件转发官方 primitives 真实实现。
 vi.mock('dsh-tauri-ui/client', async () => {
   const mod = await import('../../../../dsh-tauri-ui/src/client/utils/cssr.ts')
-  return { cssr: mod.cssr }
+  const primitives = await import('@deepseek-ai/dsh-client-ui-primitives')
+  return { cssr: mod.cssr, ...primitives }
 })
 
 afterEach(() => {
