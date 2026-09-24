@@ -57,6 +57,40 @@ pub fn escape_path_sh(path: &Path) -> String {
 mod test_util {
     use std::path::PathBuf;
 
+    /// 与生产同源的默认布局样例（AppData 托管根 + 清单入口相对路径），
+    /// 供 shim 构建/落盘测试断言烘焙结果。
+    pub(super) fn sample_shim_paths() -> super::build::ShimPaths {
+        shim_paths_for(&sample_app_dir())
+    }
+
+    /// 任意根目录 + 清单默认布局的等价 `ShimPaths`：生产侧入口路径来自依赖映射表
+    /// 与清单 `entry`，按临时目录构造的测试用同一布局换算。
+    pub(super) fn shim_paths_for(app_dir: &std::path::Path) -> super::build::ShimPaths {
+        let app_dir = app_dir.to_path_buf();
+        let node_root = app_dir.join("runtime");
+        super::build::ShimPaths {
+            node_bin: if cfg!(windows) {
+                node_root.join("node.exe")
+            } else {
+                node_root.join("bin").join("node")
+            },
+            dsh_bin: app_dir
+                .join("dependencies")
+                .join("dsh")
+                .join("node_modules")
+                .join("@deepseek-ai")
+                .join("dsh")
+                .join("lib")
+                .join("bin.js"),
+            pnpm_bin: app_dir
+                .join("dependencies")
+                .join("pnpm")
+                .join("bin")
+                .join("pnpm.cjs"),
+            bundled_git_dir: Some(app_dir.join("dependencies").join("git").join("cmd")),
+        }
+    }
+
     pub(super) fn sample_app_dir() -> PathBuf {
         if cfg!(windows) {
             PathBuf::from(r"C:\Users\test\AppData\Roaming\dsh-tauri")

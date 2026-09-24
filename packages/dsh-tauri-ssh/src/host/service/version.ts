@@ -1,7 +1,8 @@
 /**
  * DSH version selection and download-metadata pinning, ported from the
  * retired Rust engine's semantics (`service/download/github.rs` +
- * `config/version_recommend.rs`): never "latest 直下" — resolve the
+ * `src-tauri/resources/manifest.jsonc`'s `engines.dsh.recommend`): never
+ * "latest 直下" — resolve the
  * recommended version onto a concrete release tag, pin that tag's asset URL
  * and trusted digest, and on resolution failure fall back to a known stable
  * tag while reporting why. Also owns the install-source repository mapping
@@ -32,10 +33,10 @@ export interface ResolvedDshTag {
 
 /**
  * The recommended DSH version pinned for remote installs. Kept in lockstep
- * with the desktop mainline's `src-tauri/resources/version-recommend.json`
- * (both name the version this desktop generation is verified against);
- * installs pin this version instead of following whatever "latest" happens
- * to be.
+ * with the desktop mainline's `src-tauri/resources/manifest.jsonc`
+ * (`engines.dsh.recommend`, both name the version this desktop generation is
+ * verified against); installs pin this version instead of following whatever
+ * "latest" happens to be.
  */
 export const RECOMMENDED_DSH_VERSION = '0.1.5-rc.3'
 

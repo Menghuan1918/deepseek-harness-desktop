@@ -2,7 +2,7 @@
 
 use crate::config;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 #[cfg(not(windows))]
@@ -11,6 +11,7 @@ use super::build::build_sh_shim;
 #[allow(unused_imports)] // 构建函数在 debug 构建/异平台下由 cfg 裁剪，测试仍引用
 use super::build::{
     build_cmd_shim, build_pnpm_cmd_shim, build_pnpm_ps1_shim, build_pnpm_sh_shim, build_ps1_shim,
+    ShimPaths,
 };
 #[cfg(all(windows, not(debug_assertions)))]
 use super::SHIM_PS1_NAME;
@@ -106,6 +107,30 @@ pub fn user_dsh_preserved(bin_dir: &Path) -> bool {
     path.is_file() && is_foreign_file(&path)
 }
 
+/// shim 生成时烘焙的依赖路径：按依赖映射表解析，可能指向 AppData 之外的任意
+/// 位置（如安装目录的 `resources/*` 捆绑副本）。
+pub fn shim_paths(app_handle: &AppHandle) -> ShimPaths {
+    ShimPaths {
+        node_bin: config::dependencies::binary_path(app_handle, config::dependencies::DEP_NODE),
+        dsh_bin: config::get_dsh_binary_path(app_handle),
+        pnpm_bin: config::get_pnpm_binary_path(app_handle),
+        bundled_git_dir: bundled_git_dir(app_handle),
+    }
+}
+
+/// 捆绑 MinGit 的 `cmd` 目录（系统 Git 缺 HTTPS helper 时由 shim 注入 PATH）。
+#[cfg(windows)]
+fn bundled_git_dir(app_handle: &AppHandle) -> Option<PathBuf> {
+    config::get_mingit_binary_path(app_handle)
+        .parent()
+        .map(Path::to_path_buf)
+}
+
+#[cfg(not(windows))]
+fn bundled_git_dir(_app_handle: &AppHandle) -> Option<PathBuf> {
+    None
+}
+
 /// 将 shim 文件写入 bin 目录；目标已存在但非本应用生成的同名文件时跳过（保留）。
 /// 目标为悬空符号链接时先移除链接再写入（链接目标已失效，保留只会让写入
 /// 报 ENOENT）。
@@ -113,7 +138,7 @@ pub fn user_dsh_preserved(bin_dir: &Path) -> bool {
 /// 覆盖式仅针对本应用生成的 shim（自愈时内容与当前安装一致）；用户手动放置的
 /// 同名 `dsh`/`pnpm` 一律保留不动，避免覆盖用户自己的安装与配置。
 pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String> {
-    let app_dir = config::get_base_dir(app_handle);
+    let paths = shim_paths(app_handle);
     fs::create_dir_all(bin_dir)
         .map_err(|e| format!("SHIM_MKDIR_FAILED: create bin dir failed: {e}"))?;
 
@@ -134,12 +159,12 @@ pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String>
         let dsh_home = config::get_dsh_data_path(app_handle);
         #[cfg(windows)]
         {
-            write_if_ours!(SHIM_CMD_NAME, build_cmd_shim(&app_dir, &dsh_home));
-            write_if_ours!(SHIM_PS1_NAME, build_ps1_shim(&app_dir, &dsh_home));
+            write_if_ours!(SHIM_CMD_NAME, build_cmd_shim(&paths, &dsh_home));
+            write_if_ours!(SHIM_PS1_NAME, build_ps1_shim(&paths, &dsh_home));
         }
         #[cfg(not(windows))]
         {
-            write_if_ours!(SHIM_SH_NAME, build_sh_shim(&app_dir, &dsh_home));
+            write_if_ours!(SHIM_SH_NAME, build_sh_shim(&paths, &dsh_home));
         }
     }
     #[cfg(debug_assertions)]
@@ -150,12 +175,12 @@ pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String>
     // pnpm 依赖它，写它不污染任何共享数据。
     #[cfg(windows)]
     {
-        write_if_ours!(PNPM_SHIM_CMD_NAME, build_pnpm_cmd_shim(&app_dir));
-        write_if_ours!(PNPM_SHIM_PS1_NAME, build_pnpm_ps1_shim(&app_dir));
+        write_if_ours!(PNPM_SHIM_CMD_NAME, build_pnpm_cmd_shim(&paths));
+        write_if_ours!(PNPM_SHIM_PS1_NAME, build_pnpm_ps1_shim(&paths));
     }
     #[cfg(not(windows))]
     {
-        write_if_ours!(PNPM_SHIM_SH_NAME, build_pnpm_sh_shim(&app_dir));
+        write_if_ours!(PNPM_SHIM_SH_NAME, build_pnpm_sh_shim(&paths));
         // 仅对本应用生成/覆盖过的 shim 设置可执行位；保留的用户文件不动
         let chmod_names: &[&str] = if cfg!(debug_assertions) {
             &[PNPM_SHIM_SH_NAME]
@@ -176,7 +201,7 @@ pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::{sample_app_dir, sample_dsh_home};
+    use super::super::test_util::{sample_dsh_home, sample_shim_paths, shim_paths_for};
     use super::*;
 
     #[test]
@@ -195,9 +220,9 @@ mod tests {
 
         // 本应用生成的 shim -> 不是 foreign，可覆盖
         #[cfg(not(windows))]
-        let generated = build_sh_shim(&sample_app_dir(), &sample_dsh_home());
+        let generated = build_sh_shim(&sample_shim_paths(), &sample_dsh_home());
         #[cfg(windows)]
-        let generated = build_cmd_shim(&sample_app_dir(), &sample_dsh_home());
+        let generated = build_cmd_shim(&sample_shim_paths(), &sample_dsh_home());
         std::fs::write(&user_dsh, generated).unwrap();
         assert!(
             !is_foreign_file(&user_dsh),
@@ -335,7 +360,7 @@ mod tests {
     fn write_shim_file_migrates_legacy_lf_only_cmd_shim() {
         let dir = temp_dir("legacy-lf-cmd");
         let target = dir.join("pnpm.cmd");
-        let current = build_pnpm_cmd_shim(&dir.join("app"));
+        let current = build_pnpm_cmd_shim(&shim_paths_for(&dir.join("app")));
         assert!(current.contains("\r\n"));
         std::fs::write(&target, current.replace("\r\n", "\n")).unwrap();
         assert!(

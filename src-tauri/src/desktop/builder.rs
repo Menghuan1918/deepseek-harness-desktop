@@ -1,15 +1,12 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(windows)]
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(windows)]
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use std::sync::{Mutex, OnceLock};
 
-use tauri::{
-    ipc::Invoke,
-    Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
-};
+use tauri::{ipc::Invoke, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Wry};
 
 // 托盘相关的 tauri 类型只在非 Linux 路径使用：Linux 走 desktop::linux_tray 的
 // KSNI 托盘（见该文件的背景说明），届时这些导入会变成未使用。
@@ -567,7 +564,7 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
         // “源码”按钮在桌面端因此无法跳转（浏览器里正常）。
         // 这里把 http(s) 链接交给系统浏览器打开，其余协议一律拒绝。
         .on_new_window(move |url, features| on_new_window(app_handle.clone(), url, features))
-        .on_download(|webview, event| on_download(webview, event));
+        .on_download(on_download);
 
     #[cfg(windows)]
     let webview_builder = webview_builder.on_page_load(move |webview_window, payload| {
@@ -706,7 +703,7 @@ pub fn build_shell_window(
     let webview_builder = webview_builder
         .disable_drag_drop_handler()
         .on_new_window(move |url, features| on_new_window(app_handle.clone(), url, features))
-        .on_download(|webview, event| on_download(webview, event));
+        .on_download(on_download);
 
     #[cfg(windows)]
     let webview_builder = {
@@ -1096,7 +1093,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 }
                 // get_store_dat_setting 内部已归一化，取值只可能是 tray 或 quit
                 let close_action =
-                    crate::config::get_store_dat_setting(&window.app_handle()).close_action;
+                    crate::config::get_store_dat_setting(window.app_handle()).close_action;
                 if close_action == crate::desktop::activation::CLOSE_ACTION_QUIT {
                     // 不 prevent_close、不 hide：直接退出。app.exit(0) 会走
                     // RunEvent::ExitRequested，既有的几何保存逻辑照常触发
@@ -1143,7 +1140,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             },
             tauri::WindowEvent::ScaleFactorChanged { .. } => {
                 if window.label() == crate::desktop::pet::PET_WINDOW_LABEL {
-                    crate::desktop::pet::apply_pet_size(&window.app_handle());
+                    crate::desktop::pet::apply_pet_size(window.app_handle());
                 }
             }
             tauri::WindowEvent::Resized(_) => {

@@ -125,11 +125,10 @@ describe('pickReleaseTag', () => {
 })
 
 describe('recommended version lockstep', () => {
-  it('follows the desktop mainline version-recommend.json', () => {
-    const manifest = JSON.parse(
-      readFileSync(new URL('../../../../../src-tauri/resources/version-recommend.json', import.meta.url), 'utf8'),
-    ) as { dsh: string }
-    expect(RECOMMENDED_DSH_VERSION).toBe(manifest.dsh)
+  it('follows the desktop mainline manifest.jsonc', () => {
+    const raw = readFileSync(new URL('../../../../../src-tauri/resources/manifest.jsonc', import.meta.url), 'utf8')
+    const manifest = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, '')) as { engines: { dsh: { recommend: string } } }
+    expect(RECOMMENDED_DSH_VERSION).toBe(manifest.engines.dsh.recommend)
   })
 })
 

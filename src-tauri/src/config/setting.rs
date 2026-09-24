@@ -9,6 +9,8 @@ use tauri_plugin_store::StoreExt;
 pub struct Setting {
     pub installed: bool,
     pub port: u16,
+    #[serde(default)]
+    pub harness_max_heap_mb: Option<u32>,
     pub auto_start: bool,
     pub language: String,
     #[serde(default)]
@@ -23,7 +25,7 @@ pub struct Setting {
     /// 预装插件引导是否已完成（确认安装或跳过都算完成，之后不再弹出）
     #[serde(default)]
     pub preinstall_done: bool,
-    /// 上次引导结束时的 `preset-plugins.json` 内容指纹。资源文件每次安装都会被
+    /// 上次引导结束时的清单 `plugins` 节内容指纹。资源清单每次安装都会被
     /// 强制覆盖、旧文件不复存在，只能把「上次看到的内容」记在这里，每次启动再比对：
     /// 内容有变更 → 重新进入预设引导。`None` = 老用户升级（无基线）→ 弹一次建立基线。
     #[serde(default)]
@@ -84,6 +86,12 @@ pub struct Setting {
 pub const ZOOM_FACTOR_MIN: f64 = 0.5;
 pub const ZOOM_FACTOR_MAX: f64 = 2.0;
 pub const ZOOM_FACTOR_STEP: f64 = 0.1;
+pub const HARNESS_HEAP_MIN_MB: u32 = 1024;
+pub const HARNESS_HEAP_MAX_MB: u32 = 32768;
+
+pub fn normalize_harness_max_heap_mb(value: Option<u32>) -> Option<u32> {
+    value.filter(|mb| (HARNESS_HEAP_MIN_MB..=HARNESS_HEAP_MAX_MB).contains(mb))
+}
 
 /// 默认档案：桌面端内置的 web 档案
 fn default_active_profile() -> String {
@@ -159,6 +167,7 @@ impl Default for Setting {
         Self {
             installed: false,
             port: default_port(),
+            harness_max_heap_mb: None,
             auto_start: true,
             language: "zh-CN".to_string(),
             dsh_pkg_commit: None,
@@ -255,6 +264,7 @@ fn read_store_dat_setting<R: Runtime>(app_handle: &AppHandle<R>) -> Setting {
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_else(Setting::default);
     setting.zoom_factor = normalize_zoom_factor(setting.zoom_factor);
+    setting.harness_max_heap_mb = normalize_harness_max_heap_mb(setting.harness_max_heap_mb);
     setting.close_action = normalize_close_action(&setting.close_action);
     normalize_backup_fields(&mut setting);
     setting
@@ -278,6 +288,7 @@ fn emit_setting(app_handle: &AppHandle, value: &serde_json::Value) {
 
 fn preserve_persisted_fields(mut replacement: Setting, current: &Setting) -> Setting {
     replacement.zoom_factor = normalize_zoom_factor(current.zoom_factor);
+    replacement.harness_max_heap_mb = normalize_harness_max_heap_mb(current.harness_max_heap_mb);
     replacement.close_action = normalize_close_action(&current.close_action);
     replacement.pet_enabled = current.pet_enabled;
     replacement.active_pet.clone_from(&current.active_pet);
@@ -312,6 +323,7 @@ where
         let mut setting = read_store_dat_setting(app_handle);
         update(&mut setting);
         setting.zoom_factor = normalize_zoom_factor(setting.zoom_factor);
+        setting.harness_max_heap_mb = normalize_harness_max_heap_mb(setting.harness_max_heap_mb);
         // 落盘前的第二道闸：调用方（含前端 invoke）写入的不可信取值不以原始形态进 store
         setting.close_action = normalize_close_action(&setting.close_action);
         normalize_backup_fields(&mut setting);
@@ -413,19 +425,23 @@ mod tests {
 
     #[test]
     fn legacy_full_setting_write_preserves_latest_fields() {
-        let mut stale = Setting::default();
-        stale.zoom_factor = 0.8;
-        stale.close_action = "quit".to_string();
-        stale.pet_enabled = false;
-        stale.active_pet = Some("chat:stale".to_string());
-        stale.pet_size = Some(80.0);
+        let stale = Setting {
+            zoom_factor: 0.8,
+            close_action: "quit".to_string(),
+            pet_enabled: false,
+            active_pet: Some("chat:stale".to_string()),
+            pet_size: Some(80.0),
+            ..Default::default()
+        };
 
-        let mut current = Setting::default();
-        current.zoom_factor = 1.6;
-        current.close_action = "tray".to_string();
-        current.pet_enabled = true;
-        current.active_pet = Some("codex:latest".to_string());
-        current.pet_size = Some(140.0);
+        let current = Setting {
+            zoom_factor: 1.6,
+            close_action: "tray".to_string(),
+            pet_enabled: true,
+            active_pet: Some("codex:latest".to_string()),
+            pet_size: Some(140.0),
+            ..Default::default()
+        };
 
         let merged = preserve_persisted_fields(stale, &current);
 

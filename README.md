@@ -156,7 +156,7 @@ Harness 发行版由 [deepseek-harness-pkg](https://github.com/dsh-tauri/deepsee
 
 插件在运行时直接引用的远端素材与上游清单：
 
-- [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) — 预设桌宠素材（WebM 动作、预览 GIF、`config.jsonc`），`preset-pets.json` 固定到 `e1ff8c1`
+- [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) — 预设桌宠素材（WebM 动作、预览 GIF、`config.jsonc`），`manifest.jsonc` 的 `pets.built-in` 固定到 `e1ff8c1`
 - [dsh-tauri/dsh-pet-mov](https://github.com/dsh-tauri/dsh-pet-mov) — macOS HEVC-alpha `.mov` 镜像（WKWebView 不认 VP9-alpha），固定到 `be0f3bb`
 - [hairyf/dsh-pet-component](https://github.com/hairyf/dsh-pet-component) — 桌宠渲染组件（npm `dsh-pet-component`）
 

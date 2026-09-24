@@ -160,6 +160,7 @@ pub fn apply_pet_size<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// 将窗口左上角限制到单个显示器内；窗口大于显示器时贴齐其左上角。
+#[allow(clippy::too_many_arguments)]
 fn clamp_window_position(
     x: i32,
     y: i32,

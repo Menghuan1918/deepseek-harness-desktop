@@ -5,7 +5,7 @@ import type { PatchEntryStripReport, PatchQuarantineReport } from '@/types/plugi
 import { promiseTimeout } from '@reause/core'
 import { invoke } from '@tauri-apps/api/core'
 import i18next from 'i18next'
-import { containsInotifyLimitError, pickErrorLines } from '@/components/logs.utils'
+import { containsHeapOomError, containsInotifyLimitError, pickErrorLines } from '@/components/logs.utils'
 import { toast } from '@/utils/toast'
 import {
   HEALTH_PROBE_INITIAL_INTERVAL,
@@ -190,7 +190,7 @@ export async function readServiceLogTail(): Promise<string[]> {
 }
 
 /** 失败时把服务日志的真实错误行与冲突提示挂到错误对象上 */
-export async function attachStartupDiagnostics(err: unknown): Promise<StartupError> {
+export async function attachStartupDiagnostics(err: unknown, processExited = false): Promise<StartupError> {
   // Tauri `invoke` 对 `Result<_, String>` 命令的 rejection 是裸字符串，
   // 必须先归一化为 Error 对象，否则在其上赋属性（ESM 严格模式）会抛
   // `TypeError: Cannot create property ... on string`，反而遮蔽真实错误。
@@ -207,6 +207,9 @@ export async function attachStartupDiagnostics(err: unknown): Promise<StartupErr
     // 需要系统级调高 fs.inotify.max_user_watches（见 errors.inotify_limit 文案）
     if (containsInotifyLimitError(lines)) {
       diagnosed.inotifyLimitHint = i18next.t('errors.inotify_limit')
+    }
+    if (processExited && containsHeapOomError(lines)) {
+      diagnosed.heapOomHint = i18next.t('errors.heap_oom')
     }
   }
   // 补丁层 YAML 语法错误（issue #525）：真实原因是用户手写的 `cordis.patch.yml`

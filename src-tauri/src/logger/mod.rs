@@ -9,7 +9,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
@@ -89,9 +89,9 @@ fn frontdesk_log_file_path() -> Option<PathBuf> {
     Some(app_data_dir()?.join("logs").join(FRONTDESK_LOG_FILE_NAME))
 }
 
-fn backup_path(base: &PathBuf, n: usize) -> PathBuf {
+fn backup_path(base: &Path, n: usize) -> PathBuf {
     if n == 0 {
-        base.clone()
+        base.to_path_buf()
     } else {
         PathBuf::from(format!("{}.{}", base.display(), n))
     }
@@ -427,6 +427,7 @@ pub fn log_frontend(level: FrontendLevel, target: &str, message: &str) {
 mod tests {
     use super::*;
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn debug_logs_are_separated_from_release() {
         // dev 与 release 共用 identifier；不隔离会让两个进程写同一个 desktop.log。
         assert!(cfg!(debug_assertions), "cargo test 构建为 debug");

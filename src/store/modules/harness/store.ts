@@ -92,6 +92,7 @@ export const harness = defineStore({
     inotifyLimitHint: '',
     /** 识别到补丁层 YAML 语法错误时的针对性提示（含文件与行列号，Loadable children 展示） */
     patchLayerHint: '',
+    heapOomHint: '',
     serviceUrl: 'http://127.0.0.1:3080',
     /** 带时间戳的 iframe 地址（boot 时生成一次，避免缓存） */
     iframeSrc: '',
@@ -196,7 +197,7 @@ export const harness = defineStore({
       this.iframeError = false
       this.fail(message)
 
-      const error = await attachStartupDiagnostics(new Error(message))
+      const error = await attachStartupDiagnostics(new Error(message), true)
       if (exitToken !== bootToken)
         return
       await recovery.reviewStartupRecovery(
@@ -212,6 +213,7 @@ export const harness = defineStore({
         error.inotifyLimitHint,
         undefined,
         error.patchLayerHint,
+        error.heapOomHint,
       )
     },
 
@@ -381,6 +383,7 @@ export const harness = defineStore({
       this.pluginConflictHint = ''
       this.inotifyLimitHint = ''
       this.patchLayerHint = ''
+      this.heapOomHint = ''
       preinstall.error = ''
       // 服务（重）启动成功：清空插件异常修复态（若曾进入），并重置已「暂不处理」的插件
       recovery.reset()
@@ -410,6 +413,7 @@ export const harness = defineStore({
       this.pluginConflictHint = ''
       this.inotifyLimitHint = ''
       this.patchLayerHint = ''
+      this.heapOomHint = ''
       recovery.reset()
       this.serviceHealthy = false
       this.iframeLoaded = false
@@ -467,7 +471,8 @@ export const harness = defineStore({
       }
       catch (err) {
         // 失败时附上服务日志里的真实错误行，供错误界面展示而不是只显示超时文案
-        throw await attachStartupDiagnostics(err)
+        const error = err instanceof Error ? err : new Error(String(err))
+        throw await attachStartupDiagnostics(error, error.message.includes('HARNESS_NOT_OWNED') || error.message.includes('Harness exited early'))
       }
     },
 
@@ -491,6 +496,7 @@ export const harness = defineStore({
       this.pluginConflictHint = ''
       this.inotifyLimitHint = ''
       this.patchLayerHint = ''
+      this.heapOomHint = ''
       recovery.clear()
       this.status = 'ready'
       let unlistenInstall: UnlistenFn | null = null
@@ -568,9 +574,9 @@ export const harness = defineStore({
           }
           throw startupError('plugin-install', String(err), 'failed')
         }
-        // 预装插件引导：首次安装、老版本升级（无指纹基线）或 preset-plugins.json
+        // 预装插件引导：首次安装、老版本升级（无指纹基线）或清单 plugins 节
         // 内容变更（社区新增推荐插件）时重新进入预设流程，装完/跳过后才拉起服务。
-        // preset-plugins.json 随安装包发布、每次安装被强制覆盖，旧文件不可比对，
+        // 清单随安装包发布、每次安装被强制覆盖，旧内容不可比对，
         // 由 Rust 侧记录内容指纹到 app-data（.store.dat），启动时比对是否有变更。
         if (await invoke<boolean>('get_preinstall_pending')) {
           this.status = 'preinstall'
@@ -602,6 +608,7 @@ export const harness = defineStore({
           error.inotifyLimitHint,
           this.serviceRunning,
           error.patchLayerHint,
+          error.heapOomHint,
         )
       }
       finally {
@@ -616,12 +623,13 @@ export const harness = defineStore({
     },
 
     /** 进入错误态（供本模块与 harness-updater 模块共用） */
-    fail(message: string, logs?: string[], pluginConflictHint?: string, inotifyLimitHint?: string, keepServiceRunning = false, patchLayerHint?: string) {
+    fail(message: string, logs?: string[], pluginConflictHint?: string, inotifyLimitHint?: string, keepServiceRunning = false, patchLayerHint?: string, heapOomHint?: string) {
       this.errorMsg = message
       this.errorLogs = logs ?? []
       this.pluginConflictHint = pluginConflictHint ?? ''
       this.inotifyLimitHint = inotifyLimitHint ?? ''
       this.patchLayerHint = patchLayerHint ?? ''
+      this.heapOomHint = heapOomHint ?? ''
       this.status = 'error'
       this.serviceRunning = keepServiceRunning
     },
@@ -771,6 +779,7 @@ export const harness = defineStore({
       this.pluginConflictHint = ''
       this.inotifyLimitHint = ''
       this.patchLayerHint = ''
+      this.heapOomHint = ''
       recovery.reset()
     },
 

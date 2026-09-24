@@ -35,7 +35,7 @@ export function postPetImport(name: string, data: string): Promise<PetListItem> 
   return invoke<PetListItem>(CMD_IMPORT_PET, { name, data })
 }
 
-/** 预设宠物清单（`resources/preset-pets.json`；条目直连远端素材，无安装态）。 */
+/** 预设宠物清单（清单 `pets.built-in`；条目直连远端素材，无安装态）。 */
 export function getPresetPets(): Promise<PresetPetItem[]> {
   return invoke<PresetPetItem[]>(CMD_LIST_PRESET_PETS)
 }
