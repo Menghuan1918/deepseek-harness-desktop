@@ -1,9 +1,10 @@
 name: Build & Release (Offline Bundle)
 
 # 离线安装包：在普通发布流程（release.yml）成功后追加一次带资源构建。
-# 产物把 Node.js 运行时、推荐 dsh 内核、pnpm（Windows 另含 MinGit）随安装包分发，
-# 并在构建期把 `resources/manifest.jsonc` 的托管根改写成 `$Resources/...`，首次
-# 启动直接使用随包资源，全程不联网。
+# 产物把 Node.js 运行时、推荐 dsh 内核、pnpm 随安装包分发，并在构建期把
+# `resources/manifest.jsonc` 的托管根改写成 `$Resources/...`，首次启动直接使用
+# 随包资源，全程不联网。只随包启动 dsh 必需的资源：MinGit 默认不携带（git 托管的
+# 能力在真正使用时才需要，`bundle_git` 可显式开启）。
 #
 # 手动触发有两条路：
 # - 留空 `tag`：试跑。构建当前 ref，发一个 `test-<ref>-<run>` 测试预发布，不碰任何
@@ -32,6 +33,11 @@ on:
         required: false
         default: ''
         type: string
+      bundle_git:
+        description: Windows 随包 MinGit（默认关闭：启动 dsh 不需要 Git）
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   # 写权限只给真正上传产物的 finalize；prepare 与三个可复用构建只需要读。
@@ -198,6 +204,7 @@ jobs:
     with:
       source_ref: ${{ needs.prepare.outputs.source_ref }}
       dsh_tag: ${{ needs.prepare.outputs.dsh_tag }}
+      bundle_git: ${{ github.event_name == 'workflow_dispatch' && inputs.bundle_git || false }}
     secrets:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -300,7 +307,7 @@ jobs:
           {
             echo "### Offline bundle assets"
             echo
-            echo "Bundled core: \`$DSH_TAG\` · resources mapped to \`\$Resources/{node,pnpm,dsh}\` (Windows also \`git\`)"
+            echo "Bundled core: \`$DSH_TAG\` · resources mapped to \`\$Resources/{node,pnpm,dsh}\`"
             echo
             for asset in "${assets[@]}"; do
               echo "- \`$(basename "$asset")\`"

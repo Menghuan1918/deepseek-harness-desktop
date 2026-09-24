@@ -195,10 +195,16 @@ export function readBuildConstants(repo = process.cwd()) {
   }
 }
 
-/** 随包依赖键（Windows 额外随包 MinGit，离线包不依赖系统 Git）。 */
-export function bundleTargets(platform) {
+/**
+ * 随包依赖键。
+ *
+ * 默认只随包 Node / pnpm / 内核三项：MinGit 约 35 MiB，而绝大多数 Windows 机器已有
+ * 可用的系统 Git，内网补装又必然失败（应用侧据「随包资源」构建放宽 Git 就绪判定，
+ * 见 `config::dependencies::is_bundled_install`）。确有需要时用 `--with-git` 显式开启。
+ */
+export function bundleTargets(platform, { withGit = false } = {}) {
   const keys = ['node', 'pnpm', 'dsh']
-  if (platform === 'windows')
+  if (platform === 'windows' && withGit)
     keys.push('git')
   return keys
 }
@@ -210,7 +216,7 @@ export function bundleTargets(platform) {
  * 为需要单独下载的摘要来源（Node 官方 SHASUMS256.txt）；dsh 的摘要在下载后经
  * GitHub Release API 读取（见 workflow）。
  */
-export function bundleAssets({ platform, arch, constants, dshTag }) {
+export function bundleAssets({ platform, arch, constants, dshTag, withGit = false }) {
   const nodeName = nodeAssetName(platform, arch, constants.nodeVersion)
   const dshName = dshAssetName(platform, arch)
   const assets = {
@@ -233,7 +239,7 @@ export function bundleAssets({ platform, arch, constants, dshTag }) {
       sha256Url: '',
     },
   }
-  if (platform === 'windows') {
+  if (platform === 'windows' && withGit) {
     const name = mingitAssetName(arch, constants.mingitVersion)
     assets.git = {
       name,
@@ -266,9 +272,10 @@ export function toAssetTable(assets) {
  * 安装留下的 AppData 路径，可能已被删除）不能盖过随包资源。
  *
  * 改写结果直接写回 `src-tauri/resources/manifest.jsonc`（构建产物，不提交），
- * 因此注释与缩进按 JSON 重新序列化。
+ * 因此注释与缩进按 JSON 重新序列化。未随包的依赖（默认的 MinGit）保持清单原值，
+ * 不能指向并不存在的 `$Resources/git`。
  */
-export function applyBundleManifest({ repo = process.cwd(), platform } = {}) {
+export function applyBundleManifest({ repo = process.cwd(), platform, withGit = false } = {}) {
   if (!['windows', 'macos', 'linux'].includes(platform))
     throw bundleError(`platform must be windows|macos|linux, got ${JSON.stringify(platform)}`)
   const manifest = readManifest(repo)
@@ -277,7 +284,7 @@ export function applyBundleManifest({ repo = process.cwd(), platform } = {}) {
     throw bundleError('manifest.jsonc is missing the dependencies section')
 
   const applied = []
-  for (const key of bundleTargets(platform)) {
+  for (const key of bundleTargets(platform, { withGit })) {
     const spec = dependencies[key]
     if (!spec || typeof spec !== 'object')
       throw bundleError(`manifest.jsonc is missing dependencies.${key}`)
@@ -334,13 +341,15 @@ function appendOutputs(outputPath, values) {
 }
 
 function parseArgs(argv) {
-  const args = { assets: false, manifest: false, platform: '', arch: '' }
+  const args = { assets: false, manifest: false, platform: '', arch: '', withGit: false }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--assets')
       args.assets = true
     else if (arg === '--manifest')
       args.manifest = true
+    else if (arg === '--with-git')
+      args.withGit = true
     else if (arg === '--platform')
       args.platform = argv[++i] ?? ''
     else if (arg === '--arch')
@@ -367,13 +376,13 @@ async function main() {
   if (args.assets) {
     requirePlatformArch(args)
     const dshTag = requireString(process.env.DSH_TAG || '', 'DSH_TAG environment variable')
-    process.stdout.write(`${toAssetTable(bundleAssets({ platform: args.platform, arch: args.arch, constants, dshTag }))}\n`)
+    process.stdout.write(`${toAssetTable(bundleAssets({ platform: args.platform, arch: args.arch, constants, dshTag, withGit: args.withGit }))}\n`)
     return
   }
 
   if (args.manifest) {
     requirePlatformArch(args)
-    const { file, applied } = applyBundleManifest({ repo, platform: args.platform })
+    const { file, applied } = applyBundleManifest({ repo, platform: args.platform, withGit: args.withGit })
     process.stdout.write(`${file}\n${applied.map(line => `  ${line}`).join('\n')}\n`)
     return
   }

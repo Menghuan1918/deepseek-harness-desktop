@@ -73,8 +73,8 @@ const constants: BundleConstants = {
 
 const DSH_TAG = 'dsh-0.1.5-rc.3-12345678901'
 
-function assetsFor(platform: string, arch: string) {
-  return bundleMetadata.bundleAssets({ platform, arch, constants, dshTag: DSH_TAG })
+function assetsFor(platform: string, arch: string, options: { withGit?: boolean } = {}) {
+  return bundleMetadata.bundleAssets({ platform, arch, constants, dshTag: DSH_TAG, ...options })
 }
 
 describe('bundle metadata tag parsing', () => {
@@ -117,7 +117,7 @@ describe('bundle asset names', () => {
 })
 
 describe('bundle asset resolution', () => {
-  it('pins every windows asset to a downloadable url', () => {
+  it('pins every essentials asset to a downloadable url', () => {
     const assets = assetsFor('windows', 'x64')
 
     expect(assets.node.url).toBe('https://nodejs.org/dist/v22.22.0/node-v22.22.0-win-x64.zip')
@@ -126,17 +126,24 @@ describe('bundle asset resolution', () => {
       `https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/download/${DSH_TAG}/deepseek-harness-pkg-windows.zip`,
     )
     expect(assets.pnpm.url).toBe('https://registry.npmjs.org/pnpm/-/pnpm-11.7.0.tgz')
-    // 离线包不依赖系统 Git：Windows 随包 MinGit，摘要取自 constants.rs。
-    expect(assets.git?.url).toBe(
-      'https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/MinGit-2.53.0.2-64-bit.zip',
-    )
-    expect(assets.git?.sha256).toBe(constants.mingitX64Sha256)
   })
 
-  it('bundles MinGit on windows only', () => {
-    expect(bundleMetadata.bundleTargets('windows')).toEqual(['node', 'pnpm', 'dsh', 'git'])
+  it('bundles MinGit only on request, and only on windows', () => {
+    // 启动 dsh 不需要 Git：默认只随包必要品。
+    expect(bundleMetadata.bundleTargets('windows')).toEqual(['node', 'pnpm', 'dsh'])
     expect(bundleMetadata.bundleTargets('macos')).toEqual(['node', 'pnpm', 'dsh'])
+    expect(Object.keys(assetsFor('windows', 'x64')).sort()).toEqual(['dsh', 'node', 'pnpm'])
     expect(Object.keys(assetsFor('macos', 'arm64')).sort()).toEqual(['dsh', 'node', 'pnpm'])
+
+    const withGit = assetsFor('windows', 'x64', { withGit: true })
+    expect(bundleMetadata.bundleTargets('windows', { withGit: true })).toEqual(['node', 'pnpm', 'dsh', 'git'])
+    expect(withGit.git?.url).toBe(
+      'https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/MinGit-2.53.0.2-64-bit.zip',
+    )
+    expect(withGit.git?.sha256).toBe(constants.mingitX64Sha256)
+    expect(assetsFor('windows', 'arm64', { withGit: true }).git?.sha256).toBe(constants.mingitArm64Sha256)
+    // 非 Windows 平台没有 MinGit 可选。
+    expect(Object.keys(assetsFor('linux', 'x64', { withGit: true })).sort()).toEqual(['dsh', 'node', 'pnpm'])
   })
 
   it('keeps empty sha256 fields in the asset table', () => {
@@ -232,18 +239,39 @@ describe('bundle manifest rewrite', () => {
         'node -> $Resources/node',
         'pnpm -> $Resources/pnpm',
         'dsh -> $Resources/dsh',
-        'git -> $Resources/git',
       ])
 
       const manifest = JSON.parse(readFileSync(result.file, 'utf8'))
       const shipped = JSON.parse(bundleMetadata.stripJsonc(SHIPPED))
-      for (const [key, dir] of [['node', 'node'], ['pnpm', 'pnpm'], ['dsh', 'dsh'], ['git', 'git']]) {
+      for (const [key, dir] of [['node', 'node'], ['pnpm', 'pnpm'], ['dsh', 'dsh']]) {
         expect(manifest.dependencies[key].managedRoot).toBe(`$Resources/${dir}`)
         expect(manifest.dependencies[key].overridable).toBe(false)
         // 入口形状由清单声明，改写托管根不得动它。
         expect(manifest.dependencies[key].entry).toEqual(shipped.dependencies[key].entry)
       }
       expect(manifest.engines.dsh.recommend).toBe('0.1.5-rc.3')
+      // 未随包的 git 保持清单原值：不能指向并不存在的 `$Resources/git`。
+      expect(manifest.dependencies.git.managedRoot).toBe('$AppData/dependencies/git')
+      expect(manifest.dependencies.git.overridable).toBe(true)
+    }
+    finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('moves git to $Resources only when MinGit is bundled', () => {
+    const repo = tempRepo()
+    try {
+      const { file, applied } = bundleMetadata.applyBundleManifest({ repo, platform: 'windows', withGit: true })
+      expect(applied).toEqual([
+        'node -> $Resources/node',
+        'pnpm -> $Resources/pnpm',
+        'dsh -> $Resources/dsh',
+        'git -> $Resources/git',
+      ])
+      const manifest = JSON.parse(readFileSync(file, 'utf8'))
+      expect(manifest.dependencies.git.managedRoot).toBe('$Resources/git')
+      expect(manifest.dependencies.git.overridable).toBe(false)
     }
     finally {
       rmSync(repo, { recursive: true, force: true })

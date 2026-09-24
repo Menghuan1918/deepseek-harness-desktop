@@ -57,13 +57,15 @@ export function mingitAssetName(arch: BundleArch, version: string): string
 
 export function readBuildConstants(repo?: string): BundleConstants
 
-export function bundleTargets(platform: BundlePlatform): string[]
+export function bundleTargets(platform: BundlePlatform, options?: { withGit?: boolean }): string[]
 
 export function bundleAssets(input: {
   platform: BundlePlatform
   arch: BundleArch
   constants: BundleConstants
   dshTag: string
+  /** 随包 MinGit（默认 false；Windows 且清单未被改写时才需要） */
+  withGit?: boolean
 }): BundleAssets
 
 export function toAssetTable(assets: BundleAssets): string
@@ -71,6 +73,7 @@ export function toAssetTable(assets: BundleAssets): string
 export function applyBundleManifest(input: {
   repo?: string
   platform: BundlePlatform
+  withGit?: boolean
 }): { file: string, applied: string[] }
 
 export function findReleaseTag(releases: unknown, version: string): string

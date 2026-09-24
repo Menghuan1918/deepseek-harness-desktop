@@ -193,6 +193,21 @@ pub fn active_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
     managed_root(app, key)
 }
 
+/// 本次安装是否为「随包资源」构建：清单把核心托管根指向安装包资源目录
+/// （`$Resources/...`，离线包构建 `.github/actions/prepare-bundle-resources` 的改写产物）。
+///
+/// 这类安装的运行时全部随安装包分发，运行期下载在离线机器上必然失败。启动就绪判定
+/// 据此放宽「补不上的依赖」——它们不是启动 dsh 的前置条件。
+#[cfg_attr(not(windows), allow(dead_code))] // 仅 Windows 的 Git 就绪判定使用
+pub fn is_bundled_install<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let Some(root) = manifest::resource_root(app) else {
+        return false;
+    };
+    let managed = managed_root(app, DEP_DSH);
+    // 资源根自身不算：只有把某个依赖托管到 `$Resources/<name>` 才是随包构建。
+    managed != root && managed.starts_with(&root)
+}
+
 /// 入口相对路径（相对依赖根）：清单 `dependencies.<key>.entry`，未声明时用内置默认
 pub fn entry_relative<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
     let declared = manifest::dependency_spec(app, key)

@@ -86,7 +86,7 @@ brew install dsh-tauri/desktop/deepseek-harness
 
 **系统要求：** Windows 10+ · macOS 10.15+ · Linux（AppImage / .deb）· 首次运行需要网络 · Harness 内核 **0.1.5-rc.1** 或更高
 
-**离线安装包（Windows / macOS）：** Releases 里另有 `Deepseek.Harness.Desktop_Bundle_<版本>.<扩展名>`：Node 运行时与 Harness 内核（Windows 另含 MinGit）随包分发，**安装后首次启动无需联网**，适合内网 / 白名单环境（预设与社区插件仍需联网）。Linux 的随包资源在 `.deb` 的 `/usr/lib` 下，root 安装后需补齐该目录权限。
+**离线安装包（Windows / macOS）：** Releases 里另有 `Deepseek.Harness.Desktop_Bundle_<版本>.<扩展名>`：Node 运行时与 Harness 内核随包分发，**安装后首次启动无需联网**，适合内网 / 白名单环境（预设与社区插件仍需联网；git 相关能力如工作树需系统已装 Git）。Linux 的随包资源在 `.deb` 的 `/usr/lib` 下，root 安装后需补齐该目录权限。
 
 > **Linux Wayland 注意（PikaOS / GNOME Wayland / Ubuntu 22.04+）：** AppImage 在 Wayland 下可能因 WebKitGTK 黑屏/崩溃，应用已自动处理常见情形。 <details><summary>若仍黑屏/崩溃：</summary><br>**改用 `.deb`**（已验证 PikaOS 4 Wayland），或手动 `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`。图标不显示时，将应用内 `hicolor` 图标复制到 `~/.local/share/icons` 并运行 `update-desktop-database`。<br></details>
 >

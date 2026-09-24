@@ -117,7 +117,13 @@ second set of installers that need no network on first launch. Its
 | `resources/node` | Node.js runtime (`node.exe` / `bin/node`) |
 | `resources/pnpm` | pnpm distribution (`bin/pnpm.cjs`) |
 | `resources/dsh` | packaged DeepSeek Harness core (`node_modules/@deepseek-ai/dsh/lib/bin.js`) |
-| `resources/git` | MinGit — Windows only, so a blank machine needs no Git install |
+| `resources/git` | MinGit — **not** bundled by default (`bundle_git` opt-in) |
+
+Only what running `dsh` itself needs is bundled. Git is deliberately left out: it is not
+required to start the harness, only git-backed features (worktree, `github:` plugins) are,
+and an air-gapped machine can never provision it later. A bundled build therefore stops
+treating Git as a startup prerequisite (see `config::dependencies::is_bundled_install`),
+so the install screen is never entered for a download that cannot succeed.
 
 Every asset is SHA-256 verified before unpacking (Node against the official
 `SHASUMS256.txt`, the core against its GitHub release digest, pnpm/MinGit against the
@@ -141,7 +147,7 @@ The rewrite only ever touches the build output — the committed manifest keeps 
 `<app-data>/dependencies.json` (written by an earlier, non-bundled install and possibly
 pointing at deleted directories) from winning over the bundled copy.
 
-No Rust code is involved: node/pnpm/git are only ever read, and the core is used in place,
+No Rust code is involved: node/pnpm are only ever read, and the core is used in place,
 so the install directory must stay writable for the desktop's startup patches and plugin
 entry links — true for the per-user NSIS install, not for `/usr/lib/**` in the Linux deb
 (documented limitation). Community/preset plugins are still installed from the network;

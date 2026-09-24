@@ -9,6 +9,11 @@ on:
       dsh_tag:
         required: true
         type: string
+      bundle_git:
+        description: 随包 MinGit（默认关闭：启动 dsh 不需要 Git）
+        required: false
+        type: boolean
+        default: false
     secrets:
       TAURI_SIGNING_PRIVATE_KEY:
         required: false
@@ -22,7 +27,7 @@ jobs:
   build:
     name: Build offline bundle (windows)
     runs-on: windows-latest
-    # 离线包要下载 Node/dsh/MinGit 并压缩数百 MB 资源，远慢于普通构建。
+    # 离线包要下载 Node/dsh 并压缩数百 MB 资源，远慢于普通构建。
     timeout-minutes: 180
     steps:
       - name: Checkout repository
@@ -48,6 +53,7 @@ jobs:
           platform: windows
           arch: x64
           dsh-tag: ${{ inputs.dsh_tag }}
+          bundle-git: ${{ inputs.bundle_git }}
 
       # 内网机器上的 WebView2 只能靠安装包自带：默认的 downloadBootstrapper 会在
       # 安装时去微软下载运行时，白名单环境里直接失败。offlineInstaller 把完整的

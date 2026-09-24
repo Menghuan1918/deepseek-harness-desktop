@@ -1,9 +1,9 @@
 name: Prepare offline bundle resources
 description: >-
-  Download and unpack the Node.js runtime, the packaged dsh core, pnpm (and MinGit
-  on Windows) into src-tauri/resources, then rewrite manifest.jsonc so every
-  bundled dependency resolves through `$Resources/...`. The resulting `tauri build`
-  produces an installer that needs no download on first launch.
+  Download and unpack the Node.js runtime, the packaged dsh core and pnpm into
+  src-tauri/resources, then rewrite manifest.jsonc so every bundled dependency
+  resolves through `$Resources/...`. The resulting `tauri build` produces an
+  installer that needs no download on first launch.
 
 inputs:
   platform:
@@ -15,6 +15,13 @@ inputs:
   dsh-tag:
     description: deepseek-harness-pkg release tag bundled as the built-in core
     required: true
+  bundle-git:
+    description: >-
+      Also bundle MinGit. Off by default: starting dsh needs no Git, only
+      git-backed features (worktree, `github:` plugins) do, and an offline
+      machine can never provision it afterwards.
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -25,9 +32,17 @@ runs:
         PLATFORM: ${{ inputs.platform }}
         ARCH: ${{ inputs.arch }}
         DSH_TAG: ${{ inputs.dsh-tag }}
+        BUNDLE_GIT: ${{ inputs.bundle-git }}
         GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
+
+        with_git=false
+        if [ "$PLATFORM" = "windows" ] && [ "$BUNDLE_GIT" = "true" ]; then
+          with_git=true
+        fi
+        git_flag=""
+        [ "$with_git" = "true" ] && git_flag="--with-git"
 
         workdir="$(mktemp -d)"
         trap 'rm -rf "$workdir"' EXIT
@@ -115,7 +130,7 @@ runs:
             pnpm) pnpm_name="$name"; pnpm_url="$url"; pnpm_sha="$sha" ;;
             git) git_name="$name"; git_url="$url"; git_sha="$sha" ;;
           esac
-        done < <(node scripts/bundle-metadata.mjs --assets --platform "$PLATFORM" --arch "$ARCH")
+        done < <(node scripts/bundle-metadata.mjs --assets --platform "$PLATFORM" --arch "$ARCH" $git_flag)
 
         # Node.js 运行时：摘要取自官方 SHASUMS256.txt，与 assets 同源同版本。
         fetch "$node_url" "${workdir}/${node_name}"
@@ -145,8 +160,8 @@ runs:
         flatten "${workdir}/pnpm"
         install_tree "${workdir}/pnpm" "src-tauri/resources/pnpm"
 
-        # MinGit：仅 Windows 随包，摘要取自 constants.rs（内网环境补装必然失败，
-        # 系统 Git 缺失时它就是唯一可用的 Git）。
+        # MinGit：默认不随包（`bundle-git: true` 才下载）。启动 dsh 不需要 Git，
+        # 只有 git 托管的能力（worktree、`github:` 插件）依赖它。
         if [ -n "${git_name:-}" ]; then
           fetch "$git_url" "${workdir}/${git_name}"
           verify "${workdir}/${git_name}" "$git_sha" "MinGit ${git_name}"
@@ -155,7 +170,7 @@ runs:
           install_tree "${workdir}/git" "src-tauri/resources/git"
         fi
 
-        node scripts/bundle-metadata.mjs --manifest --platform "$PLATFORM" --arch "$ARCH"
+        node scripts/bundle-metadata.mjs --manifest --platform "$PLATFORM" --arch "$ARCH" $git_flag
 
     - name: Verify bundled entries
       shell: bash
@@ -165,10 +180,14 @@ runs:
         set -euo pipefail
         # 入口路径必须与清单 `dependencies.<key>.entry` 一致：解压层级（flatten）
         # 或资产布局变化会让应用在启动时判定「依赖缺失」并转去联网下载。
-        entries="node/node.exe pnpm/bin/pnpm.cjs dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
+        entries="pnpm/bin/pnpm.cjs dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
         if [ "$PLATFORM" != "windows" ]; then
-          entries="node/bin/node pnpm/bin/pnpm.cjs dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
+          entries="node/bin/node $entries"
         else
+          entries="node/node.exe $entries"
+        fi
+        # 清单没有指向 `$Resources/git` 时不能要求它存在（默认就不随包 MinGit）。
+        if grep -q '"managedRoot": "$Resources/git"' src-tauri/resources/manifest.jsonc; then
           entries="$entries git/cmd/git.exe"
         fi
         missing=0
