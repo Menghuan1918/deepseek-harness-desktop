@@ -265,11 +265,15 @@ export function toAssetTable(assets) {
 }
 
 /**
- * 把清单里的依赖托管根改写成 `$Resources/<dir>` 并关闭运行期覆盖。
+ * 把清单里的依赖托管根改写成 `$Resources/<dir>`。
  *
- * 离线包把运行时随安装包分发，`managedRoot` 必须指向安装包资源目录；同时把
- * `overridable` 置为 false，让本机既有的 `dependencies.json` 记录（旧的非离线
- * 安装留下的 AppData 路径，可能已被删除）不能盖过随包资源。
+ * 离线包把运行时随安装包分发，`managedRoot` 必须指向安装包资源目录。
+ *
+ * `overridable` 按依赖区分：
+ * - Node / pnpm（以及可选的 MinGit）置 false：它们固定随包，本机既有的
+ *   `dependencies.json` 记录（旧的非离线安装留下、可能已被删除）不该盖过随包资源；
+ * - 内核保持 true：随包内核是核心面板里置顶的「本地」项，用户要能下载并切换到
+ *   AppData 里的其它版本，也能切回来——切换正是通过依赖映射表实现的。
  *
  * 改写结果直接写回 `src-tauri/resources/manifest.jsonc`（构建产物，不提交），
  * 因此注释与缩进按 JSON 重新序列化。未随包的依赖（默认的 MinGit）保持清单原值，
@@ -290,8 +294,8 @@ export function applyBundleManifest({ repo = process.cwd(), platform, withGit = 
       throw bundleError(`manifest.jsonc is missing dependencies.${key}`)
     const managedRoot = `${RESOURCES_TOKEN}/${BUNDLED_DIRS[key]}`
     spec.managedRoot = managedRoot
-    spec.overridable = false
-    applied.push(`${key} -> ${managedRoot}`)
+    spec.overridable = key === 'dsh'
+    applied.push(`${key} -> ${managedRoot} (overridable: ${spec.overridable})`)
   }
 
   const file = manifestPath(repo)

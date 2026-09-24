@@ -446,13 +446,13 @@ pub fn get_git_cmd_dir<R: Runtime>(_app_handle: &AppHandle<R>) -> Option<PathBuf
 ///
 /// 随包资源构建（离线安装包）只随包运行 dsh 必需的 Node / pnpm / 内核，不随包 MinGit：
 /// 启动 dsh 本身不需要 Git，而内网补装必然失败，把 Git 当成启动前置条件只会把应用卡在
-/// 安装界面（见 [`dependencies::is_bundled_install`]）。git 托管的能力（worktree、
+/// 安装界面（见 [`dependencies::bundled_core_dir`]）。git 托管的能力（worktree、
 /// `github:` 插件）在真正使用时给出明确失败。
 #[cfg(windows)]
 pub fn git_runtime_ready<R: Runtime>(app_handle: &AppHandle<R>) -> bool {
     find_system_git_binary().is_some()
         || git_binary_works(&get_mingit_binary_path(app_handle))
-        || dependencies::is_bundled_install(app_handle)
+        || dependencies::bundled_core_dir(app_handle).is_some()
 }
 
 /// 非 Windows 平台不属于本次空白 Windows 环境的自动配置范围。

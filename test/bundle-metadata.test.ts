@@ -188,16 +188,17 @@ describe('bundle manifest rewrite', () => {
     try {
       const result = bundleMetadata.applyBundleManifest({ repo, platform: 'windows' })
       expect(result.applied).toEqual([
-        'node -> $Resources/node',
-        'pnpm -> $Resources/pnpm',
-        'dsh -> $Resources/dsh',
+        'node -> $Resources/node (overridable: false)',
+        'pnpm -> $Resources/pnpm (overridable: false)',
+        'dsh -> $Resources/dsh (overridable: true)',
       ])
 
       const manifest = JSON.parse(readFileSync(result.file, 'utf8'))
       const shipped = JSON.parse(bundleMetadata.stripJsonc(SHIPPED))
       for (const [key, dir] of [['node', 'node'], ['pnpm', 'pnpm'], ['dsh', 'dsh']]) {
         expect(manifest.dependencies[key].managedRoot).toBe(`$Resources/${dir}`)
-        expect(manifest.dependencies[key].overridable).toBe(false)
+        // 内核保持可覆盖：核心面板要能把 dsh 根切到 AppData 里的其它版本再切回来。
+        expect(manifest.dependencies[key].overridable).toBe(key === 'dsh')
         // 入口形状由清单声明，改写托管根不得动它。
         expect(manifest.dependencies[key].entry).toEqual(shipped.dependencies[key].entry)
       }
@@ -216,10 +217,10 @@ describe('bundle manifest rewrite', () => {
     try {
       const { file, applied } = bundleMetadata.applyBundleManifest({ repo, platform: 'windows', withGit: true })
       expect(applied).toEqual([
-        'node -> $Resources/node',
-        'pnpm -> $Resources/pnpm',
-        'dsh -> $Resources/dsh',
-        'git -> $Resources/git',
+        'node -> $Resources/node (overridable: false)',
+        'pnpm -> $Resources/pnpm (overridable: false)',
+        'dsh -> $Resources/dsh (overridable: true)',
+        'git -> $Resources/git (overridable: false)',
       ])
       const manifest = JSON.parse(readFileSync(file, 'utf8'))
       expect(manifest.dependencies.git.managedRoot).toBe('$Resources/git')
@@ -234,7 +235,11 @@ describe('bundle manifest rewrite', () => {
     const repo = tempRepo()
     try {
       const { file, applied } = bundleMetadata.applyBundleManifest({ repo, platform: 'macos' })
-      expect(applied).not.toContain('git -> $Resources/git')
+      expect(applied).toEqual([
+        'node -> $Resources/node (overridable: false)',
+        'pnpm -> $Resources/pnpm (overridable: false)',
+        'dsh -> $Resources/dsh (overridable: true)',
+      ])
       const manifest = JSON.parse(readFileSync(file, 'utf8'))
       expect(manifest.dependencies.git.managedRoot).toBe('$AppData/dependencies/git')
       expect(manifest.dependencies.git.overridable).toBe(true)
@@ -250,9 +255,9 @@ describe('bundle manifest rewrite', () => {
       bundleMetadata.applyBundleManifest({ repo, platform: 'linux' })
       const second = bundleMetadata.applyBundleManifest({ repo, platform: 'linux' })
       expect(second.applied).toEqual([
-        'node -> $Resources/node',
-        'pnpm -> $Resources/pnpm',
-        'dsh -> $Resources/dsh',
+        'node -> $Resources/node (overridable: false)',
+        'pnpm -> $Resources/pnpm (overridable: false)',
+        'dsh -> $Resources/dsh (overridable: true)',
       ])
       expect(() => bundleMetadata.applyBundleManifest({ repo, platform: 'freebsd' as BundlePlatform }))
         .toThrow(/^BUNDLE_METADATA:/)

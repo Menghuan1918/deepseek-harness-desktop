@@ -126,9 +126,11 @@ impl Installable for Dsh {
         config::get_dsh_binary_path(app).exists()
     }
     fn record_mapping(&self, app: &AppHandle) {
-        let managed = config::dependencies::managed_root(app, config::dependencies::DEP_DSH);
+        // 记录**当前生效的根**而不是清单托管根：随包资源构建（离线包）里用户可以把内核
+        // 切到 AppData 的槽位，写回托管根会把这次切换悄悄改回随包内核。
+        let active = config::dependencies::active_root(app, config::dependencies::DEP_DSH);
         if config::get_dsh_binary_path(app).is_file() {
-            config::dependencies::record(app, InstallKind::Dsh.dependency_key(), Some(managed));
+            config::dependencies::record(app, InstallKind::Dsh.dependency_key(), Some(active));
         } else if crate::service::core::active_version(app).is_some() {
             // 只有系统（本地）核心可用：该依赖由系统环境满足。
             config::dependencies::record(app, InstallKind::Dsh.dependency_key(), None);
