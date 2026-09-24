@@ -1,8 +1,7 @@
 import type { UiContext } from './types/index'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply as hostApply } from '../index'
-import { MachinesSection } from './components/machines-section.tsx'
-import { SyncPanel } from './components/sync-panel.tsx'
+import { SshSection } from './components/ssh-section.tsx'
 import { apply, inject } from './index'
 import { en, zh } from './locales/index'
 import { desktopBridge } from './service/bridge'
@@ -66,9 +65,10 @@ describe('ui-ssh client plugin', () => {
     expect(locale.bind).toHaveBeenCalledWith('ssh')
   })
 
-  it('registers the settings section with a store-backed inject face', async () => {
+  it('registers the single SSH settings section with a store-backed inject face', async () => {
     const { ctx, slots } = scriptedCtx()
     apply(ctx)
+    expect(slots.inject).toHaveBeenCalledTimes(1)
     expect(slots.inject).toHaveBeenCalledWith('settings.section', expect.any(Function))
     const contribution = slots.inject.mock.calls[0]?.[1] as () => unknown
     contribution()
@@ -88,35 +88,15 @@ describe('ui-ssh client plugin', () => {
     const injected = options.inject()
     expect(injected.store).toBeInstanceOf(MachinesStore)
     expect(injected.bridge).toBe(desktopBridge)
-    expect(slots.register.mock.calls[0]?.[1]).toBe(MachinesSection)
+    // 机器管理与同步合并在同一个分区内（组件内部用 Tabs 分页）
+    expect(slots.register.mock.calls[0]?.[1]).toBe(SshSection)
     // Drive one store load so the window.fetch thunk the plugin installed
     // actually executes (stubbed: no network in tests).
-    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true, value: { items: [] } }) }) as unknown as Response)
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true, value: { enabled: true, items: [] } }) }) as unknown as Response)
     vi.stubGlobal('fetch', fetchMock)
     const store = injected.store as MachinesStore
     await store.load()
     expect(fetchMock).toHaveBeenCalledWith('/api-ssh', expect.objectContaining({ method: 'POST' }))
-  })
-
-  it('registers the sync section as a sibling of the machines section', () => {
-    const { ctx, slots } = scriptedCtx()
-    apply(ctx)
-    expect(slots.inject).toHaveBeenCalledTimes(2)
-    const contribution = slots.inject.mock.calls[1]?.[1] as () => unknown
-    contribution()
-    const options = slots.register.mock.calls[0]?.[0] as {
-      id: string
-      order: number
-      label: () => string
-      locale: string
-      inject: () => Record<string, unknown>
-    }
-    expect(options.id).toBe('dsh-tauri-ssh-sync')
-    expect(options.order).toBe(51)
-    expect(options.label()).toBe('t:sync.nav')
-    expect(options.locale).toBe('ssh')
-    expect(options.inject().store).toBeInstanceOf(MachinesStore)
-    expect(slots.register.mock.calls[0]?.[1]).toBe(SyncPanel)
   })
 })
 

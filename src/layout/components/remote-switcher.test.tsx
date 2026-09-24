@@ -34,6 +34,8 @@ function machineOf(partial: Partial<SshMachineRow>): SshMachineRow {
 
 /** 本轮引擎返回的机器列表（boot 的首次 refresh 会异步覆写 store，须同源）。 */
 let engineMachines: SshMachineRow[] = []
+/** 本轮引擎回报的 SSH 开关（false = 插件未启用，壳层不渲染控件）。 */
+let engineEnabled = true
 /** 是否模拟本地实例不可达（/api-ssh 抛错 → 降级态）。 */
 let engineUnreachable = false
 
@@ -44,8 +46,8 @@ function bindEngine() {
   bindSshApiForTests({
     listMachines: vi.fn(async () => {
       if (engineUnreachable)
-        throw new Error('SSH_API_HTTP_503')
-      return engineMachines
+        throw new TypeError('fetch failed')
+      return { enabled: engineEnabled, machines: engineMachines }
     }),
     connect: vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:4001' })),
     disconnect: disconnectSpy,
@@ -64,6 +66,8 @@ async function openMenu() {
 /** 设定机器列表（store 与 mock 引擎同源，避免 boot 首刷覆写）。 */
 function seedMachines(machines: SshMachineRow[]) {
   engineMachines = machines
+  engineEnabled = true
+  remote.enabled = true
   remote.machines = machines
 }
 
@@ -73,6 +77,7 @@ beforeEach(() => {
   manageSpy.mockClear()
   invokeSpy.mockClear()
   engineMachines = []
+  engineEnabled = true
   engineUnreachable = false
   bindEngine()
 })
@@ -159,6 +164,24 @@ describe('remoteSwitcher 渲染', () => {
 })
 
 describe('remoteSwitcher 交互与降级', () => {
+  it('未启用（或插件未加载）时壳层不渲染「本地」控件；启用后随下一轮轮询出现', async () => {
+    engineEnabled = false
+    remote.enabled = false
+    render(<RemoteSwitcher onManage={manageSpy} />)
+    // boot 首刷回报未启用：整枚控件缺席（不是禁用的死按钮）
+    await vi.waitFor(() => {
+      expect(remote.available).toBe(true)
+    })
+    expect(screen.queryByRole('button', { name: 'remote.switcher' })).toBeNull()
+
+    // 用户在设置页启用后：聚焦触发的即时刷新让控件出现
+    engineEnabled = true
+    window.dispatchEvent(new Event('focus'))
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'remote.switcher' })).toBeTruthy()
+    })
+  })
+
   it('点击已连接机器项：切换视图（activeId/隧道 URL）', async () => {
     seedMachines([machineOf({ id: 'm1', name: 'alpha', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
     render(<RemoteSwitcher onManage={manageSpy} />)

@@ -44,7 +44,7 @@ describe('connectDialog 连接进度弹窗', () => {
   it('失败定格：直接原因 + 重试按钮（重试重新发起连接）', async () => {
     const connectSpy = vi.fn(() => new Promise<{ tunnelBaseUrl: string }>(() => {}))
     bindSshApiForTests({
-      listMachines: vi.fn(async () => [{ id: 'm1', name: 'alpha', state: 'given-up' as const, lastError: 'boom' }]),
+      listMachines: vi.fn(async () => ({ enabled: true, machines: [{ id: 'm1', name: 'alpha', state: 'given-up' as const, lastError: 'boom' }] })),
       connect: connectSpy,
       disconnect: vi.fn(async () => undefined),
     })
@@ -65,7 +65,7 @@ describe('connectDialog 连接进度弹窗', () => {
   it('取消连接（进行中）：中止引擎尝试并关闭弹窗，无失败定格', async () => {
     const disconnectSpy = vi.fn(async () => undefined)
     bindSshApiForTests({
-      listMachines: vi.fn(async () => []),
+      listMachines: vi.fn(async () => ({ enabled: true, machines: [] })),
       connect: vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:1' })),
       disconnect: disconnectSpy,
     })

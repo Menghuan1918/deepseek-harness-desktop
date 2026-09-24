@@ -11,21 +11,23 @@ export const SSH_LOCALE_NS = 'ssh'
 /** The settings section slot this plugin registers into. */
 export const SETTINGS_SECTION_SLOT = 'settings.section'
 
-/** Registration id of this plugin's settings section (the host plugin's id). */
+/** Registration id of this plugin's single settings section (the host plugin's id). */
 export const SETTINGS_SECTION_ID = 'dsh-tauri-ssh'
 
 /** Order of this plugin's settings section among the other sections. */
 export const SETTINGS_SECTION_ORDER = 50
 
-/**
- * Registration id of the plugin/skill sync settings section — a sibling of
- * {@link SETTINGS_SECTION_ID}, so the desktop switcher can deep-link both
- * remote-machine surfaces at the same level (`dsh://settings:open` section).
- */
-export const SYNC_SECTION_ID = 'dsh-tauri-ssh-sync'
+/** The machines tab of the SSH section (shared with the shell deep link). */
+export const SSH_TAB_MACHINES = 'machines'
 
-/** Order of the sync section, right behind the machines section. */
-export const SYNC_SECTION_ORDER = 51
+/** The sync-to-remote tab of the SSH section (shared with the shell deep link). */
+export const SSH_TAB_SYNC = 'sync'
+
+/** DOM id base of the tab strip; each panel is `${SSH_TABS_ID}-${tab}-panel`. */
+export const SSH_TABS_ID = 'dsh-tauri-ssh-tabs'
+
+/** The shell → iframe settings deep link (the `tab` field picks the SSH tab). */
+export const SETTINGS_OPEN_MESSAGE = 'dsh://settings:open'
 
 /** The /api-ssh route the host plugin mounts (same-origin POST envelope). */
 export const SSH_API_PATH = '/api-ssh'

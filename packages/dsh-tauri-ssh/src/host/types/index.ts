@@ -8,7 +8,6 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type z from 'schemastery'
 
 /** Identifies one SSH machine profile. A generated uuid, never the host name: hosts are not unique. */
 export type MachineId = string & { readonly __machineId: unique symbol }
@@ -24,12 +23,11 @@ export function MachineId(id: string): MachineId {
 }
 
 /**
- * One stored SSH machine profile: the `ssh-machines` settings-namespace
- * value shape. Credentials are deliberately sparse: authentication runs on
- * the host's own `~/.ssh` (config aliases, `IdentityFile`s, default keys),
- * so only the optional fallback secrets live here. Secret fields are
- * schema-declared `role('secret')` positions — they never ride a redacted
- * wire surface, only the owner scope's resolved in-process value.
+ * One stored SSH machine profile: the state document's machine value shape.
+ * Credentials are deliberately sparse: authentication runs on the host's own
+ * `~/.ssh` (config aliases, `IdentityFile`s, default keys), so only the
+ * optional fallback secrets live here — they never ride a redacted wire
+ * surface, only the plugin's in-process value.
  */
 export interface MachineProfile {
   /** Stable profile id (generated uuid). */
@@ -349,35 +347,17 @@ export interface HostWebRoute {
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 }
 
-/** The settings namespace scope this plugin registers (a subset of dsh-settings' SettingsScope). */
-export interface HostSettingsScope<T> {
-  /** The current resolved namespace value. */
-  get: () => T
-  /** Subscribe to value changes; returns an unsubscribe. */
-  watch: (callback: (next: T, prev: T) => void) => () => void
-  /** Merge a patch into the user section and persist (schema-validated). */
-  update: (patch: object) => Promise<void>
-  /** Replace the user section wholesale (absent keys re-inherit defaults). */
-  replace: (section: object) => Promise<void>
-}
-
-/** The settings service surface this plugin needs. */
-export interface HostSettings {
-  register: <T>(ns: string, schema: z<T>, options?: { base?: T, applies?: 'live' | 'restart' }) => HostSettingsScope<T>
-}
-
 /** The webserver service surface this plugin needs. */
 export interface HostWebServer {
   register: (route: HostWebRoute) => () => void
 }
 
 /**
- * The host context this plugin's apply receives: the settings seam (namespace)
- * and the webserver (route mount), plus the teardown-effect seat. Structural —
- * the harness's real context duck-types onto it.
+ * The host context this plugin's apply receives: the webserver (route mount)
+ * plus the teardown-effect seat. Structural — the harness's real context
+ * duck-types onto it.
  */
 export interface SshHostContext {
-  settings: HostSettings
   webServer: HostWebServer
   /** Register a teardown effect (narrow cordis surface). */
   effect: (execute: () => () => void, label?: string) => unknown

@@ -1,66 +1,11 @@
-import type z from 'schemastery'
 import type { Config as SshRemoteConfig } from './storage/index'
 import type { SshHostContext } from './types/index'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apply, inject, name, SshRemoteService } from './apply'
-import { MACHINES_NAMESPACE } from './storage/index'
 import { MachineId } from './types/index'
-
-/** Scripted settings scope double. */
-function scriptedSettings() {
-  const doc: Record<string, unknown> = {}
-  let lastNs = ''
-  const watchers: Array<(next: unknown, prev: unknown) => void> = []
-  const update = vi.fn(async (patch: Record<string, unknown>) => {
-    doc[lastNs] = deepMerge((doc[lastNs] as Record<string, unknown> | undefined) ?? {}, patch)
-    for (const watcher of watchers) watcher(doc, {})
-  })
-  const replace = vi.fn(async (section: Record<string, unknown>) => {
-    doc[lastNs] = section
-    for (const watcher of watchers) watcher(doc, {})
-  })
-  return {
-    doc,
-    update,
-    replace,
-    register: vi.fn((ns: string, _schema: z<unknown>, options?: { base?: unknown }) => {
-      lastNs = ns
-      const base = options?.base ?? {}
-      const resolved = (): unknown => ({ ...(base as object), ...(doc[ns] as object | undefined) })
-      return {
-        get: () => resolved(),
-        watch: (callback: (next: unknown, prev: unknown) => void) => {
-          watchers.push(callback)
-          return () => {}
-        },
-        update,
-        replace,
-      }
-    }),
-    set(ns: string, section: Record<string, unknown>): void {
-      doc[ns] = section
-      for (const watcher of watchers) watcher(doc, {})
-    },
-  }
-}
-
-/** Plain-object deep merge used by the scripted settings scope. */
-function deepMerge(target: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...target }
-  for (const [key, value] of Object.entries(patch)) {
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)
-      && typeof next[key] === 'object' && next[key] !== null && !Array.isArray(next[key])) {
-      next[key] = deepMerge(next[key] as Record<string, unknown>, value as Record<string, unknown>)
-    }
-    else {
-      next[key] = value
-    }
-  }
-  return next
-}
 
 function scriptedHttpServer() {
   const routes: Array<{ kind: string, path: string, handler?: unknown }> = []
@@ -86,12 +31,15 @@ const baseConfig: SshRemoteConfig = {
   reconnectMaxAttempts: 2,
 }
 
-// Every service construction points the credential/discovery layer at a
-// scratch ssh directory — the developer's real ~/.ssh is never read.
+// Every service construction points the credential/discovery layer and the
+// state document at a scratch directory — the developer's real ~/.ssh and
+// harness home are never touched.
 let sshDir: string
+let statePath: string
 
 beforeEach(() => {
   sshDir = mkdtempSync(join(tmpdir(), 'ssh-index-'))
+  statePath = join(sshDir, 'machines.json')
 })
 
 afterEach(() => {
@@ -99,7 +47,7 @@ afterEach(() => {
 })
 
 /** One scripted context: cordis-shaped surface without real cordis types. */
-function scriptedCtx(settings: unknown, webServer: unknown): { ctx: SshHostContext, disposers: Array<() => void> } {
+function scriptedCtx(webServer: unknown): { ctx: SshHostContext, disposers: Array<() => void> } {
   const disposers: Array<() => void> = []
   const ctx = {
     provide: vi.fn(),
@@ -108,34 +56,45 @@ function scriptedCtx(settings: unknown, webServer: unknown): { ctx: SshHostConte
       if (typeof disposer === 'function')
         disposers.push(disposer)
     }),
-    settings,
     webServer,
   } as unknown as SshHostContext
   return { ctx, disposers }
 }
 
-/** Construct the service on scripted settings/webServer doubles. */
+/** Persist one state document before construction. */
+function writeState(state: { enabled?: boolean, machines?: Record<string, unknown> }): void {
+  writeFileSync(statePath, `${JSON.stringify({ version: 1, enabled: state.enabled ?? false, machines: state.machines ?? {} }, null, 2)}\n`)
+}
+
+/** The stored state document as the service wrote it. */
+function readState(): { version: number, enabled: boolean, machines: Record<string, Record<string, unknown>> } {
+  return JSON.parse(readFileSync(statePath, 'utf8')) as { version: number, enabled: boolean, machines: Record<string, Record<string, unknown>> }
+}
+
+/** Construct the service on a scripted webServer double. */
 function construct(config: SshRemoteConfig = baseConfig): { ctx: SshHostContext, service: SshRemoteService, disposers: Array<() => void> } {
-  const { ctx, disposers } = scriptedCtx(scriptedSettings(), scriptedHttpServer())
-  return { ctx, service: new SshRemoteService(ctx, { ...config, sshDir }), disposers }
+  const { ctx, disposers } = scriptedCtx(scriptedHttpServer())
+  return { ctx, service: new SshRemoteService(ctx, { ...config, sshDir, statePath }), disposers }
 }
 
 function boot(overrides: {
-  settings?: ReturnType<typeof scriptedSettings>
+  state?: { enabled?: boolean, machines?: Record<string, unknown> }
   webServer?: ReturnType<typeof scriptedHttpServer>
   config?: Partial<SshRemoteConfig>
 } = {}) {
-  const settings = overrides.settings ?? scriptedSettings()
+  if (overrides.state !== undefined)
+    writeState(overrides.state)
   const webServer = overrides.webServer ?? scriptedHttpServer()
-  const { ctx } = scriptedCtx(settings, webServer)
+  const { ctx } = scriptedCtx(webServer)
   const config = {
     ...baseConfig,
     knownHostsPath: join(homedir(), '.dsh', 'ssh', 'known-hosts.json'),
     sshDir,
+    statePath,
     ...overrides.config,
   }
   const service = new SshRemoteService(ctx, config)
-  return { ctx, settings, webServer, service }
+  return { ctx, webServer, service }
 }
 
 function machine(id: string): Record<string, unknown> {
@@ -153,7 +112,7 @@ function machine(id: string): Record<string, unknown> {
 describe('ssh-remote plugin', () => {
   it('declares its plugin metadata', () => {
     expect(name).toBe('dsh-tauri-ssh')
-    expect(inject).toEqual(['settings', 'webServer'])
+    expect(inject).toEqual(['webServer'])
     expect(apply).toEqual(expect.any(Function))
   })
 
@@ -161,7 +120,7 @@ describe('ssh-remote plugin', () => {
     const descriptor = (await import('./apply')).default
     expect(descriptor).toMatchObject({
       name: 'dsh-tauri-ssh',
-      inject: ['settings', 'webServer'],
+      inject: ['webServer'],
       Config: expect.anything(),
     })
     expect(descriptor.apply).toEqual(expect.any(Function))
@@ -170,36 +129,63 @@ describe('ssh-remote plugin', () => {
     expect(descriptor.apply).toBe(apply)
   })
 
-  it('registers the namespace and mounts the /api-ssh route', () => {
-    const { settings, webServer } = boot()
-    expect(settings.register).toHaveBeenCalledWith(String(MACHINES_NAMESPACE), expect.anything(), { base: { machines: {} } })
+  it('mounts the /api-ssh route without any settings service', () => {
+    const { webServer } = boot()
     expect(webServer.routes).toMatchObject([{ kind: 'prefix', path: '/api-ssh' }])
     expect(webServer.routes[0]?.handler).toEqual(expect.any(Function))
   })
 
-  it('loads machine profiles from the settings namespace', () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), { machines: { a: machine('a') } })
-    const { service } = boot({ settings })
+  it('starts switched off and persists the enable switch', async () => {
+    const { service } = boot()
+    expect(service.enabled()).toBe(false)
+    await service.setEnabled(true)
+    expect(service.enabled()).toBe(true)
+    expect(readState()).toMatchObject({ version: 1, enabled: true })
+    await service.setEnabled(false)
+    expect(readState()).toMatchObject({ enabled: false })
+  })
+
+  it('disconnects every machine when the feature is switched off', async () => {
+    const { service } = boot({ state: { enabled: true, machines: { a: machine('a') } } })
+    const dispose = vi.spyOn(service.manager, 'dispose').mockResolvedValue(undefined)
+    await service.setEnabled(true)
+    expect(dispose).not.toHaveBeenCalled()
+    await service.setEnabled(false)
+    expect(dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads machine profiles from the state document', () => {
+    const { service } = boot({ state: { enabled: true, machines: { a: machine('a') } } })
     const views = service.profileViews()
     expect(views.map(view => view.id)).toEqual(['a'])
     expect(views[0]).toMatchObject({ name: 'machine-a', hasPassword: true })
     expect(views[0]).not.toHaveProperty('password')
   })
 
-  it('refreshes the manager when the namespace changes', () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), { machines: { a: machine('a'), b: machine('b') } })
-    const { service } = boot({ settings })
-    expect(service.profileViews()).toHaveLength(2)
-    settings.set(String(MACHINES_NAMESPACE), { machines: { a: machine('a') } })
-    expect(service.profileViews().map(view => view.id)).toEqual(['a'])
+  it('reads a corrupt or absent document as the default state', () => {
+    writeFileSync(statePath, '{ not json')
+    const corrupt = boot()
+    expect(corrupt.service.enabled()).toBe(false)
+    expect(corrupt.service.profileViews()).toEqual([])
+
+    rmSync(statePath, { force: true })
+    const absent = boot()
+    expect(absent.service.enabled()).toBe(false)
+    expect(absent.service.profileViews()).toEqual([])
   })
 
-  it('rejects a dict key that disagrees with the profile id', () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), { machines: { b: machine('a') } })
-    expect(() => boot({ settings })).toThrow(/dict key must equal the profile id/)
+  it('drops a stored row whose dict key disagrees with the profile id', () => {
+    const { service } = boot({ state: { enabled: true, machines: { b: machine('a') } } })
+    expect(service.profileViews()).toEqual([])
+  })
+
+  it('refreshes the manager when the stored machines change', async () => {
+    const { service } = boot()
+    await service.save('a' as never, { name: 'alpha', host: '10.0.0.1', port: 22, user: 'root', remotePort: 3080 })
+    await service.save('b' as never, { name: 'beta', host: '10.0.0.2', port: 22, user: 'root', remotePort: 3080 })
+    expect(service.profileViews()).toHaveLength(2)
+    await service.remove('a' as never)
+    expect(service.profileViews().map(view => view.id)).toEqual(['b'])
   })
 
   it('exposes the manager connection plane', async () => {
@@ -218,8 +204,8 @@ describe('ssh-remote plugin', () => {
     expect(result).toEqual({ installed: ['node'], dshRef: 'dsh-0.1.2-rc.1-1', dshVersion: '0.1.2-rc.1', dshPath: '/root/.dsh-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', credentialsCopied: true })
   })
 
-  it('saves a machine through the settings scope and refreshes the manager', async () => {
-    const { service, settings } = boot()
+  it('saves a machine into the state document and refreshes the manager', async () => {
+    const { service } = boot()
     await service.save('a' as never, {
       name: 'alpha',
       host: '10.0.0.1',
@@ -227,19 +213,15 @@ describe('ssh-remote plugin', () => {
       user: 'root',
       remotePort: 3080,
     }, { password: 'sekrit', passphrase: 'PHRASE' })
-    expect(settings.replace).toHaveBeenCalledWith({
-      machines: {
-        a: {
-          id: 'a',
-          name: 'alpha',
-          host: '10.0.0.1',
-          port: 22,
-          user: 'root',
-          remotePort: 3080,
-          password: 'sekrit',
-          passphrase: 'PHRASE',
-        },
-      },
+    expect(readState().machines.a).toEqual({
+      id: 'a',
+      name: 'alpha',
+      host: '10.0.0.1',
+      port: 22,
+      user: 'root',
+      remotePort: 3080,
+      password: 'sekrit',
+      passphrase: 'PHRASE',
     })
     const views = service.profileViews()
     expect(views.map(view => view.id)).toEqual(['a'])
@@ -247,9 +229,7 @@ describe('ssh-remote plugin', () => {
   })
 
   it('keeps stored secrets on save unless rewritten', async () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), { machines: { a: machine('a') } })
-    const { service } = boot({ settings })
+    const { service } = boot({ state: { enabled: true, machines: { a: machine('a') } } })
     await service.save('a' as never, {
       name: 'alpha-2',
       host: '10.0.0.1',
@@ -262,14 +242,15 @@ describe('ssh-remote plugin', () => {
   })
 
   it('clears optional appearance fields on save and keeps sibling machines intact', async () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), {
-      machines: {
-        a: { ...machine('a'), color: '#ff0000', tintBorder: true, startCommand: 'custom dsh web' },
-        b: machine('b'),
+    const { service } = boot({
+      state: {
+        enabled: true,
+        machines: {
+          a: { ...machine('a'), color: '#ff0000', tintBorder: true, startCommand: 'custom dsh web' },
+          b: machine('b'),
+        },
       },
     })
-    const { service } = boot({ settings })
     await service.save('a' as never, {
       name: 'alpha-3',
       host: '10.0.0.1',
@@ -279,22 +260,18 @@ describe('ssh-remote plugin', () => {
     })
     const viewA = service.profileViews().find(view => view.id === 'a')
     // 清除方向：color/tintBorder/startCommand 的空/关形态（row 缺位）必须真
-    // 清除——save 走整节 replace 精确写；若退回 update 深合并，已存层会把
-    // 这三个字段复活（回归守护）。
+    // 清除——save 写的是整份 profile，缺位字段不会从旧值复活（回归守护）。
     expect(viewA).not.toHaveProperty('color')
     expect(viewA).not.toHaveProperty('tintBorder')
     expect(viewA).not.toHaveProperty('startCommand')
-    expect(settings.update).not.toHaveBeenCalled()
-    // 精确写重述全表：同表其他机器原样保留
+    // 同表其他机器原样保留
     expect(service.profileViews().find(view => view.id === 'b')).toMatchObject({ name: 'machine-b', hasPassword: true })
   })
 
   it('keeps stored secrets on save and stores the start command', async () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), {
-      machines: { a: { ...machine('a'), passphrase: 'OLD-PHRASE' } },
+    const { service } = boot({
+      state: { enabled: true, machines: { a: { ...machine('a'), passphrase: 'OLD-PHRASE' } } },
     })
-    const { service } = boot({ settings })
     await service.save('a' as never, {
       name: 'alpha',
       host: '10.0.0.1',
@@ -313,9 +290,7 @@ describe('ssh-remote plugin', () => {
   })
 
   it('stores the remote profile name on save and clears it when the row omits it', async () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), { machines: { a: { ...machine('a'), profileName: 'alpha' } } })
-    const { service } = boot({ settings })
+    const { service } = boot({ state: { enabled: true, machines: { a: { ...machine('a'), profileName: 'alpha' } } } })
     await service.save('a' as never, {
       name: 'alpha',
       host: '10.0.0.1',
@@ -338,11 +313,9 @@ describe('ssh-remote plugin', () => {
   })
 
   it('keeps whichever stored secrets exist and rewrites only typed ones', async () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), {
-      machines: { a: { ...machine('a'), password: undefined, passphrase: 'OLD-PHRASE' } },
+    const { service } = boot({
+      state: { enabled: true, machines: { a: { ...machine('a'), password: undefined, passphrase: 'OLD-PHRASE' } } },
     })
-    const { service } = boot({ settings })
     await service.save('a' as never, {
       name: 'alpha',
       host: '10.0.0.1',
@@ -352,9 +325,9 @@ describe('ssh-remote plugin', () => {
     }, { password: 'NEW-PW' })
     const views = service.profileViews()
     expect(views[0]).toMatchObject({ name: 'alpha', hasPassword: true, hasPassphrase: true })
-    const stored = settings.doc[String(MACHINES_NAMESPACE)] as { machines: Record<string, Record<string, unknown>> }
-    expect(stored.machines.a?.password).toBe('NEW-PW')
-    expect(stored.machines.a?.passphrase).toBe('OLD-PHRASE')
+    const stored = readState().machines.a
+    expect(stored?.password).toBe('NEW-PW')
+    expect(stored?.passphrase).toBe('OLD-PHRASE')
   })
 
   it('discovers ~/.ssh/config aliases as read-only machines', async () => {
@@ -391,9 +364,7 @@ describe('ssh-remote plugin', () => {
 
   it('lets a manual machine shadow a config alias', async () => {
     writeFileSync(join(sshDir, 'config'), 'Host dev\n  User root\n')
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), { machines: { dev: { ...machine('dev'), host: '10.1.1.1' } } })
-    const { service } = boot({ settings })
+    const { service } = boot({ state: { enabled: true, machines: { dev: { ...machine('dev'), host: '10.1.1.1' } } } })
     expect((await service.discoveredViews()).map(view => view.id)).toEqual([])
     expect(service.profileViews().map(view => view.id)).toEqual(['dev'])
   })
@@ -415,31 +386,27 @@ describe('ssh-remote plugin', () => {
   })
 
   it('applies the configured default start command to manual machines without their own', async () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), { machines: { a: machine('a') } })
-    const { service } = boot({ settings, config: { remotePort: 3080, startCommand: 'dsh web --port {port}' } })
+    const { service } = boot({ state: { enabled: true, machines: { a: machine('a') } }, config: { remotePort: 3080, startCommand: 'dsh web --port {port}' } })
     await service.disconnect('a' as never)
     const views = service.manager.profileViews()
     expect(views[0]).toMatchObject({ id: 'a', startCommand: 'dsh web --port 3080' })
   })
 
   it('keeps a manual start command over the configured default', async () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), {
-      machines: { a: { ...machine('a'), startCommand: 'custom dsh web' } },
+    const { service } = boot({
+      state: { enabled: true, machines: { a: { ...machine('a'), startCommand: 'custom dsh web' } } },
+      config: { remotePort: 3080, startCommand: 'dsh web --port {port}' },
     })
-    const { service } = boot({ settings, config: { remotePort: 3080, startCommand: 'dsh web --port {port}' } })
     await service.disconnect('a' as never)
     const views = service.manager.profileViews()
     expect(views[0]).toMatchObject({ id: 'a', startCommand: 'custom dsh web' })
   })
 
-  it('removes a machine through the settings scope', async () => {
-    const settings = scriptedSettings()
-    settings.set(String(MACHINES_NAMESPACE), { machines: { a: machine('a'), b: machine('b') } })
-    const { service } = boot({ settings })
+  it('removes a machine from the state document', async () => {
+    const { service } = boot({ state: { enabled: true, machines: { a: machine('a'), b: machine('b') } } })
     await service.remove('a' as never)
     expect(service.profileViews().map(view => view.id)).toEqual(['b'])
+    expect(readState().machines).not.toHaveProperty('a')
   })
 
   it('delegates test and connect to the manager', async () => {
@@ -448,18 +415,21 @@ describe('ssh-remote plugin', () => {
     await expect(service.connect('ghost' as never)).rejects.toMatchObject({ code: 'machine-not-found' })
   })
 
-  it('defaults the known-hosts path from DSH_HOME or the home directory', () => {
+  it('defaults the state document and known-hosts path under DSH_HOME', async () => {
     const previous = process.env.DSH_HOME
+    const home = join(sshDir, 'dsh-home')
     try {
-      process.env.DSH_HOME = '/tmp/dsh-home'
-      expect(construct().service).toBeInstanceOf(SshRemoteService)
-      delete process.env.DSH_HOME
-      expect(construct().service).toBeInstanceOf(SshRemoteService)
+      process.env.DSH_HOME = home
+      const service = constructWithDefaults()
+      expect(service).toBeInstanceOf(SshRemoteService)
+      await service.setEnabled(true)
+      expect(JSON.parse(readFileSync(join(home, 'ssh', 'machines.json'), 'utf8'))).toMatchObject({ version: 1, enabled: true })
     }
     finally {
       if (previous === undefined)
         delete process.env.DSH_HOME
-      else process.env.DSH_HOME = previous
+      else
+        process.env.DSH_HOME = previous
     }
   })
 
@@ -476,3 +446,9 @@ describe('ssh-remote plugin', () => {
     expect(apply(ctx, baseConfig)).toBeInstanceOf(SshRemoteService)
   })
 })
+
+/** Construct on the config's path defaults (only `sshDir` is redirected). */
+function constructWithDefaults(): SshRemoteService {
+  const { ctx } = scriptedCtx(scriptedHttpServer())
+  return new SshRemoteService(ctx, { ...baseConfig, sshDir })
+}

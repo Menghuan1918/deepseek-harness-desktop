@@ -1,18 +1,25 @@
+import type { SshMachineList } from './api'
 import type { SshMachineRow } from './types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SshApiHttpError } from './api'
 import { bindSshApiForTests, disposeRemoteForTests, remote } from './store'
 
 function machineOf(partial: Partial<SshMachineRow>): SshMachineRow {
   return { id: 'm1', name: 'machine', state: 'disconnected', ...partial }
 }
 
+/** SSH 已启用的 machine.list 应答。 */
+function listOf(machines: SshMachineRow[]): SshMachineList {
+  return { enabled: true, machines }
+}
+
 /** 组一个按调用序返回快照序列的 listMachines mock（末张快照驻留）。 */
 function bindListSequence(list: SshMachineRow[][]) {
   let call = 0
   return vi.fn(async () => {
-    const snapshot = list[Math.min(call, list.length - 1)]
+    const snapshot = list[Math.min(call, list.length - 1)] ?? []
     call += 1
-    return snapshot
+    return listOf(snapshot)
   })
 }
 
@@ -23,9 +30,9 @@ function bindEngine(options: {
 }) {
   let call = 0
   const listMachines = vi.fn(async () => {
-    const snapshot = options.list[Math.min(call, options.list.length - 1)]
+    const snapshot = options.list[Math.min(call, options.list.length - 1)] ?? []
     call += 1
-    return snapshot
+    return listOf(snapshot)
   })
   const connect = options.connect ?? (vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:4001' })))
   bindSshApiForTests({ listMachines, connect, disconnect: vi.fn(async () => undefined) })
@@ -41,15 +48,16 @@ afterEach(() => {
 })
 
 describe('remote store 轮询与降级', () => {
-  it('refresh 成功更新机器列表；失败进入降级态并保留既有列表，恢复后复原', async () => {
+  it('refresh 成功更新机器列表；网络失败进入降级态并保留既有列表，恢复后复原', async () => {
     bindEngine({ list: [[machineOf({ id: 'm1', name: 'alpha' })]] })
     await remote.refresh()
     expect(remote.machines.map(m => m.name)).toEqual(['alpha'])
+    expect(remote.enabled).toBe(true)
     expect(remote.available).toBe(true)
 
     // 本地实例不可达：fetch 抛错 → 降级但不清空列表（静默，不弹错误）
     bindSshApiForTests({
-      listMachines: vi.fn(async () => { throw new Error('SSH_API_HTTP_503') }),
+      listMachines: vi.fn(async () => { throw new TypeError('fetch failed') }),
       connect: vi.fn(async () => { throw new Error('unreachable') }),
       disconnect: vi.fn(async () => undefined),
     })
@@ -61,6 +69,46 @@ describe('remote store 轮询与降级', () => {
     bindEngine({ list: [[machineOf({ id: 'm1', name: 'alpha' })]] })
     await remote.refresh()
     expect(remote.available).toBe(true)
+  })
+
+  it('本地实例可达但没有 SSH API（404/405）：不算不可达，按未启用处理并清空远端视图', async () => {
+    bindEngine({ list: [[machineOf({ id: 'm1', name: 'alpha' })]] })
+    await remote.refresh()
+    remote.activeId = 'm1'
+    remote.activeTunnelUrl = 'http://127.0.0.1:4001'
+
+    // 插件未加载 / 未启用：内核 fallback 只回 405、正文为空（0.1.7 的实况）
+    bindSshApiForTests({
+      listMachines: vi.fn(async () => { throw new SshApiHttpError(405) }),
+      connect: vi.fn(async () => { throw new Error('unreachable') }),
+      disconnect: vi.fn(async () => undefined),
+    })
+    await remote.refresh()
+    expect(remote.available).toBe(true)
+    expect(remote.enabled).toBe(false)
+    expect(remote.machines).toEqual([])
+    expect(remote.activeId).toBeNull()
+    expect(remote.activeTunnelUrl).toBe('')
+
+    // 用户在设置页启用插件后：下一轮轮询即恢复
+    bindEngine({ list: [[machineOf({ id: 'm1', name: 'alpha' })]] })
+    await remote.refresh()
+    expect(remote.enabled).toBe(true)
+    expect(remote.machines.map(m => m.name)).toEqual(['alpha'])
+  })
+
+  it('未启用（enabled=false）时清空列表且不推进切换', async () => {
+    remote.machines = [machineOf({ id: 'm1', name: 'alpha' })]
+    remote.activeId = 'm1'
+    bindSshApiForTests({
+      listMachines: vi.fn(async () => ({ enabled: false, machines: [] })),
+      connect: vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:4001' })),
+      disconnect: vi.fn(async () => undefined),
+    })
+    await remote.refresh()
+    expect(remote.enabled).toBe(false)
+    expect(remote.machines).toEqual([])
+    expect(remote.activeId).toBeNull()
   })
 
   it('boot 幂等：只挂一个轮询定时器（fake timers 下按周期节奏发请求）', async () => {
@@ -97,9 +145,9 @@ describe('remote store 远端弹窗启动寻址', () => {
     // 首轮不可达（新窗口启动时实例健康检查常未就绪），恢复后轮询推进
     bindEngine({ list: [] })
     const engine = bindEngine({ list: [] })
-    engine.listMachines.mockRejectedValueOnce(new Error('SSH_API_HTTP_503'))
+    engine.listMachines.mockRejectedValueOnce(new TypeError('fetch failed'))
     engine.listMachines.mockImplementation(async () =>
-      [machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })])
+      listOf([machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })]))
     remote.openInitialMachine('m1')
     await vi.waitFor(() => expect(remote.available).toBe(false))
     expect(remote.activeId).toBeNull()
@@ -119,9 +167,9 @@ describe('remote store 远端弹窗启动寻址', () => {
       }),
     })
     engine.listMachines.mockImplementation(async () =>
-      [machineOf(connected
+      listOf([machineOf(connected
         ? { id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' }
-        : { id: 'm1', state: 'disconnected' })])
+        : { id: 'm1', state: 'disconnected' })]))
     remote.openInitialMachine('m1')
     await vi.waitFor(() => expect(remote.activeTunnelUrl).toBe('http://127.0.0.1:4001'))
     expect(engine.connect).toHaveBeenCalledWith('m1')
@@ -162,9 +210,9 @@ describe('remote store 切换语义', () => {
       }),
     })
     engine.listMachines.mockImplementation(async () =>
-      [machineOf(connected
+      listOf([machineOf(connected
         ? { id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4002' }
-        : { id: 'm1', state: 'disconnected' })])
+        : { id: 'm1', state: 'disconnected' })]))
 
     await remote.refresh()
     remote.switchTo('m1')
@@ -247,7 +295,7 @@ describe('remote store 切换语义', () => {
 
   it('降级态下 switchTo 直接忽略（远端项在切换器中已禁用）', async () => {
     bindSshApiForTests({
-      listMachines: vi.fn(async () => { throw new Error('SSH_API_HTTP_503') }),
+      listMachines: vi.fn(async () => { throw new TypeError('fetch failed') }),
       connect: vi.fn(async () => { throw new Error('unreachable') }),
       disconnect: vi.fn(async () => undefined),
     })
@@ -260,11 +308,12 @@ describe('remote store 切换语义', () => {
   it('disconnect：活动机器先回本地视图再向引擎发断开，随后 refresh 落定', async () => {
     const disconnectSpy = vi.fn(async () => undefined)
     bindSshApiForTests({
-      listMachines: vi.fn(async () => [machineOf({ id: 'm1', state: 'disconnected' })]),
+      listMachines: vi.fn(async () => listOf([machineOf({ id: 'm1', state: 'disconnected' })])),
       connect: vi.fn(async () => ({ tunnelBaseUrl: 'http://127.0.0.1:4001' })),
       disconnect: disconnectSpy,
     })
     remote.machines = [machineOf({ id: 'm1', state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })]
+    remote.enabled = true
     remote.activeId = 'm1'
     remote.activeTunnelUrl = 'http://127.0.0.1:4001'
     await remote.disconnect('m1')
@@ -309,7 +358,7 @@ describe('remote store 切换语义', () => {
 
   it('连接失败：定格目标与直接原因供进度弹窗呈现，dismissConnect 关闭清理', async () => {
     bindSshApiForTests({
-      listMachines: vi.fn(async () => [machineOf({ id: 'm1', state: 'given-up', lastError: 'timeout' })]),
+      listMachines: vi.fn(async () => listOf([machineOf({ id: 'm1', state: 'given-up', lastError: 'timeout' })])),
       connect: vi.fn(async () => { throw new Error('dial tcp timeout') }),
       disconnect: vi.fn(async () => undefined),
       events: vi.fn(async () => ({ items: [{ seq: 0, line: '[handshake] fail' }] })),

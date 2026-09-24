@@ -52,7 +52,10 @@ function openInNewWindow(machine: SshMachineRow, onError: (err: unknown) => void
  * 数据面全部来自本地实例 `/api-ssh`（`useRemoteMachines` 启动秒级轮询 +
  * 聚焦刷新）；点击机器行=当前窗口切换（未连接则发起连接，进度弹窗实时
  * 呈现），行尾图标=新窗口打开（已连接机器可用）。操作区两项同级：底部
- * 「管理机器…」与「同步到远端…」，各自直达 iframe 设置浮层的对应分区。
+ * 「管理机器…」与「同步到远端…」，各自直达 SSH 设置浮层的对应标签页。
+ *
+ * SSH 未启用（插件开关关闭，或本地实例没有该 API）时不渲染任何控件——「本地」
+ * 这一项本身就是 SSH 功能的一部分；轮询照常进行，启用后下一轮即出现。
  *
  * 色点语义（S3 词汇表）：机器标识色优先 → 已连接绿 → 重连/进行中琥珀 →
  * 放弃红 → 其余中性灰；未连接行整体降不透明度。本地实例不可达时进入降级
@@ -61,7 +64,7 @@ function openInNewWindow(machine: SshMachineRow, onError: (err: unknown) => void
 export function RemoteSwitcher({ onManage, onSync }: { onManage?: () => void, onSync?: () => void }) {
   const { t } = useTranslation()
   useRemoteMachines()
-  const { machines, activeId, available, pendingId } = useStore(store.remote)
+  const { machines, activeId, available, enabled, pendingId } = useStore(store.remote)
 
   const activeMachine = machines.find(machine => machine.id === activeId)
   const activeColor = activeMachine?.color
@@ -70,6 +73,9 @@ export function RemoteSwitcher({ onManage, onSync }: { onManage?: () => void, on
     toast(t('remote.open_window_failed'), {})
     console.warn('[remote] open window failed:', err)
   }
+
+  if (!enabled)
+    return null
 
   return (
     <Dropdown>

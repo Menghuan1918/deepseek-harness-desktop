@@ -101,6 +101,10 @@ export interface SyncPanelState {
 export interface MachinesPageState {
   status: 'idle' | 'loading' | 'ready' | 'error'
   error: string | null
+  /** Whether the SSH feature is switched on; null until settings.get answers. */
+  enabled: boolean | null
+  /** Whether a settings.set enable call is in flight. */
+  enabling: boolean
   /** Redacted machine rows in settings order (the stored, editable set). */
   machines: MachineRow[]
   /** Read-only rows discovered from the host's ~/.ssh/config (aliases). */
@@ -307,9 +311,24 @@ export function mergeSyncResults(previous: readonly SyncItemResult[], incoming: 
   return merged
 }
 
-/** Parse one /api-ssh envelope; non-ok envelopes throw. */
+/** Parse one /api-ssh envelope; a transport-level failure throws a stable code. */
 async function envelopeOf(response: Response): Promise<SshApiResponse> {
-  return await response.json() as SshApiResponse
+  // 非 2xx（路由未挂载 / 插件未启用时的 404、405）与空响应体都没有可解析的
+  // JSON：直接抛稳定错误码，绝不把 `Unexpected end of JSON input` 这类原生
+  // 解析异常泄漏到界面。
+  if (response.ok === false)
+    throw new Error(`SSH_API_HTTP_${response.status}`)
+  try {
+    return await response.json() as SshApiResponse
+  }
+  catch {
+    throw new Error('SSH_API_EMPTY')
+  }
+}
+
+/** Whether one failure text is a transport code rather than host-provided prose. */
+export function isTransportError(message: string): boolean {
+  return message.startsWith('SSH_API_')
 }
 
 /** Build a redacted machine row from one machine.list item. */
@@ -412,6 +431,8 @@ export class MachinesStore {
     this.store = createSnapshotStore<MachinesPageState>({
       status: 'idle',
       error: null,
+      enabled: null,
+      enabling: false,
       machines: [],
       discovered: [],
       statuses: {},
@@ -494,6 +515,8 @@ export class MachinesStore {
 
   /** Refresh machines, secret flags, and live statuses from machine.list. */
   async load(): Promise<void> {
+    if (this.store.getSnapshot().enabled === false)
+      return
     this.store.update((state) => {
       state.status = 'loading'
       state.error = null
@@ -507,6 +530,53 @@ export class MachinesStore {
       this.store.update((state) => {
         state.status = 'error'
         state.error = messageOf(error)
+      })
+    }
+  }
+
+  /**
+   * Read the feature switch (settings.get). A transport failure reads as
+   * "off" plus an error notice: the section then shows the enable surface
+   * instead of a raw parse error.
+   */
+  async loadSettings(): Promise<void> {
+    try {
+      const value = await this.callApi<{ enabled?: unknown }>('settings.get', {})
+      this.store.update((state) => {
+        state.enabled = value.enabled === true
+        state.error = null
+      })
+    }
+    catch (error) {
+      this.store.update((state) => {
+        state.enabled = false
+        state.error = messageOf(error)
+      })
+    }
+  }
+
+  /** Switch the SSH feature on (settings.set), then load the machine table. */
+  async enable(): Promise<void> {
+    this.store.update((state) => {
+      state.enabling = true
+      state.error = null
+    })
+    try {
+      const value = await this.callApi<{ enabled?: unknown }>('settings.set', { enabled: true })
+      this.store.update((state) => {
+        state.enabled = value.enabled !== false
+      })
+      if (this.store.getSnapshot().enabled === true)
+        await this.load()
+    }
+    catch (error) {
+      this.store.update((state) => {
+        state.error = messageOf(error)
+      })
+    }
+    finally {
+      this.store.update((state) => {
+        state.enabling = false
       })
     }
   }

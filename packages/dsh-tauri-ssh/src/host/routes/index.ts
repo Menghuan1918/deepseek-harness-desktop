@@ -7,12 +7,12 @@
  *   POST /api-ssh  { "method": "machine.list", "payload": {} }
  *   → 200          { "ok": true, "value": ... } | { "ok": false, "error": { "code", "message" } }
  *
- * Machines are stored in the `ssh-machines` settings namespace; this API
- * serves the connection plane (list/test/connect/disconnect/install), the
- * per-machine bootstrap event drain (`machine.events`: ring-buffered,
- * seq-cursored polling — no SSE/WebSocket), and the CRUD writes
- * (save/remove), which is exactly what the settings page cannot do through
- * the settings domain.
+ * The plugin state lives in the plugin-owned state document; this API serves
+ * the feature switch (`settings.get`/`settings.set`), the connection plane
+ * (list/test/connect/disconnect/install), the per-machine bootstrap event
+ * drain (`machine.events`: ring-buffered, seq-cursored polling — no
+ * SSE/WebSocket), and the CRUD writes (save/remove), which is exactly what the
+ * settings page cannot do through the settings domain.
  * @module dsh-tauri-ssh/host/routes
  */
 
@@ -33,9 +33,9 @@ export type SshApiResponse
     | { ok: false, error: { code: string, message: string } }
 
 /**
- * The connection-plane method set (CRUD lives here too: the settings RPC only
- *  serves an upstream allowlist, so the page writes through this route), plus
- * the S4-owned `sync.*` surface (engine + execution + per-item results).
+ * The connection-plane method set (CRUD lives here too: the settings domain
+ * only serves an upstream allowlist, so the page writes through this route),
+ * the plugin state switch, plus the S4-owned `sync.*` surface.
  */
 export type SshApiMethod
   = | 'machine.list'
@@ -47,6 +47,8 @@ export type SshApiMethod
     | 'machine.save'
     | 'machine.remove'
     | 'session.role'
+    | 'settings.get'
+    | 'settings.set'
     | 'sync.preview'
     | 'sync.apply'
 
@@ -68,6 +70,10 @@ export interface SshMachineListItem extends MachineView {
 export interface SshApiHost {
   /** Whether this host instance is itself a remote target of an SSH session. */
   sessionRole: () => { remote: boolean, origin?: string }
+  /** Whether the SSH feature is switched on. */
+  enabled: () => boolean
+  /** Flip the feature switch. */
+  setEnabled: (enabled: boolean) => Promise<void>
   profileViews: () => MachineView[]
   /** The read-only `~/.ssh/config` alias machines (awaits the config read). */
   discoveredViews: () => Promise<MachineView[]>
@@ -191,10 +197,26 @@ export function createSshApiHandler(host: SshApiHost): (req: IncomingMessage, re
           respond(200, { ok: true, value: host.sessionRole() })
           return
         }
+        case 'settings.get': {
+          respond(200, { ok: true, value: { enabled: host.enabled() } })
+          return
+        }
+        case 'settings.set': {
+          const enabled = enabledOf(payload)
+          await host.setEnabled(enabled)
+          respond(200, { ok: true, value: { enabled } })
+          return
+        }
         case 'machine.list': {
+          // 未启用：不枚举任何机器（不读 ~/.ssh/config，也不碰连接面），只回报开关，
+          // 壳层据此不渲染「本地」控件。
+          if (!host.enabled()) {
+            respond(200, { ok: true, value: { enabled: false, items: [], discovered: [] } })
+            return
+          }
           const items: SshMachineListItem[] = host.profileViews().map(view => listItemOf(host, view))
           const discovered: SshMachineListItem[] = (await host.discoveredViews()).map(view => listItemOf(host, view))
-          respond(200, { ok: true, value: { items, discovered } })
+          respond(200, { ok: true, value: { enabled: true, items, discovered } })
           return
         }
         case 'machine.test': {
@@ -263,6 +285,13 @@ function machineIdOf(payload: Record<string, unknown>): MachineId {
     throw new Error('missing machineId')
   }
   return MachineId(payload.machineId)
+}
+
+/** Read the settings.set payload; a non-boolean switch fails loud. */
+function enabledOf(payload: Record<string, unknown>): boolean {
+  if (typeof payload.enabled !== 'boolean')
+    throw new Error('missing enabled')
+  return payload.enabled
 }
 
 /** Read the optional event poll cursor; absent or non-numeric means "from the start". */

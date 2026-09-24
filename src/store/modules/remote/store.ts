@@ -5,8 +5,10 @@
  *
  * 节奏（KISS，无推送通道）：秒级轮询 + 窗口聚焦触发刷新（监听在组件侧
  * hook 装配）；本地实例不可达时进入降级态（保留列表、静默重试，不弹错误
- * 风暴），恢复后自动复原。切换语义（断开回本地、重连粘性、就绪即切）由
- * 纯函数 `reconcileSwitcher` 承担（见 logic.ts）。
+ * 风暴），恢复后自动复原。插件侧 SSH 开关未启用（或本地实例没有该 API）时
+ * 清空远端视图并隐藏壳层切换器，而不是谎报「本地实例不可达」。切换语义
+ * （断开回本地、重连粘性、就绪即切）由纯函数 `reconcileSwitcher` 承担
+ * （见 logic.ts）。
  * @module store/remote/store
  */
 
@@ -14,7 +16,7 @@ import type { SshApiClient } from './api'
 import type { SshMachineRow, SshProgressPhase } from './types'
 import { defineStore } from 'valtio-define'
 import { harness } from '../harness'
-import { createSshApiClient } from './api'
+import { createSshApiClient, SshApiHttpError } from './api'
 import { reconcileSwitcher } from './logic'
 
 /** 轮询间隔（毫秒）：秒级即可让切换器跟上连接/重连状态流转。 */
@@ -60,6 +62,8 @@ export const remote = defineStore({
   state: () => ({
     /** 全部机器（手动机器 + ~/.ssh/config 别名，按名排序）。 */
     machines: [] as SshMachineRow[],
+    /** SSH 功能是否已启用（插件侧开关）；未启用时壳层不渲染切换器。 */
+    enabled: false,
     /** iframe 当前指向的远端机器（null = 本地实例）。 */
     activeId: null as string | null,
     /** 点击未连接机器后待切换的目标（连接就绪后升为 activeId）。 */
@@ -104,7 +108,18 @@ export const remote = defineStore({
         return
       this.refreshing = true
       try {
-        const machines = await api.listMachines()
+        const { enabled, machines } = await api.listMachines()
+        this.available = true
+        this.enabled = enabled
+        // 未启用：机器列表与远端视图一并清空（连接已由主机侧断开），壳层隐藏
+        // 切换器；挂起中的启动寻址保留，启用后随下一轮成功轮询兑现。
+        if (!enabled) {
+          this.machines = []
+          this.activeId = null
+          this.activeTunnelUrl = ''
+          this.pendingId = null
+          return
+        }
         const next = reconcileSwitcher(
           { activeId: this.activeId, pendingId: this.pendingId, activeTunnelUrl: this.activeTunnelUrl },
           machines,
@@ -113,7 +128,6 @@ export const remote = defineStore({
         this.activeId = next.activeId
         this.pendingId = next.pendingId
         this.activeTunnelUrl = next.activeTunnelUrl
-        this.available = true
         // 启动寻址（远端弹窗 remote-<id>）：实例就绪前 refresh 会连续失败，
         // 一次性「拉一轮再切」抢跑必然落空——挂起目标随每次成功轮询推进，
         // 机器一出现即切（已连接直切/未连接发起连接），用户手动操作则撤销
@@ -129,9 +143,21 @@ export const remote = defineStore({
         await this.trackConnectProgress()
       }
       catch (err) {
-        // 本地实例不可达（启动中/已停止）：降级但保留既有列表，静默重试
-        console.warn('[remote] /api-ssh unreachable:', err)
-        this.available = false
+        // 本地实例可达但没有 SSH API（插件未加载 / 未启用）：SSH 不可用，
+        // 不是「本地实例不可达」——静默隐藏切换器，不弹误导性的降级提示。
+        if (err instanceof SshApiHttpError) {
+          this.available = true
+          this.enabled = false
+          this.machines = []
+          this.activeId = null
+          this.activeTunnelUrl = ''
+          this.pendingId = null
+        }
+        else {
+          // 本地实例不可达（启动中/已停止）：降级但保留既有列表，静默重试
+          console.warn('[remote] /api-ssh unreachable:', err)
+          this.available = false
+        }
       }
       finally {
         this.refreshing = false
@@ -305,6 +331,7 @@ export function disposeRemoteForTests(): void {
   }
   remote.booted = false
   remote.machines = []
+  remote.enabled = false
   remote.activeId = null
   remote.pendingId = null
   remote.pendingBootMachineId = null

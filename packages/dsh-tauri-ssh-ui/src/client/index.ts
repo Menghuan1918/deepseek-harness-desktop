@@ -1,26 +1,23 @@
 /**
  * SSH-machines settings page, browser half. Registers the `ssh` dictionary
- * and two sibling `settings.section` entries — the machines page and the
- * plugin/skill sync page — so the desktop switcher can deep-link either of
- * them at the same level. The page state lives in the injected MachinesStore
- * (machine CRUD, the connection plane and the sync surface, all through the
- * host plugin's /api-ssh route). The css-render style tree mounts once here
- * via ctx.effect (unmounts with the plugin). Export discipline: thin apply,
- * everything else in feature modules.
+ * and the single `SSH` settings section that fronts the whole feature with an
+ * enable switch (off by default) and, once on, hosts the machines and the
+ * plugin/skill sync tabs. The page state lives in the injected MachinesStore
+ * (feature flag, machine CRUD, the connection plane and the sync surface, all
+ * through the host plugin's /api-ssh route). The css-render style tree mounts
+ * once here via ctx.effect (unmounts with the plugin). Export discipline: thin
+ * apply, everything else in feature modules.
  * @module dsh-tauri-ssh-ui/client
  */
 
 import type { UiContext } from './types'
 import { mountStyle } from 'dsh-tauri-ui/client'
-import { MachinesSection } from './components/machines-section'
-import { SyncPanel } from './components/sync-panel'
+import { SshSection } from './components/ssh-section'
 import {
   SETTINGS_SECTION_ID,
   SETTINGS_SECTION_ORDER,
   SETTINGS_SECTION_SLOT,
   SSH_LOCALE_NS,
-  SYNC_SECTION_ID,
-  SYNC_SECTION_ORDER,
 } from './constants'
 import { en, zh } from './locales'
 import { desktopBridge } from './service/bridge'
@@ -31,8 +28,8 @@ import { SSH_STYLE_ID, sshStyle } from './styles'
 export const inject = ['slots', 'locale']
 
 /**
- * Register the `ssh` dictionaries and both settings sections, each once its
- * slot declaration is on the ledger.
+ * Register the `ssh` dictionary and the SSH settings section, once the slot
+ * declaration is on the ledger.
  * @param ctx - client root context.
  */
 export function apply(ctx: UiContext): void {
@@ -47,15 +44,7 @@ export function apply(ctx: UiContext): void {
     label: () => t('nav'),
     locale: SSH_LOCALE_NS,
     inject: () => ({ store, bridge: desktopBridge }),
-  }, MachinesSection))
-  ctx.slots.inject(SETTINGS_SECTION_SLOT, () => ctx.slots.register({
-    name: SETTINGS_SECTION_SLOT,
-    id: SYNC_SECTION_ID,
-    order: SYNC_SECTION_ORDER,
-    label: () => t('sync.nav'),
-    locale: SSH_LOCALE_NS,
-    inject: () => ({ store }),
-  }, SyncPanel))
+  }, SshSection))
 }
 
 /** The dictionary key union, re-exported for the section props. */

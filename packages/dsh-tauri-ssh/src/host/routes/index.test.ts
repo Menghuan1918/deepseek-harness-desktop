@@ -28,6 +28,8 @@ log.append(MachineId('m1'), 'ready', '远端实例已就绪', { terminal: 'succe
 function fakeHost(overrides: Partial<SshApiHost> = {}): SshApiHost {
   return {
     sessionRole: () => ({ remote: false }),
+    enabled: () => true,
+    setEnabled: async () => {},
     profileViews: () => [view],
     discoveredViews: async () => [],
     status: () => ({ machineId: MachineId('m1'), state: 'disconnected' }),
@@ -147,6 +149,37 @@ describe('/api-ssh handler', () => {
     expect(remote.body).toEqual({ ok: true, value: { remote: true, origin: 'ops' } })
   })
 
+  it('reads and writes the SSH feature switch', async () => {
+    const setEnabled = vi.fn(async () => {})
+    const off = fakeHost({ enabled: () => false, setEnabled })
+    expect((await call(off, JSON.stringify({ method: 'settings.get' }))).body)
+      .toEqual({ ok: true, value: { enabled: false } })
+
+    const written = await call(off, JSON.stringify({ method: 'settings.set', payload: { enabled: true } }))
+    expect(written.status).toBe(200)
+    expect(written.body).toEqual({ ok: true, value: { enabled: true } })
+    expect(setEnabled).toHaveBeenCalledWith(true)
+  })
+
+  it('refuses a settings.set without a boolean switch', async () => {
+    const setEnabled = vi.fn(async () => {})
+    const host = fakeHost({ setEnabled })
+    const { body } = await call(host, JSON.stringify({ method: 'settings.set', payload: {} }))
+    expect(body).toMatchObject({ ok: false, error: { message: 'missing enabled' } })
+    expect(setEnabled).not.toHaveBeenCalled()
+  })
+
+  it('serves no machines while the feature is off (keeps the flag visible)', async () => {
+    const host = fakeHost({
+      enabled: () => false,
+      profileViews: () => [view],
+      discoveredViews: async () => [view],
+    })
+    const { status, body } = await call(host, JSON.stringify({ method: 'machine.list' }))
+    expect(status).toBe(200)
+    expect(body).toEqual({ ok: true, value: { enabled: false, items: [], discovered: [] } })
+  })
+
   it('lists machines with live status', async () => {
     const host = fakeHost({
       status: () => ({ machineId: MachineId('m1'), state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:1', lastError: 'boom' }),
@@ -156,6 +189,7 @@ describe('/api-ssh handler', () => {
     expect(body).toEqual({
       ok: true,
       value: {
+        enabled: true,
         items: [{
           ...view,
           state: 'connected',
@@ -188,6 +222,7 @@ describe('/api-ssh handler', () => {
     expect(body).toEqual({
       ok: true,
       value: {
+        enabled: true,
         items: [{ ...view, state: 'disconnected' }],
         discovered: [{
           id: 'dev',
@@ -214,6 +249,7 @@ describe('/api-ssh handler', () => {
     expect(body).toEqual({
       ok: true,
       value: {
+        enabled: true,
         items: [{
           ...view,
           state: 'connecting',
@@ -227,7 +263,7 @@ describe('/api-ssh handler', () => {
   it('lists machines without link fields while disconnected', async () => {
     const { status, body } = await call(fakeHost(), JSON.stringify({ method: 'machine.list' }))
     expect(status).toBe(200)
-    expect(body).toEqual({ ok: true, value: { items: [{ ...view, state: 'disconnected' }], discovered: [] } })
+    expect(body).toEqual({ ok: true, value: { enabled: true, items: [{ ...view, state: 'disconnected' }], discovered: [] } })
   })
 
   it('rejects request bodies over the 64 KiB bound', async () => {

@@ -34,7 +34,7 @@ import { RemoteSwitcher } from './remote-switcher'
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
  *
- *   [侧边栏(展开/收起)] [文件][运行][帮助] [  空白拖拽区  ] [最小化][最大化][后台化(X)]
+ *   [侧边栏(展开/收起)] [文件][运行][帮助] [ 空白拖拽区 ] [更新可用][本地/远端] [最小化][最大化][后台化(X)]
  *
  * - 侧边栏：经 postMessage 操控 iframe 内的 dsh 应用
  *   （`dsh://sidebar:toggle`，由 dsh-tauri 插件的 `client/register/sidebar.ts`
@@ -43,6 +43,8 @@ import { RemoteSwitcher } from './remote-switcher'
  *   导航桥（收回报 + 发命令）在 `iframe.tsx` / `webview.tsx`，本组件只接收状态与回调：
  *   左侧控件只在「dsh-tauri 插件已启用（已安装）」且传入 `onToggleSidebar` 时渲染，
  *   原生桥缺席时控件没有可靠接收方，避免出现点了没反应的死按钮。
+ * - 本地 / 远端：`RemoteSwitcher` 固定在右侧「更新可用」旁边，SSH 功能未启用时
+ *   自身不渲染（见 `remote-switcher.tsx`）。
  * - 文件：新建窗口（Tauri 再开一个 webview）/ 新聊天、打开文件夹（经协议调用 dsh 官方
  *   「新建会话」「添加工作区」，接收方是 dsh-tauri 的 `client/register/navigation.ts`）/
  *   关闭（隐藏到托盘）/ 退出（完整退出）。两条依赖 iframe 的项在回调缺席时禁用。
@@ -433,7 +435,6 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
         </Button>
       </If>
       <If cond={onToggleSidebar != null}>
-        <RemoteSwitcher onManage={onOpenMachineManager} onSync={onOpenSyncToRemote} />
         <ConnectDialog />
       </If>
       <If cond={!IS_MACOS}>
@@ -649,6 +650,12 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
         >
           {t('update.chip_available')}
         </Chip>
+      </If>
+
+      {/* 「本地」/ 远端机器切换器：SSH 功能启用后才出现（未启用时组件自身不渲染），
+          位置固定在「更新可用」右侧，与左侧的文件/运行/帮助菜单分列两端。 */}
+      <If cond={onToggleSidebar != null}>
+        <RemoteSwitcher onManage={onOpenMachineManager} onSync={onOpenSyncToRemote} />
       </If>
 
       <If cond={!IS_MACOS}>

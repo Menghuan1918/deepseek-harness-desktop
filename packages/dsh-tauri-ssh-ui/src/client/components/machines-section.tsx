@@ -5,6 +5,7 @@ import type { MachineLifecycleState, RemoteBridge } from '../types/index'
 import { Button, Input, Modal, StateDot } from 'dsh-tauri-ui/client'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { cls } from '../styles/index'
+import { errorTextOf } from '../utils/error'
 import { retrySecondsOf } from '../utils/retry'
 
 /** New-machine form defaults (ssh-ui 既有默认：SSH 22 / 远端 web 3080)。 */
@@ -147,35 +148,37 @@ function EditPanel({ draft, t, secretSet, dirty, saving, onChange, onSecret, onS
   const invalid = row.id === '' || row.name === '' || row.host === ''
   return (
     <div className={cls.editor} data-testid={`editor-${row.id}`}>
+      {/* 12 栅格显式分组：第 1 行 = ID / 名称 / 主机（3+4+5），
+          第 2 行 = 端口 / 用户 / 远端端口 / 远端档案（3×4），启动命令独占整行 */}
       <div className={cls.grid}>
-        <Field label={t('field.id')}>
+        <Field label={t('field.id')} span={3}>
           <Input className={cls.fieldInput} value={row.id} disabled />
         </Field>
-        <Field label={t('field.name')}>
+        <Field label={t('field.name')} span={4}>
           <Input className={cls.fieldInput} value={row.name} disabled={saving} onChange={event => onChange(draft.key, { name: event.target.value })} />
         </Field>
-        <Field label={t('field.host')}>
+        <Field label={t('field.host')} span={5}>
           <Input className={cls.fieldInput} value={row.host} disabled={saving} onChange={event => onChange(draft.key, { host: event.target.value })} />
         </Field>
-        <Field label={t('field.port')}>
+        <Field label={t('field.port')} span={3}>
           <Input className={cls.fieldInput} type="number" value={row.port} disabled={saving} onChange={event => onChange(draft.key, { port: numberOf(event.target.value, DEFAULT_PORT) })} />
         </Field>
-        <Field label={t('field.user')}>
+        <Field label={t('field.user')} span={3}>
           <Input className={cls.fieldInput} value={row.user} disabled={saving} onChange={event => onChange(draft.key, { user: event.target.value })} />
         </Field>
-        <Field label={t('field.remotePort')}>
+        <Field label={t('field.remotePort')} span={3}>
           <Input className={cls.fieldInput} type="number" value={row.remotePort} disabled={saving} onChange={event => onChange(draft.key, { remotePort: numberOf(event.target.value, DEFAULT_REMOTE_PORT) })} />
         </Field>
-        <Field label={t('field.profileName')}>
+        <Field label={t('field.profileName')} span={3}>
           <Input className={cls.fieldInput} value={row.profileName ?? ''} placeholder="remote" disabled={saving || (row.startCommand ?? '') !== ''} onChange={event => onChange(draft.key, { profileName: event.target.value })} />
         </Field>
-        <Field label={t('field.startCommand')}>
+        <Field label={t('field.startCommand')} span={12}>
           <Input className={cls.fieldInput} value={row.startCommand ?? ''} disabled={saving} onChange={event => onChange(draft.key, { startCommand: event.target.value })} />
         </Field>
       </div>
       <div className={cls.grid}>
-        <SecretField field="password" label={t('field.password')} keyName={draft.key} secretSet={secretSet} t={t} value={dirty.password ?? ''} onValue={onSecret} />
-        <SecretField field="passphrase" label={t('field.passphrase')} keyName={draft.key} secretSet={secretSet} t={t} value={dirty.passphrase ?? ''} onValue={onSecret} />
+        <SecretField field="password" span={6} label={t('field.password')} keyName={draft.key} secretSet={secretSet} t={t} value={dirty.password ?? ''} onValue={onSecret} />
+        <SecretField field="passphrase" span={6} label={t('field.passphrase')} keyName={draft.key} secretSet={secretSet} t={t} value={dirty.passphrase ?? ''} onValue={onSecret} />
       </div>
       <AppearanceEditor row={row} t={t} onChange={onChange} draftKey={draft.key} />
       <div className={cls.editorActions}>
@@ -333,10 +336,23 @@ function installNoteOf(result: InstallResult, t: (key: SshKey) => string): strin
   return result.credentialsCopied ? t('install.done.copied') : t('install.done.nokey')
 }
 
+/** The grid spans the editor layout uses (12-column track). */
+export type FieldSpan = 3 | 4 | 5 | 6 | 8 | 12
+
+/** Span class per grid width (the 12-column editor track). */
+const SPAN_CLASS: Record<FieldSpan, string> = {
+  3: cls.span3,
+  4: cls.span4,
+  5: cls.span5,
+  6: cls.span6,
+  8: cls.span8,
+  12: cls.span12,
+}
+
 /** One labeled field row. */
-function Field({ label, children }: { label: string, children: ReactNode }): ReactNode {
+function Field({ label, span = 6, children }: { label: string, span?: FieldSpan, children: ReactNode }): ReactNode {
   return (
-    <label className={cls.field}>
+    <label className={`${cls.field} ${SPAN_CLASS[span]}`}>
       <span className={cls.fieldLabel}>{label}</span>
       {children}
     </label>
@@ -398,7 +414,7 @@ function AppearanceEditor({ row, t, onChange, draftKey }: {
 }
 
 /** One write-only secret input; the placeholder reports whether a value is stored. */
-export function SecretField({ field, label, keyName, secretSet, t, value, onValue }: {
+export function SecretField({ field, label, keyName, secretSet, t, value, onValue, span = 6 }: {
   field: SecretFieldName
   label: string
   keyName: string
@@ -406,10 +422,11 @@ export function SecretField({ field, label, keyName, secretSet, t, value, onValu
   t: (key: SshKey) => string
   value: string
   onValue: (key: string, field: SecretFieldName, value: string) => void
+  span?: FieldSpan
 }): ReactNode {
   const placeholder = secretSet[`${keyName}.${field}`] ? t('secret.set') : t('secret.unset')
   return (
-    <label className={cls.field}>
+    <label className={`${cls.field} ${SPAN_CLASS[span]}`}>
       <span className={cls.fieldLabel}>{label}</span>
       <Input
         className={cls.fieldInput}
@@ -607,8 +624,10 @@ function AddMachineDialog({ t, saving, takenIds, onSubmit, onClose }: {
         </>
       )}
     >
+      {/* 新增表单同样按 12 栅格成组：主机 + 端口一行（8+4），
+          名称 / ID / 用户一行（4×3），远端端口 + 远端档案一行（6+6） */}
       <div className={cls.grid}>
-        <Field label={t('field.host')}>
+        <Field label={t('field.host')} span={8}>
           <Input
             className={cls.fieldInput}
             value={host}
@@ -617,10 +636,13 @@ function AddMachineDialog({ t, saving, takenIds, onSubmit, onClose }: {
             onChange={event => setHost(event.target.value)}
           />
         </Field>
-        <Field label={t('field.name')}>
+        <Field label={t('field.port')} span={4}>
+          <Input className={cls.fieldInput} value={port} disabled={saving} onChange={event => setPort(event.target.value)} />
+        </Field>
+        <Field label={t('field.name')} span={4}>
           <Input className={cls.fieldInput} value={name} disabled={saving} onChange={event => setName(event.target.value)} />
         </Field>
-        <Field label={t('field.id')}>
+        <Field label={t('field.id')} span={4}>
           <Input
             className={cls.fieldInput}
             value={idTouched ? id : effectiveId}
@@ -632,16 +654,13 @@ function AddMachineDialog({ t, saving, takenIds, onSubmit, onClose }: {
             }}
           />
         </Field>
-        <Field label={t('field.user')}>
+        <Field label={t('field.user')} span={4}>
           <Input className={cls.fieldInput} value={user} disabled={saving} onChange={event => setUser(event.target.value)} />
         </Field>
-        <Field label={t('field.port')}>
-          <Input className={cls.fieldInput} value={port} disabled={saving} onChange={event => setPort(event.target.value)} />
-        </Field>
-        <Field label={t('field.remotePort')}>
+        <Field label={t('field.remotePort')} span={6}>
           <Input className={cls.fieldInput} value={remotePort} disabled={saving} onChange={event => setRemotePort(event.target.value)} />
         </Field>
-        <Field label={t('field.profileName')}>
+        <Field label={t('field.profileName')} span={6}>
           <Input className={cls.fieldInput} value={profileName} placeholder="remote" disabled={saving} onChange={event => setProfileName(event.target.value)} />
         </Field>
       </div>
@@ -890,7 +909,7 @@ export function MachinesSection({ t, store, bridge }: MachinesSectionProps): Rea
         ? (
             <p className={cls.error} role="alert">
               {t('error.banner')}
-              {state.error}
+              {errorTextOf(state.error, t)}
             </p>
           )
         : null}

@@ -1,18 +1,18 @@
 /**
- * host/apply.ts — the DSH remote-machine host plugin assembly: registers the
- * `ssh-machines` settings namespace, owns the SSH connection manager (TOFU
- * host keys, remote `dsh web` auto-start, loopback tunnels), and mounts the
- * same-origin `/api-ssh` route on `ctx.webServer` for the settings page. No
- * upstream DSH source is touched: every integration is a documented cordis
- * extension point.
+ * host/apply.ts — the DSH remote-machine host plugin assembly: owns the
+ * plugin state document (`ssh/machines.json`: the enable switch and the manual
+ * machine table), the SSH connection manager (TOFU host keys, remote `dsh web`
+ * auto-start, loopback tunnels), and mounts the same-origin `/api-ssh` route on
+ * `ctx.webServer` for the settings page. No upstream DSH source is touched:
+ * every integration is a documented cordis extension point.
  * @module dsh-tauri-ssh/host/apply
  */
 
 import type z from 'schemastery'
 import type { SshApiHost } from './routes/index'
 import type { SshHostBlock } from './service/ssh-config'
-import type { MachinesValue, Config as SshRemoteConfig } from './storage/index'
-import type { HostSettingsScope, MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineEventsPage, SshMachineStatus, SshTestResult, SyncApplyResult, SyncPluginRef, SyncPreview, SyncSkillRef } from './types/index'
+import type { Config as SshRemoteConfig } from './storage/index'
+import type { MachineProfile, MachineSaveRow, MachineSecretWrite, MachineView, SshHostContext, SshInstallResult, SshLink, SshMachineEventsPage, SshMachineStatus, SshTestResult, SyncApplyResult, SyncPluginRef, SyncPreview, SyncSkillRef } from './types/index'
 import { homedir } from 'node:os'
 import process from 'node:process'
 import { join } from 'pathe'
@@ -26,20 +26,32 @@ import { discoverableHosts, loadSshConfigBlocks, lookupSshConfig, SshConfigResol
 import { SyncEngine } from './service/sync'
 import { profileAllowlistReader, profileDependenciesReader, skillRootsScanner, tarPacker } from './service/sync-local'
 import { Ssh2Transport } from './service/transport'
-import { ConfigSchema, DEFAULT_REMOTE_PORT, DEFAULT_SSH_PORT, MACHINES_NAMESPACE, machinesFromValue, MachinesSchema } from './storage/index'
+import { ConfigSchema, DEFAULT_REMOTE_PORT, DEFAULT_SSH_PORT, MachineStateStore } from './storage/index'
 import { MachineId } from './types/index'
+
+/** The harness home every plugin-owned document lives under. */
+function harnessHome(): string {
+  return process.env.DSH_HOME ?? join(homedir(), '.dsh')
+}
 
 /** Default location of the TOFU host-key document under the harness home. */
 function defaultKnownHostsPath(): string {
-  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'ssh', 'known-hosts.json')
+  return join(harnessHome(), 'ssh', 'known-hosts.json')
+}
+
+/** Default location of the machine state document under the harness home. */
+function defaultStatePath(): string {
+  return join(harnessHome(), 'ssh', 'machines.json')
 }
 
 /**
  * The plugin service: manager-backed connection plane plus the `/api-ssh`
- * handler face. Two machine sources feed the manager: the `ssh-machines`
- * settings namespace (manual machines, with secrets) and the host's own
- * `~/.ssh/config` (discovered Host aliases, read-only, no secrets) — a
- * manual machine with the same id as an alias shadows it.
+ * handler face. Two machine sources feed the manager: the plugin state
+ * document (manual machines, with secrets) and the host's own `~/.ssh/config`
+ * (discovered Host aliases, read-only, no secrets) — a manual machine with the
+ * same id as an alias shadows it. The SSH feature is off until the operator
+ * enables it from the settings page; while off the API serves the flag and
+ * refuses to enumerate machines.
  */
 export class SshRemoteService implements SshApiHost {
   /** The connection manager (transport, TOFU store, and per-machine state). */
@@ -48,8 +60,8 @@ export class SshRemoteService implements SshApiHost {
   /** The machine event channel drained by the `/api-ssh` `machine.events` method. */
   readonly machineEvents: SshMachineEvents
 
-  /** The registered settings scope; the write path for machine CRUD. */
-  private scope!: HostSettingsScope<MachinesValue>
+  /** The plugin state document (enable switch + manual machines). */
+  readonly store: MachineStateStore
 
   /** The ssh directory the discovered aliases and credentials come from. */
   private readonly sshDir: string
@@ -64,7 +76,7 @@ export class SshRemoteService implements SshApiHost {
   private readonly sync: SyncEngine
 
   /**
-   * @param ctx - the plugin context (settings + webServer available through inject).
+   * @param ctx - the plugin context (webServer available through inject).
    * @param config - the validated plugin config.
    */
   constructor(ctx: SshHostContext, config: SshRemoteConfig) {
@@ -72,6 +84,7 @@ export class SshRemoteService implements SshApiHost {
     this.homeDir = homedir()
     this.sshDir = config.sshDir ?? join(this.homeDir, '.ssh')
     this.config = config
+    this.store = new MachineStateStore(config.statePath ?? defaultStatePath())
     this.machineEvents = new SshMachineEvents()
     this.manager = new SshManager({
       transport: new Ssh2Transport(
@@ -96,10 +109,6 @@ export class SshRemoteService implements SshApiHost {
         // The settings page polls status through /api-ssh; no live consumers.
       },
     })
-    const scope = ctx.settings.register<MachinesValue>(String(MACHINES_NAMESPACE), MachinesSchema, {
-      base: { machines: {} },
-    })
-    this.scope = scope
     // The sync engine: local profile/skill sources, remote commands over a
     // dedicated session, the install-class deadline per remote command.
     this.sync = new SyncEngine({
@@ -110,7 +119,7 @@ export class SshRemoteService implements SshApiHost {
       ...config.installTimeoutMs === undefined ? {} : { commandTimeoutMs: config.installTimeoutMs },
     })
     this.manager.refreshProfiles(this.applyStartDefaults(this.manualProfiles()))
-    scope.watch(() => {
+    this.store.subscribe(() => {
       void this.syncProfiles()
     })
     // Mount the same-origin connection-plane API.
@@ -124,9 +133,21 @@ export class SshRemoteService implements SshApiHost {
     })
   }
 
-  /** The manual profiles, read fresh from the settings scope. */
+  /** Whether the SSH feature is switched on. */
+  enabled(): boolean {
+    return this.store.enabled()
+  }
+
+  /** Flip the feature switch; switching off drops every live connection. */
+  async setEnabled(enabled: boolean): Promise<void> {
+    this.store.setEnabled(enabled)
+    if (!enabled)
+      await this.manager.dispose()
+  }
+
+  /** The manual profiles, read fresh from the state document. */
   private manualProfiles(): Map<MachineId, MachineProfile> {
-    return machinesFromValue(this.scope.get())
+    return this.store.machines()
   }
 
   /** The configured default start command, `{port}` substituted, or none. */
@@ -233,17 +254,16 @@ export class SshRemoteService implements SshApiHost {
   /**
    * Upsert one machine profile: merge the config row and any freshly typed
    * secrets into the stored profile (secrets omitted keep the stored value).
-   * Optional fields absent from the row are *cleared* — the write restates
-   * the full machine table through `replace` (exact), because `update`'s
-   * deep merge would resurrect cleared fields from the stored layer. The
-   * watch refreshes the manager automatically.
+   * Optional fields absent from the row are *cleared* — the write restates the
+   * whole profile, so a cleared field cannot be resurrected from a previous
+   * layer (the former settings deep-merge did exactly that). The store
+   * subscription refreshes the manager automatically.
    * @param machineId - the profile id (the settings dict key).
    * @param row - the config fields as the settings page edited them.
    * @param secrets - write-only secret values; absent fields keep stored ones.
    */
   async save(machineId: MachineId, row: MachineSaveRow, secrets?: MachineSecretWrite): Promise<void> {
-    const machines = machinesFromValue(this.scope.get())
-    const existing = machines.get(machineId)
+    const existing = this.store.machines().get(machineId)
     const next: MachineProfile = {
       id: machineId,
       name: row.name,
@@ -272,23 +292,16 @@ export class SshRemoteService implements SshApiHost {
       if (secrets.passphrase !== undefined && secrets.passphrase !== '')
         next.passphrase = secrets.passphrase
     }
-    // 精确写：像 remove() 一样整节 replace 重述全量机器表。`update` 是深合
-    // 并——被清除的可选字段（color/tintBorder/startCommand 的空/关形态在
-    // next 中缺位）会从已存层复活，导致「清除」静默失效。
-    machines.set(machineId, next)
-    await this.scope.replace({ machines: Object.fromEntries(machines) })
+    this.store.saveMachine(next)
   }
 
   /**
-   * Delete one machine profile. The owner scope's `replace` restates the full
-   * section (in-process values include the stored secrets), so the removal is
-   * exact and nothing else is touched.
-   * @param machineId - the profile id to drop (idempotent for absent ids).
+   * Delete one machine profile (idempotent for absent ids); the store
+   * subscription refreshes the manager, which drops the machine's connection.
+   * @param machineId - the profile id to drop.
    */
   async remove(machineId: MachineId): Promise<void> {
-    const machines = machinesFromValue(this.scope.get())
-    machines.delete(machineId)
-    await this.scope.replace({ machines: Object.fromEntries(machines) })
+    this.store.removeMachine(machineId)
   }
 
   /** The local plugins and skills available to sync (the panel's selection list). */
@@ -333,8 +346,8 @@ export class SshRemoteService implements SshApiHost {
 /** Cordis plugin name. */
 export const name = SSH_PLUGIN_NAME
 
-/** Required services: the settings seam (namespace) and the webserver (route mount). */
-export const inject = ['settings', 'webServer']
+/** Required services: the webserver (route mount). */
+export const inject = ['webServer']
 
 /** Validated plugin config; schemastery applies defaults before construction. */
 export const Config: z<SshRemoteConfig> = ConfigSchema
@@ -353,7 +366,7 @@ export function apply(ctx: SshHostContext, config: SshRemoteConfig): SshRemoteSe
  * The cordis plugin descriptor. The loader imports the module and reads
  * `apply`/`Config`/`inject`/`name` from the **default export object** — a
  * bare function default carries neither the schema nor the inject list, so
- * config defaults would never apply and the settings/webServer services
- * would not be injected.
+ * config defaults would never apply and the webServer service would not be
+ * injected.
  */
 export default { apply, Config, inject, name }

@@ -83,8 +83,12 @@ export interface SshEventEntry {
   line: string
 }
 
-/** `machine.list` 的应答信封（items = 手动机器，discovered = ~/.ssh/config 别名）。 */
+/**
+ * `machine.list` 的应答信封（items = 手动机器，discovered = ~/.ssh/config 别名）。
+ * `enabled` 为 SSH 功能开关：关闭时两侧机器行为空，壳层据此不渲染切换器。
+ */
 export interface SshMachineListValue {
+  enabled?: boolean
   items: SshMachineRow[]
   discovered: SshMachineRow[]
 }

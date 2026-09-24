@@ -342,13 +342,17 @@ describe('machinesStore', () => {
     fetchFn.mockResolvedValueOnce({ json: async () => ({ ok: false, error: { code: 'connect-failed', message: 'refused' } }) } as unknown as Response)
     await store.connect('a')
     expect(store.getSnapshot().error).toBe('refused')
+    // 解析不了的信封（空响应体 / 非 JSON）归到稳定错误码，不外泄原生解析异常
     fetchFn.mockResolvedValueOnce({
       json: async () => {
         throw new Error('bad json')
       },
     } as unknown as Response)
     await store.test('a')
-    expect(store.getSnapshot().error).toBe('bad json')
+    expect(store.getSnapshot().error).toBe('SSH_API_EMPTY')
+    fetchFn.mockResolvedValueOnce({ ok: false, status: 405, json: async () => ({}) } as unknown as Response)
+    await store.test('a')
+    expect(store.getSnapshot().error).toBe('SSH_API_HTTP_405')
     fetchFn.mockResolvedValueOnce({
 
       json: async () => {
@@ -357,7 +361,40 @@ describe('machinesStore', () => {
       },
     } as unknown as Response)
     await store.test('a')
-    expect(store.getSnapshot().error).toBe('boom')
+    expect(store.getSnapshot().error).toBe('SSH_API_EMPTY')
+  })
+
+  it('reads the feature switch and enables the SSH service', async () => {
+    const { store, fetchFn } = boot({ ok: true, value: { enabled: false } })
+    await store.loadSettings()
+    expect(store.getSnapshot().enabled).toBe(false)
+
+    // 未启用：机器列表请求不发（分区只渲染开启 Hero）
+    await store.load()
+    expect(store.getSnapshot().status).toBe('idle')
+
+    fetchFn.mockImplementation(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body)) as { method: string }
+      const envelope = request.method === 'settings.set'
+        ? { ok: true, value: { enabled: true } }
+        : request.method === 'session.role'
+          ? { ok: true, value: { remote: false } }
+          : { ok: true, value: { enabled: true, items: [{ ...machineA, state: 'disconnected' }], discovered: [] } }
+      return { json: async () => envelope } as unknown as Response
+    })
+    await store.enable()
+    const state = store.getSnapshot()
+    expect(state.enabled).toBe(true)
+    expect(state.enabling).toBe(false)
+    expect(state.machines.map(row => row.id)).toEqual(['a'])
+  })
+
+  it('treats an unavailable settings endpoint as switched off plus a transport code', async () => {
+    const { store, fetchFn } = boot()
+    fetchFn.mockResolvedValueOnce({ ok: false, status: 405, json: async () => ({}) } as unknown as Response)
+    await store.loadSettings()
+    expect(store.getSnapshot().enabled).toBe(false)
+    expect(store.getSnapshot().error).toBe('SSH_API_HTTP_405')
   })
 
   it('carries the dshMissing marker on list rows', async () => {

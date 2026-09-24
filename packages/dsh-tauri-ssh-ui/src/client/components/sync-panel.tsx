@@ -20,6 +20,7 @@ import { Button, Pill, StateDot } from 'dsh-tauri-ui/client'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { pluginKeyOf, skillKeyOf, syncKeyOf, toggleSelection } from '../store/index'
 import { cls } from '../styles'
+import { errorTextOf } from '../utils/error'
 
 /** The panel props: the framework `t` seat plus the injected store. */
 export interface SyncPanelProps {
@@ -226,7 +227,7 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
         ? (
             <p className={cls.error} role="alert">
               {t('sync.loadFailed')}
-              {state.sync.error}
+              {errorTextOf(state.sync.error ?? '', t)}
             </p>
           )
         : null}
@@ -234,7 +235,7 @@ export function SyncPanel({ store, t }: SyncPanelProps): ReactNode {
         ? (
             <p className={cls.error} role="alert">
               {t('sync.applyFailed')}
-              {state.sync.error}
+              {errorTextOf(state.sync.error, t)}
             </p>
           )
         : null}

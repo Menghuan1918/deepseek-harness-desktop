@@ -28,10 +28,30 @@ type SshApiResponse
 /** fetch 函数形状（与全局 fetch 兼容，可注入 mock）。 */
 export type SshFetchFn = (input: string, init?: RequestInit) => Promise<Response>
 
+/**
+ * 本地实例答了，但没有 SSH API：插件未加载 / 未启用（404、405 或非 JSON 响应）。
+ * 与网络失败区分——前者是「SSH 不可用」，后者才是「本地实例不可达」。
+ */
+export class SshApiHttpError extends Error {
+  readonly status: number
+
+  constructor(status: number) {
+    super(`SSH_API_HTTP_${status}`)
+    this.status = status
+  }
+}
+
+/** `machine.list` 的应答值：SSH 开关 + 机器行。 */
+export interface SshMachineList {
+  /** SSH 功能是否已启用；未启用时机器行为空，壳层不渲染切换器。 */
+  enabled: boolean
+  machines: SshMachineRow[]
+}
+
 /** 本客户端面向壳层暴露的引擎动作。 */
 export interface SshApiClient {
-  /** `machine.list`：手动机器 + ~/.ssh/config 别名机器（已按名排序合并）。 */
-  listMachines: () => Promise<SshMachineRow[]>
+  /** `machine.list`：SSH 开关 + 手动机器与 ~/.ssh/config 别名机器（已按名排序合并）。 */
+  listMachines: () => Promise<SshMachineList>
   /** `machine.connect`：阻塞到隧道就绪，返回隧道 URL。 */
   connect: (machineId: string) => Promise<{ tunnelBaseUrl: string }>
   /** `machine.disconnect`：主动断开（远端实例保持运行）。 */
@@ -115,9 +135,17 @@ export function createSshApiClient(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ method, payload: payload ?? {} } satisfies SshApiRequest),
     })
+    // 非 2xx 与空/非 JSON 响应都不是信封：抛稳定的 HTTP 错误码，避免把
+    // `Unexpected end of JSON input` 这类原生解析异常泄漏到界面/降级提示。
     if (!response.ok)
-      throw new Error(`SSH_API_HTTP_${response.status}`)
-    const envelope = await response.json() as SshApiResponse
+      throw new SshApiHttpError(response.status)
+    let envelope: SshApiResponse
+    try {
+      envelope = await response.json() as SshApiResponse
+    }
+    catch {
+      throw new SshApiHttpError(response.status)
+    }
     if (!envelope.ok)
       throw new Error(envelope.error?.message || envelope.error?.code || 'SSH_API_ERROR')
     return envelope.value as T
@@ -129,7 +157,8 @@ export function createSshApiClient(
       const items = (value?.items ?? []).map(machineRowOf).filter((row): row is SshMachineRow => row !== undefined)
       const discovered = (value?.discovered ?? []).map(machineRowOf).filter((row): row is SshMachineRow => row !== undefined)
       // 确定性排序（localeCompare 的 ICU 整序在不同环境不稳定）
-      return [...items, ...discovered].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      const machines = [...items, ...discovered].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      return { enabled: value?.enabled === true, machines }
     },
     connect: machineId => call<{ tunnelBaseUrl: string }>('machine.connect', { machineId }),
     disconnect: async (machineId) => {

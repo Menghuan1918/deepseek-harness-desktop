@@ -22,7 +22,8 @@ export default c([
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
-    maxWidth: '760px',
+    /* 与 dsh-tauri-ui 的 panel-page 同宽（960px）：760px 在宽窗口下会挤成一条窄栏 */
+    maxWidth: '960px',
     color: 'var(--dsw-alias-label-primary)',
   }),
 
@@ -48,6 +49,66 @@ export default c([
     justifyContent: 'space-between',
     gap: '12px',
     flexWrap: 'wrap',
+  }),
+
+  /* 合并后的 SSH 分区：标签条 + 面板。面板自身带页头，标签条只负责切换。 */
+  c('.dshp-ssh-tabs', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+  }),
+
+  c('.dshp-ssh-tab-panel', {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    minWidth: 0,
+  }, [
+    c('&[hidden]', {
+      display: 'none',
+    }),
+  ]),
+
+  /* 未启用时的 Hero：Icon / 描述 / 开启按钮，居中成一张卡。 */
+  c('.dshp-ssh-hero', {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '12px',
+    marginTop: '4px',
+    padding: '40px 24px',
+    border: '0.5px solid var(--dsw-alias-border-l2)',
+    borderRadius: '12px',
+    background: 'var(--dsw-alias-bg-layer-1)',
+    textAlign: 'center',
+  }),
+
+  c('.dshp-ssh-hero-icon', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '44px',
+    height: '44px',
+    borderRadius: '50%',
+    background: 'var(--dsw-alias-surface-tinted)',
+    color: 'var(--dsw-alias-brand-primary)',
+  }),
+
+  c('.dshp-ssh-hero-title', {
+    margin: 0,
+    fontSize: '22px',
+    lineHeight: '32px',
+    fontWeight: 600,
+    color: 'var(--dsw-alias-label-primary)',
+  }),
+
+  c('.dshp-ssh-hero-hint', {
+    margin: 0,
+    maxWidth: '460px',
+    fontSize: '13px',
+    lineHeight: '21px',
+    color: 'var(--dsw-alias-label-secondary)',
   }),
 
   /* The page chrome: refresh / add. */
@@ -320,16 +381,45 @@ export default c([
     }),
   ]),
 
+  /*
+   * The editor/add form track: 12 explicit columns so字段能按分组真正并排
+   * （原来的 auto-fit + minmax(170px) 会按可用宽度重新折行，8 个字段排出
+   * 锯齿状的对齐，也永远用不满宽窗口）。每个字段自带 span 类，窄窗口下由
+   * 下面的 media 查询降级为两列 / 单列。
+   */
   c('.dshp-ssh-grid', {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
-    gap: '8px 12px',
+    gridTemplateColumns: 'repeat(12, minmax(0, 1fr))',
+    gap: '10px 12px',
   }),
+
+  c('.dshp-ssh-span-3', { gridColumn: 'span 3' }),
+  c('.dshp-ssh-span-4', { gridColumn: 'span 4' }),
+  c('.dshp-ssh-span-5', { gridColumn: 'span 5' }),
+  c('.dshp-ssh-span-6', { gridColumn: 'span 6' }),
+  c('.dshp-ssh-span-8', { gridColumn: 'span 8' }),
+  c('.dshp-ssh-span-12', { gridColumn: 'span 12' }),
+
+  c('@media (max-width: 760px)', [
+    c('.dshp-ssh-grid', { gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' }),
+    c('.dshp-ssh-span-3', { gridColumn: 'span 3' }),
+    c('.dshp-ssh-span-4', { gridColumn: 'span 3' }),
+    c('.dshp-ssh-span-5', { gridColumn: 'span 3' }),
+    c('.dshp-ssh-span-6', { gridColumn: 'span 3' }),
+    c('.dshp-ssh-span-8', { gridColumn: 'span 6' }),
+    c('.dshp-ssh-span-12', { gridColumn: 'span 6' }),
+  ]),
+
+  c('@media (max-width: 520px)', [
+    c('.dshp-ssh-field', { gridColumn: 'span 6' }),
+  ]),
 
   c('.dshp-ssh-field', {
     display: 'flex',
     flexDirection: 'column',
     gap: '6px',
+    /* grid 项默认 min-width:auto：长占位符/命令会把整列撑破，必须显式收紧 */
+    minWidth: 0,
   }),
 
   c('.dshp-ssh-field-label', {

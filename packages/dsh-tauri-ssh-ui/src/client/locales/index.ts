@@ -2,7 +2,15 @@
 
 /** Simplified Chinese dictionary. */
 export const zh = {
-  'nav': 'SSH 机器',
+  'nav': '远程',
+  'tabs.machines': 'SSH 机器',
+  'tabs.sync': '同步到远端',
+  'hero.title': '远程机器',
+  'hero.desc': '把本机作为发起端，用 SSH 连接其他机器上的 dsh 实例：直连使用本机 ~/.ssh 的配置与密钥，可管理多台机器并一键切换、同步插件与 Skill。默认关闭，开启后才建立连接。',
+  'hero.enable': '启用 SSH',
+  'hero.enabling': '正在启用…',
+  'hero.loadFailed': '无法读取 SSH 状态。',
+  'error.unavailable': 'SSH 服务不可用：插件未加载或本地实例未就绪。',
   'title': 'SSH 远程机器',
   'intro': '连接直接使用本机 ~/.ssh 的配置与密钥：支持 config 别名、IdentityFile 与默认密钥；密码和私钥口令可选，仅在密钥不可用时作为回退。',
   'loading': '加载中…',
@@ -32,8 +40,7 @@ export const zh = {
   'field.port': '端口',
   'field.user': '用户（可选）',
   'session.remoteTitle': '目前正在 SSH 中',
-  'sync.nav': '同步到远端',
-  'sync.notConnectedHint': '还没有已连接的机器——先到「SSH 机器」分区连接一台，再回来同步。',
+  'sync.notConnectedHint': '还没有已连接的机器——先到「SSH 机器」标签页连接一台，再回来同步。',
   'sync.remoteSessionHint': '本实例正通过 SSH 使用：插件与 Skill 的同步请在发起连接的机器上操作（那里选「同步到远端…」）。',
   'session.remoteHintNamed': '此实例正通过 SSH 来自 {name} 的连接使用；机器的添加、编辑与连接都在发起端操作。',
   'session.remoteHint': '此实例正通过 SSH 远程连接使用；机器的添加、编辑与连接都在发起端操作。',
@@ -120,7 +127,15 @@ export type SshKey = keyof typeof zh
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
-  'nav': 'SSH Machines',
+  'nav': 'Remote',
+  'tabs.machines': 'SSH machines',
+  'tabs.sync': 'Sync to remote',
+  'hero.title': 'Remote machines',
+  'hero.desc': 'Drive other machines\' dsh instances from this one over SSH: connections use this machine\'s ~/.ssh directly, and you can keep several machines, switch between them, and sync plugins and skills. Off by default — nothing connects until you enable it.',
+  'hero.enable': 'Enable SSH',
+  'hero.enabling': 'Enabling…',
+  'hero.loadFailed': 'Could not read the SSH state.',
+  'error.unavailable': 'The SSH service is unavailable: the plugin is not loaded or the local instance is not ready.',
   'title': 'SSH Remote Machines',
   'intro': 'Connections use this machine\'s ~/.ssh directly: config aliases, IdentityFile, and the default keys are honored; password and passphrase are optional fallbacks.',
   'loading': 'Loading…',
@@ -150,7 +165,6 @@ export const en = {
   'field.port': 'Port',
   'field.user': 'User (optional)',
   'session.remoteTitle': 'Currently in an SSH session',
-  'sync.nav': 'Sync to remote',
   'sync.notConnectedHint': 'No connected machines yet — connect one under “SSH machines” first, then come back here to sync.',
   'sync.remoteSessionHint': 'This instance is in use over SSH: run the plugin/skill sync on the machine that started the session (pick “Sync to remote…” there).',
   'session.remoteHintNamed': 'This instance is in use over SSH from {name}; add, edit and connect machines on the machine that started the session.',
