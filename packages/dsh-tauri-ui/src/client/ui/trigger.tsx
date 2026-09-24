@@ -93,6 +93,8 @@ export function SettingsTrigger({ wide, useSessions }: SettingsTriggerProps): Re
               slotKey={SETTINGS_LAUNCHER_SLOT}
               ownerProps={{
                 wide,
+                // 0.1.7-rc.2 起官方账号菜单把「设置面板刚打开」当作一次刷新时机。
+                settingsOpen: open,
                 openSettings: () => store.settings.openAt(),
                 openOnboarding: (id: string) => store.settings.openAt(id),
               }}

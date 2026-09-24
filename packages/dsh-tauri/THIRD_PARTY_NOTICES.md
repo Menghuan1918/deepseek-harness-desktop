@@ -7,7 +7,10 @@ from the upstream Electron desktop implementation of the same features.
 Upstream sources are MIT-licensed:
 
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Cross-checked revision: `46a7f68b0922371ce7144b668b90e377d8e799f4`
+- Cross-checked revision: `477b4f420553e8a52c2fbccc464d7561b239c443` (`dsh-v0.1.7-rc.2`,
+  the revision vendored at `source/deepseek-harness`); the account-stream carrier
+  gate and the sidebar/DOM contracts this package mirrors are unchanged from
+  `0.1.7-alpha.1`
 - License: MIT — Copyright (c) 2026 DeepSeek
 
 Derived behaviour (upstream → this package):
