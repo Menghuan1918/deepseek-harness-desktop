@@ -17,6 +17,7 @@ const EXPECTED_LABELS = [
   'dsh-tauri: zoom shortcuts (ctrl/cmd +/-/0)',
   'dsh-tauri: sidebar tweaks (hide collapse toggle, center brand)',
   'dsh-tauri: account sign-in (auto-open the authorize url)',
+  'dsh-tauri: shortcuts (catalog report + edit commands)',
 ]
 
 /** 假 MutationObserver：只保证 controller.observe 可用。 */
@@ -89,7 +90,7 @@ const disposers: (() => void)[] = []
 
 /** 最小客户端 ctx：effect 按 cordis 的 `callback.call(fiber)` 语义绑定 this。 */
 function fakeCtx(labels: string[]): ClientContext {
-  return {
+  const ctx = {
     effect(callback: (this: unknown) => () => void, label?: string) {
       if (label !== undefined)
         labels.push(label)
@@ -98,7 +99,12 @@ function fakeCtx(labels: string[]): ClientContext {
       return dispose
     },
     layout: { toggleSidebar: () => {} },
-  } as unknown as ClientContext
+    // 可选服务读取（`ctx.get`）与属性同源：老核心没有 `shortcuts`，属性面也不存在。
+    get(name: string): unknown {
+      return Reflect.get(ctx, name)
+    },
+  }
+  return ctx as unknown as ClientContext
 }
 
 beforeEach(() => {
@@ -142,7 +148,7 @@ describe('apply', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('内嵌页面保留四条 effect 与侧边栏、导航、缩放桥', async () => {
+  it('内嵌页面保留五条 effect 与侧边栏、导航、缩放桥', async () => {
     const env = stubEnv()
 
     const toggleSidebar = vi.fn()

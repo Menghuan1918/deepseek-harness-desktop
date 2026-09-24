@@ -9,10 +9,6 @@ export default c([
     c('[class$="guide"]', {
       gap: '8px',
     }),
-    c('[class$="entry"]:has(> button)', {
-      padding: '0',
-      gap: 0,
-    }),
     c('[class$="entry"]', {
       border: 'none',
       padding: '8px 16px',
@@ -99,4 +95,15 @@ export default c([
       background: 'var(--dsw-alias-label-primary)',
     }),
   ]),
+
+  c('[class$="sidebarCol"]', {
+    borderRight: 'none !important',
+  }),
+  c('[data-dsh-center-col]', {
+    borderRadius: '16px 0 0 0',
+    cornerShape: 'round',
+  }),
+  c('[data-slot="root"] > div', {
+    background: 'var(--dsw-specific-sidebar-fill)',
+  }),
 ])
