@@ -5,6 +5,7 @@
 
   var stopped = false
   var sawSplash = false
+  var reportedFrame = false
   var stalledForCurrentSplash = false
   var stalledTimer = null
   var observer = null
@@ -90,6 +91,17 @@
     stalledForCurrentSplash = false
   }
 
+  // 帧身份申报（issue #705）：宿主无法从 iframe 的 load 事件区分「dsh 页面已提交」与
+  // 「浏览器内部错误页已提交」——代理不可达等网络错误页同样触发 load，而错误页里永远
+  // 没有 #root。boot 页的 HTML 自带 #root，所以「子 frame 解析出 #root」是本 frame 正在
+  // 承载 dsh 文档的确证；宿主据此区分「页面真的加载了」与「帧里只有一张浏览器错误页」。
+  function reportFrame() {
+    if (reportedFrame) return
+    if (!rootNode()) return
+    reportedFrame = true
+    send('dsh://plugin-boot:frame')
+  }
+
   function stop() {
     if (stopped) return
     stopped = true
@@ -100,6 +112,7 @@
   }
 
   function evaluate() {
+    reportFrame()
     if (stopped) return
     var failure = bootFailureText()
     if (failure !== null) {

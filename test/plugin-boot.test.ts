@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-type PageState = 'empty' | 'splash' | 'chat' | 'normal'
+type PageState = 'empty' | 'splash' | 'chat' | 'normal' | 'mounting'
+
+interface BootHarnessOptions {
+  /** 模拟顶层文档（非 iframe）：脚本必须整体不工作 */
+  topFrame?: boolean
+}
 
 interface BootHarness {
   messages: string[]
@@ -14,7 +19,10 @@ const script = readFileSync(
   'utf8',
 )
 
-function createHarness(initialState: PageState): BootHarness {
+/** 帧身份申报（子 frame 解析出 `#root` 后必然先于其它消息到达一次）。 */
+const FRAME_REPORT = 'dsh://plugin-boot:frame'
+
+function createHarness(initialState: PageState, options: BootHarnessOptions = {}): BootHarness {
   let state = initialState
   let mutationCallback = () => {}
   const messages: string[] = []
@@ -87,11 +95,13 @@ function createHarness(initialState: PageState): BootHarness {
     addEventListener() {},
     removeEventListener() {},
   }
+  if (options.topFrame)
+    window.top = window
   runInNewContext(script, {
     window,
     document: {
       documentElement: {},
-      getElementById: () => root,
+      getElementById: () => (state === 'mounting' ? null : root),
     },
     MutationObserver: FakeMutationObserver,
     setTimeout,
@@ -119,13 +129,13 @@ describe('plugin boot bridge', () => {
     const harness = createHarness('empty')
 
     vi.advanceTimersByTime(20_000)
-    expect(harness.messages).toEqual([])
+    expect(harness.messages).toEqual([FRAME_REPORT])
 
     harness.setState('splash')
     vi.advanceTimersByTime(7_999)
-    expect(harness.messages).toEqual([])
+    expect(harness.messages).toEqual([FRAME_REPORT])
     vi.advanceTimersByTime(1)
-    expect(harness.messages).toEqual(['dsh://plugin-boot:stalled'])
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:stalled'])
   })
 
   it('resets the deadline when the splash disappears and rearms on reappearance', () => {
@@ -135,26 +145,59 @@ describe('plugin boot bridge', () => {
     vi.advanceTimersByTime(4_000)
     harness.setState('empty')
     vi.advanceTimersByTime(10_000)
-    expect(harness.messages).toEqual([])
+    expect(harness.messages).toEqual([FRAME_REPORT])
 
     harness.setState('splash')
     vi.advanceTimersByTime(8_000)
-    expect(harness.messages).toEqual(['dsh://plugin-boot:stalled'])
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:stalled'])
   })
 
   it('ignores matching page text and permanently disarms after the app shell mounts', () => {
     vi.useFakeTimers()
     const chat = createHarness('chat')
     vi.advanceTimersByTime(20_000)
-    expect(chat.messages).toEqual([])
+    expect(chat.messages).toEqual([FRAME_REPORT])
 
     const harness = createHarness('splash')
     vi.advanceTimersByTime(2_000)
     harness.setState('normal')
-    expect(harness.messages).toEqual(['dsh://plugin-boot:ready'])
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready'])
 
     harness.setState('splash')
     vi.advanceTimersByTime(20_000)
-    expect(harness.messages).toEqual(['dsh://plugin-boot:ready'])
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready'])
+  })
+
+  it('reports one frame identity once the document exposes the dsh mount point', () => {
+    vi.useFakeTimers()
+    const harness = createHarness('mounting')
+
+    vi.advanceTimersByTime(3_000)
+    expect(harness.messages).toEqual([])
+
+    harness.setState('splash')
+    expect(harness.messages).toEqual([FRAME_REPORT])
+
+    // 身份只申报一次；卡在 splash 时后续消息仍是原有的 stalled
+    vi.advanceTimersByTime(8_000)
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:stalled'])
+  })
+
+  // issue #705：浏览器内部错误页（代理拦截、DNS 失败等）同样会触发 iframe 的 load，
+  // 但永远没有 #root。脚本在这里保持沉默，宿主才能把「没收到帧身份」判成加载失败。
+  it('never reports a frame identity while the frame has no dsh mount point', () => {
+    vi.useFakeTimers()
+    const harness = createHarness('mounting')
+
+    vi.advanceTimersByTime(60_000)
+    expect(harness.messages).toEqual([])
+  })
+
+  it('stays silent in the top-level document', () => {
+    vi.useFakeTimers()
+    const harness = createHarness('normal', { topFrame: true })
+
+    vi.advanceTimersByTime(60_000)
+    expect(harness.messages).toEqual([])
   })
 })
