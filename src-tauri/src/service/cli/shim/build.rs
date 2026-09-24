@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::escape_path_cmd;
+use super::portable_path_cmd;
 use super::escape_path_ps1;
 use super::escape_path_sh;
 #[cfg(not(windows))]
@@ -92,11 +92,11 @@ exit /b 1
 echo [dsh] Node.js runtime not found. Please run DeepSeek Harness Desktop to install it first. 1>&2
 exit /b 1
 "#,
-        node_bin = escape_path_cmd(&paths.node_bin),
-        node_dir = escape_path_cmd(&paths.node_dir()),
-        git_dir = escape_path_cmd(&paths.git_dir()),
-        dsh_bin = escape_path_cmd(&paths.dsh_bin),
-        dsh_home = escape_path_cmd(dsh_home),
+        node_bin = portable_path_cmd(&paths.node_bin),
+        node_dir = portable_path_cmd(&paths.node_dir()),
+        git_dir = portable_path_cmd(&paths.git_dir()),
+        dsh_bin = portable_path_cmd(&paths.dsh_bin),
+        dsh_home = portable_path_cmd(dsh_home),
         user_dsh = CMD_USER_DSH_PRECEDENCE,
         node_resolve = CMD_NODE_RESOLVE,
     ))
@@ -200,6 +200,10 @@ set "NODE_BIN={node_bin}"
 set "NODE_DIR={node_dir}"
 set "GIT_DIR={git_dir}"
 set "PNPM_BIN={pnpm_bin}"
+rem Runtime override: this file is read through the console code page, so a baked
+rem path containing non-ASCII (e.g. user name) is corrupted on parse. The desktop
+rem app passes the real path in DSH_PNPM_BIN, which arrives as UTF-16 and is safe.
+if exist "%DSH_PNPM_BIN%" set "PNPM_BIN=%DSH_PNPM_BIN%"
 rem Use bundled MinGit only when system Git lacks its HTTPS transport helper.
 set "SYSTEM_GIT_WORKS="
 for /f "delims=" %%g in ('git --exec-path 2^>nul') do if exist "%%g\git-remote-https.exe" set "SYSTEM_GIT_WORKS=1"
@@ -271,10 +275,10 @@ exit /b 1
 echo [pnpm] Node.js runtime not found. Please run DeepSeek Harness Desktop to install it first. 1>&2
 exit /b 1
 "#,
-        node_bin = escape_path_cmd(&paths.node_bin),
-        node_dir = escape_path_cmd(&paths.node_dir()),
-        git_dir = escape_path_cmd(&paths.git_dir()),
-        pnpm_bin = escape_path_cmd(&paths.pnpm_bin),
+        node_bin = portable_path_cmd(&paths.node_bin),
+        node_dir = portable_path_cmd(&paths.node_dir()),
+        git_dir = portable_path_cmd(&paths.git_dir()),
+        pnpm_bin = portable_path_cmd(&paths.pnpm_bin),
         node_resolve = CMD_NODE_RESOLVE,
     ))
 }
@@ -292,6 +296,9 @@ $nodeBin = '{node_bin}'
 $nodeDir = '{node_dir}'
 $gitDir = '{git_dir}'
 $pnpmBin = '{pnpm_bin}'
+# Runtime override: the baked literal may be non-ASCII; the desktop app passes the
+# real path in DSH_PNPM_BIN (see the cmd shim note).
+if ($env:DSH_PNPM_BIN -and (Test-Path -LiteralPath $env:DSH_PNPM_BIN -PathType Leaf)) {{ $pnpmBin = $env:DSH_PNPM_BIN }}
 # Use bundled MinGit only when system Git lacks its HTTPS transport helper.
 $systemGitWorks = $false
 try {{
@@ -357,6 +364,8 @@ pub fn build_pnpm_sh_shim(paths: &ShimPaths) -> String {
 NODE_BIN='{node_bin}'
 NODE_DIR='{node_dir}'
 PNPM_BIN='{pnpm_bin}'
+# Runtime override: the desktop app passes the real bundled pnpm path here.
+if [ -n "$DSH_PNPM_BIN" ] && [ -f "$DSH_PNPM_BIN" ]; then PNPM_BIN="$DSH_PNPM_BIN"; fi
 
 USE_BUNDLED=
 if [ "$DSH_PREFER_BUNDLED_PNPM" = "1" ] && [ -f "$PNPM_BIN" ]; then
