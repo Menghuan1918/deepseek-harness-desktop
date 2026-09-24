@@ -129,7 +129,11 @@ The step then rewrites **this file** so every bundled dependency resolves throug
 installer's own resources:
 
 ```jsonc
-"dsh": { "entry": "node_modules/@deepseek-ai/dsh/lib/bin.js", "managedRoot": "$Resources/dsh", "overridable": false }
+{
+  "dependencies": {
+    "dsh": { "entry": "node_modules/@deepseek-ai/dsh/lib/bin.js", "managedRoot": "$Resources/dsh", "overridable": false }
+  }
+}
 ```
 
 The rewrite only ever touches the build output — the committed manifest keeps its
