@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 use super::local::{find_user_dsh_bin, local_core};
-use super::source::{active_source, core_supports_bundled_plugins, CoreSource, HarnessCore};
+use super::source::{
+    active_is_bundled, active_source, core_supports_bundled_plugins, CoreSource, HarnessCore,
+};
 
 /// 随包内核的行 id：面板据此置顶并标记「本地」，[`set_active`] 据此切回随包内核。
 const BUNDLED_CORE_ID: &str = "app-bundled";
@@ -107,9 +109,7 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     // 随包资源构建（离线包）：随包内核独立成一行并置顶（`app-bundled`），用户仍可下载
     // 其它版本（槽位在 AppData）并切换，也可以切回它。
     let bundled_dir = config::dependencies::bundled_core_dir(app_handle);
-    let bundled_active = bundled_dir.as_ref().is_some_and(|dir| {
-        source == CoreSource::App && config::dependencies::active_root(app_handle, config::dependencies::DEP_DSH) == *dir
-    });
+    let bundled_active = active_is_bundled(app_handle);
     if let Some(dir) = &bundled_dir {
         let version = read_manifest_dsh_version(dir).unwrap_or_default();
         let dir_str = dir.to_string_lossy().into_owned();

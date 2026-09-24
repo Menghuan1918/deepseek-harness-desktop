@@ -161,14 +161,32 @@ pub fn active_dsh_binary(app_handle: &AppHandle) -> PathBuf {
     }
 }
 
+/// 当前生效的核心是否就是随安装包分发的那份（离线包把内核托管到 `$Resources/dsh`）。
+///
+/// 判定「来源是 App **且** 生效根就是随包内核目录」：切到本地核心时映射被记为系统环境、
+/// 生效根回落到随包目录，此时不能再算作随包内核。
+pub fn active_is_bundled(app_handle: &AppHandle) -> bool {
+    active_source(app_handle) == CoreSource::App
+        && config::dependencies::bundled_core_dir(app_handle).is_some_and(|dir| {
+            config::dependencies::active_root(app_handle, config::dependencies::DEP_DSH) == dir
+        })
+}
+
 /// 当前活动核心的版本号（`--no-open` 等按版本判定的能力以它为准）。
 pub fn active_version(app_handle: &AppHandle) -> Option<String> {
     match active_source(app_handle) {
         CoreSource::Local => local_core(app_handle).map(|c| c.version),
-        CoreSource::App => config::get_dsh_pkg_tag(app_handle)
-            .as_deref()
-            .and_then(parse_version_from_tag)
-            .or_else(|| config::get_dsh_version(app_handle)),
+        CoreSource::App => {
+            // 随包内核没有对应的 pkg tag：store 里的 tag 属于上一次下载的版本，直接采用
+            // 会把随包内核当成那个版本（能力判定、补丁与插件兼容性都会走错分支）。
+            if active_is_bundled(app_handle) {
+                return config::get_dsh_version(app_handle);
+            }
+            config::get_dsh_pkg_tag(app_handle)
+                .as_deref()
+                .and_then(parse_version_from_tag)
+                .or_else(|| config::get_dsh_version(app_handle))
+        }
     }
 }
 
