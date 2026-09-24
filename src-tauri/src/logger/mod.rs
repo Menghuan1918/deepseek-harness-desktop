@@ -29,7 +29,10 @@ static FILE_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 static FRONTDESK_WRITER: OnceLock<Arc<Mutex<SizeRotatingWriter>>> = OnceLock::new();
 
 /// 平台应用数据根目录下的本应用目录（`identifier` 一层；dev 与 release 相同）。
-fn identifier_dir() -> Option<PathBuf> {
+///
+/// 仅用 `std::env` 解析，不依赖 `AppHandle`，因此也是启动前读取 store 的路径来源
+/// （`config::force_xwayland_setting`）。
+pub(crate) fn identifier_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var("APPDATA").ok()?;

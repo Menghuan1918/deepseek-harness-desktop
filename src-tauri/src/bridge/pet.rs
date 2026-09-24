@@ -165,6 +165,37 @@ pub fn get_pet_status(app: AppHandle) -> PetStatus {
     status_from_setting(&config::get_store_dat_setting(&app))
 }
 
+/// 查询当前运行环境能否让桌宠窗口置顶并定位（issue #649）。
+///
+/// 结果由运行环境推导，与持久设置无关，因此不并入 [`PetStatus`]：
+/// [`status_from_setting`] 是 [`config::Setting`] 的纯函数，掺入环境变量会破坏这一点。
+#[tauri::command]
+pub fn get_pet_overlay_supported() -> bool {
+    crate::pet_overlay_supported_env()
+}
+
+/// 读取「强制 XWayland」开关（issue #649 的方案 2，默认关闭）。
+///
+/// 该设置作用于整个应用而非只有桌宠，命令名因此不带 `pet_` 前缀；落在本模块只因
+/// 桌宠遮挡是它唯一的症状与唯一的消费方。同理不并入 [`PetStatus`]：后者经
+/// `pet://status` 广播给桌宠窗口与侧栏指示点，两者都不关心这个值。
+#[tauri::command]
+pub fn get_force_xwayland(app: AppHandle) -> bool {
+    config::get_store_dat_setting(&app).force_xwayland
+}
+
+/// 写入「强制 XWayland」开关，返回落盘后的值。
+///
+/// 不操作窗口、不广播 `pet://status`：`GDK_BACKEND` 只在 GTK 初始化时被读取一次，
+/// 本次进程里没有任何东西能因此改变，生效要等下次启动。
+#[tauri::command]
+pub fn set_force_xwayland(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let updated = config::update_store_dat_setting(&app, |setting| {
+        setting.force_xwayland = enabled;
+    });
+    Ok(updated.force_xwayland)
+}
+
 /// 启用/关闭桌宠（持久化）。侧栏入口、设置页与桌宠窗口自身的关闭请求都走这里。
 ///
 /// 关闭即销毁窗口实例（不是 hide，见 `desktop::pet::set_pet_window_visible`：隐藏窗口里

@@ -21,6 +21,9 @@ export const PET_HATCH_PROMPT = '/hatch-dsh-pet 根据你对我的了解，养�
 
 /** 桌面端 Tauri 命令 id（与 src-tauri 的 command 名逐字一致）。 */
 export const CMD_GET_PET_STATUS = 'get_pet_status'
+export const CMD_GET_PET_OVERLAY_SUPPORTED = 'get_pet_overlay_supported'
+export const CMD_GET_FORCE_XWAYLAND = 'get_force_xwayland'
+export const CMD_SET_FORCE_XWAYLAND = 'set_force_xwayland'
 export const CMD_SET_PET_ENABLED = 'set_pet_enabled'
 export const CMD_SET_ACTIVE_PET = 'set_active_pet'
 export const CMD_SET_PET_SIZE = 'set_pet_size'

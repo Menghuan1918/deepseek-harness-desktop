@@ -1,4 +1,5 @@
-//! shim 落盘：生成标记识别、悬空符号链接处理、用户文件保留与写入编排。
+//! shim 落盘：生成标记识别、悬空符号链接处理、用户文件保留、按外部解析方的
+//! 代码页编码（cmd 用系统代码页、ps1 用带 BOM 的 UTF-8）与写入编排。
 
 use crate::config;
 use std::fs;
@@ -54,13 +55,50 @@ fn is_dangling_symlink(path: &Path) -> bool {
 /// 后的第二行）写 #/rem DeepSeek Harness Desktop - ...；用户文件即使正文
 /// 提到同样的短语（如 README 引用）也不应被误判为本应用 shim。
 pub fn is_generated_shim(path: &Path) -> bool {
-    match std::fs::read_to_string(path) {
-        Ok(content) => content
+    match std::fs::read(path) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes)
             .lines()
             .take(2)
             .any(|line| line.contains(GENERATED_MARKER)),
         Err(_) => false,
     }
+}
+
+/// shim 落盘编码。
+///
+/// cmd.exe 按控制台代码页（中文 Windows 为 936）读取 `.cmd`，PowerShell 5.1 只认
+/// 带 BOM 的 UTF-8 `.ps1`。此前一律写 UTF-8：一旦烘焙进内容的绝对路径含非 ASCII
+/// （用户名 `小蔡`、含中文的安装目录），`if exist "%PNPM_BIN%"` 判定就落空，shim
+/// 走 `:no_pnpm` 以退出码 1 结束，`dsh plugin add` 随之失败并让 Harness 启动停在
+/// `INTERNAL_PLUGIN_INSTALL_FAILED: PREINSTALL_FAILED`（重试/安全模式都走同一条
+/// preinstall，因此永远无法恢复）。纯 ASCII 内容保持原字节，行为完全不变。
+fn encode_shim(target: &Path, content: &str) -> Vec<u8> {
+    #[cfg(not(windows))]
+    let _ = target;
+    if content.is_ascii() {
+        return content.as_bytes().to_vec();
+    }
+    #[cfg(windows)]
+    match target.extension().and_then(|ext| ext.to_str()) {
+        Some("cmd") | Some("bat") => {
+            if let Some(bytes) =
+                crate::utils::encode_multibyte(content, crate::utils::console_code_page())
+            {
+                return bytes;
+            }
+            log::warn!(
+                "Shim {target:?} contains characters the console code page cannot represent; \
+                 falling back to utf-8, its baked paths will not resolve"
+            );
+        }
+        Some("ps1") => {
+            let mut bytes = vec![0xEF, 0xBB, 0xBF];
+            bytes.extend_from_slice(content.as_bytes());
+            return bytes;
+        }
+        _ => {}
+    }
+    content.as_bytes().to_vec()
 }
 
 /// 写入单个 shim 文件，处理目标已存在时的三种情形：
@@ -88,7 +126,7 @@ fn write_shim_file(target: &Path, content: &str) -> Result<(), String> {
         );
         return Ok(());
     }
-    fs::write(target, content)
+    fs::write(target, encode_shim(target, content))
         .map_err(|e| format!("SHIM_WRITE_FAILED: write {} failed: {e}", target.display()))
 }
 
@@ -377,6 +415,99 @@ mod tests {
             content.matches("\r\n").count(),
             "migrated shim must not keep unpaired LF"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 非 ASCII 路径（用户名 `小蔡`）必须按 cmd.exe 的解析代码页落盘，
+    /// 否则 `if exist "%PNPM_BIN%"` 判定落空、shim 以退出码 1 结束。
+    #[test]
+    #[cfg(windows)]
+    fn cmd_shim_with_non_ascii_path_uses_console_code_page() {
+        let dir = temp_dir("non-ascii-cmd");
+        let target = dir.join("pnpm.cmd");
+        let content = "@echo off\r\nrem DeepSeek Harness Desktop - pnpm command shim (generated)\r\nset \"PNPM_BIN=C:\\Users\\小蔡\\pnpm.cjs\"\r\n";
+        assert!(!content.is_ascii());
+
+        write_shim_file(&target, content).unwrap();
+
+        let bytes = std::fs::read(&target).unwrap();
+        let codepage = crate::utils::console_code_page();
+        match crate::utils::encode_multibyte(content, codepage) {
+            Some(encoded) => {
+                assert_ne!(
+                    bytes,
+                    content.as_bytes(),
+                    "non-ascii cmd shim must not be written as raw utf-8"
+                );
+                assert_eq!(bytes, encoded);
+                assert_eq!(
+                    crate::utils::decode_multibyte(&bytes, codepage).as_deref(),
+                    Some(content),
+                    "cmd shim must round-trip through the console code page"
+                );
+            }
+            // 英文系统（CP437）表示不了中文用户名：只能退回原字节，应用侧靠
+            // DSH_PNPM_BIN 与 portable_path_cmd 的 ASCII 令牌兜底。
+            None => assert_eq!(bytes, content.as_bytes()),
+        }
+        assert!(
+            !is_foreign_file(&target),
+            "code-page encoded shim must still be recognised as generated"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PowerShell 5.1 只认带 BOM 的 UTF-8；无 BOM 的非 ASCII `.ps1` 会按 ANSI 读成乱码。
+    #[test]
+    #[cfg(windows)]
+    fn ps1_shim_with_non_ascii_path_gets_utf8_bom() {
+        let dir = temp_dir("non-ascii-ps1");
+        let target = dir.join("pnpm.ps1");
+        let content =
+            "# DeepSeek Harness Desktop - pnpm command shim (generated)\r\n$pnpmBin = 'C:\\Users\\小蔡\\pnpm.cjs'\r\n";
+
+        write_shim_file(&target, content).unwrap();
+
+        let bytes = std::fs::read(&target).unwrap();
+        assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF], "ps1 shim needs a utf-8 bom");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap().trim_start_matches('\u{feff}'),
+            content
+        );
+        assert!(!is_foreign_file(&target));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ASCII 内容必须逐字节保持原样：历史落盘文件与既有断言都不受影响。
+    #[test]
+    fn ascii_shim_bytes_are_unchanged() {
+        let dir = temp_dir("ascii-bytes");
+        let target = dir.join("pnpm.cmd");
+        let content = "@echo off\r\nset \"PNPM_BIN=C:\\tools\\pnpm.cjs\"\r\n";
+
+        write_shim_file(&target, content).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), content.as_bytes());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 代码页编码后仍是本应用生成的文件，下一次 `ensure_shims` 才能覆盖自愈。
+    #[test]
+    #[cfg(windows)]
+    fn code_page_encoded_shim_stays_overwritable() {
+        let dir = temp_dir("codepage-overwrite");
+        let target = dir.join("pnpm.cmd");
+        let header = "@echo off\r\nrem DeepSeek Harness Desktop - pnpm command shim (generated)\r\n";
+        write_shim_file(&target, &format!("{header}rem C:\\Users\\小蔡\r\n")).unwrap();
+        assert!(!is_foreign_file(&target));
+
+        write_shim_file(&target, &format!("{header}rem C:\\Users\\小蔡\\fixed\r\n")).unwrap();
+
+        let codepage = crate::utils::console_code_page();
+        let fixed = format!("{header}rem C:\\Users\\小蔡\\fixed\r\n");
+        let expected = crate::utils::encode_multibyte(&fixed, codepage)
+            .unwrap_or_else(|| fixed.as_bytes().to_vec());
+        assert_eq!(std::fs::read(&target).unwrap(), expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
