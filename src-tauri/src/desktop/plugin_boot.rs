@@ -30,6 +30,7 @@ mod tests {
         assert!(PLUGIN_BOOT_RELOAD_JS.contains("dsh://plugin-boot:leaving"));
         assert!(PLUGIN_BOOT_RELOAD_JS.contains("reportFrame"));
         assert!(PLUGIN_BOOT_RELOAD_JS.contains("reportLeaving"));
+        assert!(PLUGIN_BOOT_RELOAD_JS.contains("reportRestored"));
         assert!(PLUGIN_BOOT_RELOAD_JS.contains("window.parent === window.top"));
         assert!(PLUGIN_BOOT_RELOAD_JS.contains("bootFailureText"));
         assert!(PLUGIN_BOOT_RELOAD_JS.contains("Failed to load plugins"));

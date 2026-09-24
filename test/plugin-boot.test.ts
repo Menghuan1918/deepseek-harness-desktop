@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 type PageState = 'empty' | 'splash' | 'chat' | 'normal' | 'mounting'
 
+/** 脚本注册的窗口事件监听器（`addEventListener` 只用到 pagehide / pageshow）。 */
+type WindowListener = (event?: { persisted?: boolean }) => void
+
 interface BootHarnessOptions {
   /** 模拟顶层文档（非 iframe）：脚本必须整体不工作 */
   topFrame?: boolean
@@ -19,6 +22,8 @@ interface BootHarness {
   setState: (state: PageState) => void
   /** 触发 pagehide（帧内导航离开当前文档） */
   leaveDocument: () => void
+  /** 触发 pageshow；`persisted` 为真即从 bfcache 恢复 */
+  showDocument: (persisted: boolean) => void
 }
 
 const script = readFileSync(
@@ -37,7 +42,7 @@ function createHarness(initialState: PageState, options: BootHarnessOptions = {}
   let mutationCallback = () => {}
   const messages: string[] = []
   const nestedMessages: string[] = []
-  const pageHideListeners: (() => void)[] = []
+  const windowListeners = new Map<string, WindowListener[]>()
 
   function textNodes() {
     if (state === 'splash') {
@@ -111,21 +116,21 @@ function createHarness(initialState: PageState, options: BootHarnessOptions = {}
   const window: {
     top: unknown
     parent: { postMessage: (message: { type: string }) => void }
-    addEventListener: (type: string, listener: () => void) => void
-    removeEventListener: (type: string, listener: () => void) => void
+    addEventListener: (type: string, listener: WindowListener) => void
+    removeEventListener: (type: string, listener: WindowListener) => void
   } = {
     top,
     parent: options.nestedFrame ? nestedParent : top,
-    addEventListener(type: string, listener: () => void) {
-      if (type === 'pagehide')
-        pageHideListeners.push(listener)
+    addEventListener(type: string, listener: WindowListener) {
+      const listeners = windowListeners.get(type) ?? []
+      listeners.push(listener)
+      windowListeners.set(type, listeners)
     },
-    removeEventListener(type: string, listener: () => void) {
-      if (type !== 'pagehide')
-        return
-      const index = pageHideListeners.indexOf(listener)
+    removeEventListener(type: string, listener: WindowListener) {
+      const listeners = windowListeners.get(type)
+      const index = listeners?.indexOf(listener) ?? -1
       if (index >= 0)
-        pageHideListeners.splice(index, 1)
+        listeners!.splice(index, 1)
     },
   }
   if (options.topFrame)
@@ -143,6 +148,11 @@ function createHarness(initialState: PageState, options: BootHarnessOptions = {}
     clearInterval,
   })
 
+  function fireWindowEvent(type: string, event?: { persisted?: boolean }) {
+    for (const listener of [...(windowListeners.get(type) ?? [])])
+      listener(event)
+  }
+
   return {
     messages,
     nestedMessages,
@@ -151,8 +161,10 @@ function createHarness(initialState: PageState, options: BootHarnessOptions = {}
       mutationCallback()
     },
     leaveDocument() {
-      for (const listener of [...pageHideListeners])
-        listener()
+      fireWindowEvent('pagehide')
+    },
+    showDocument(persisted) {
+      fireWindowEvent('pageshow', { persisted })
     },
   }
 }
@@ -278,5 +290,34 @@ describe('plugin boot bridge', () => {
     vi.advanceTimersByTime(10_000)
     harness.leaveDocument()
     expect(harness.messages).toEqual([])
+  })
+
+  // 从 bfcache 恢复的文档不会重新执行脚本，宿主在 leaving 里作废的确认必须补报回来，
+  // 否则恢复回来的正常页面会在宽限窗后被判成「帧里没有 dsh 页面」而弹错误界面。
+  it('re-reports the frame identity when the document is restored from the back-forward cache', () => {
+    vi.useFakeTimers()
+    const harness = createHarness('splash')
+
+    vi.advanceTimersByTime(2_000)
+    harness.setState('normal')
+    harness.leaveDocument()
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready', FRAME_LEAVING])
+
+    harness.showDocument(true)
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready', FRAME_LEAVING, FRAME_REPORT])
+
+    // 恢复后文档仍可按正常路径再次离开
+    harness.leaveDocument()
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready', FRAME_LEAVING, FRAME_REPORT, FRAME_LEAVING])
+  })
+
+  it('reports nothing on an ordinary pageshow', () => {
+    vi.useFakeTimers()
+    const harness = createHarness('splash')
+
+    vi.advanceTimersByTime(2_000)
+    harness.setState('normal')
+    harness.showDocument(false)
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready'])
   })
 })

@@ -116,6 +116,15 @@
     send('dsh://plugin-boot:leaving')
   }
 
+  // bfcache 恢复：文档没有重新执行脚本，宿主已在 leaving 里作废了确认，这里必须替它把
+  // 身份重新申报一次，否则被恢复回来的正常页面会在宽限窗后被判成「帧里没有 dsh 页面」。
+  function reportRestored(event) {
+    if (!event || !event.persisted) return
+    reportedFrame = false
+    reportedLeaving = false
+    reportFrame()
+  }
+
   function stop() {
     if (stopped) return
     stopped = true
@@ -173,5 +182,6 @@
   // 恰恰发生在观察结束后（应用 shell 已挂载），那一刻必须还能通知宿主。
   window.addEventListener('pagehide', reportLeaving)
   window.addEventListener('pagehide', stop)
+  window.addEventListener('pageshow', reportRestored)
   evaluate()
 })()
