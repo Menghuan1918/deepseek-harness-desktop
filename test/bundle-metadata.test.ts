@@ -2,63 +2,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import * as bundleMetadataModule from '../scripts/bundle-metadata.mjs'
+import * as bundleMetadata from '../scripts/bundle-metadata.mjs'
 
-interface BundleAsset {
-  name: string
-  url: string
-  sha256: string
-  sha256Url: string
-}
+// 类型来自随脚本发布的 `bundle-metadata.d.mts`，测试不再另抄一份接口
+// （抄一份的代价：脚本签名一变，用例仍在旧接口上编译通过）。
+type BundlePlatform = 'windows' | 'macos' | 'linux'
+type BundleArch = 'x64' | 'arm64'
 
-interface BundleAssets {
-  node: BundleAsset
-  dsh: BundleAsset
-  pnpm: BundleAsset
-  git?: BundleAsset
-}
-
-interface BundleConstants {
-  nodeVersion: string
-  nodeBaseUrl: string
-  pnpmVersion: string
-  pnpmBaseUrl: string
-  pnpmSha256: string
-  mingitVersion: string
-  mingitBaseUrl: string
-  mingitX64Sha256: string
-  mingitArm64Sha256: string
-  dshCoreUrl: string
-}
-
-interface BundleMetadataModule {
-  parseVersionFromTag: (tag: unknown) => string | null
-  nodeAssetName: (platform: string, arch: string, version: string) => string
-  dshAssetName: (platform: string, arch: string) => string
-  mingitAssetName: (arch: string, version: string) => string
-  bundleTargets: (platform: string) => string[]
-  bundleAssets: (input: {
-    platform: string
-    arch: string
-    constants: BundleConstants
-    dshTag: string
-  }) => BundleAssets
-  toAssetTable: (assets: BundleAssets) => string
-  stripJsonc: (raw: string) => string
-  readManifest: (repo?: string) => Record<string, any>
-  readBuildConstants: (repo?: string) => BundleConstants
-  readRecommendedDshVersion: (repo?: string) => string
-  applyBundleManifest: (input: { repo?: string, platform: string }) => {
-    file: string
-    applied: string[]
-  }
-  findReleaseTag: (releases: unknown, version: string) => string
-  resolveDshTag: (version: string, fetchJson?: (url: string) => Promise<unknown>) => Promise<string>
-}
-
-const bundleMetadata = bundleMetadataModule as unknown as BundleMetadataModule
-
-const constants: BundleConstants = {
+const constants = {
   nodeVersion: '22.22.0',
   nodeBaseUrl: 'https://nodejs.org/dist/',
   pnpmVersion: '11.7.0',
@@ -73,7 +24,7 @@ const constants: BundleConstants = {
 
 const DSH_TAG = 'dsh-0.1.5-rc.3-12345678901'
 
-function assetsFor(platform: string, arch: string, options: { withGit?: boolean } = {}) {
+function assetsFor(platform: BundlePlatform, arch: BundleArch, options: { withGit?: boolean } = {}) {
   return bundleMetadata.bundleAssets({ platform, arch, constants, dshTag: DSH_TAG, ...options })
 }
 
@@ -112,7 +63,8 @@ describe('bundle asset names', () => {
   it('mirrors the MinGit asset layout and rejects unknown architectures', () => {
     expect(bundleMetadata.mingitAssetName('x64', '2.53.0.2')).toBe('MinGit-2.53.0.2-64-bit.zip')
     expect(bundleMetadata.mingitAssetName('arm64', '2.53.0.2')).toBe('MinGit-2.53.0.2-arm64.zip')
-    expect(() => bundleMetadata.mingitAssetName('ia32', '2.53.0.2')).toThrow(/^BUNDLE_METADATA:/)
+    // 平台/架构来自 workflow 输入，运行期必须对未知值报错，而不是静默拼一个资产名。
+    expect(() => bundleMetadata.mingitAssetName('ia32' as BundleArch, '2.53.0.2')).toThrow(/^BUNDLE_METADATA:/)
   })
 })
 
@@ -302,7 +254,7 @@ describe('bundle manifest rewrite', () => {
         'pnpm -> $Resources/pnpm',
         'dsh -> $Resources/dsh',
       ])
-      expect(() => bundleMetadata.applyBundleManifest({ repo, platform: 'freebsd' }))
+      expect(() => bundleMetadata.applyBundleManifest({ repo, platform: 'freebsd' as BundlePlatform }))
         .toThrow(/^BUNDLE_METADATA:/)
     }
     finally {
