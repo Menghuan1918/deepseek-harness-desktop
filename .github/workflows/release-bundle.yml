@@ -292,12 +292,24 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
           DSH_TAG: ${{ needs.prepare.outputs.dsh_tag }}
+          SOURCE_REF: ${{ needs.prepare.outputs.source_ref }}
         run: |
           set -euo pipefail
           # 试跑路径的 test-* release 还不存在，按 release.yml 的手动触发约定新建；
           # 真实发布路径的 release 由 release.yml 的 finalize 建好，这里只上传。
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --draft --title "Deepseek Harness Desktop $RELEASE_TAG"
+            # tag 不存在时 GitHub 把 tag 建在默认分支上，而产物构建自 source_ref：
+            # 必须显式 --target，否则测试预发布的 tag 与产物不同源（无法按 tag 追溯
+            # 产物是哪个提交构建的）。tag 已存在时 --target 被忽略，真实发布路径不受影响。
+            #
+            # 例外：GITHUB_TOKEN 未被授权改动工作流文件，构建提交相对默认分支新增/修改
+            # 了 `.github/workflows/**` 时该调用会 404（发布前试跑正是这种情形）。此时退回
+            # 不带 target 的创建并告警——产物可追溯性让位于「试跑必须能出包」。
+            title="Deepseek Harness Desktop $RELEASE_TAG"
+            if ! gh release create "$RELEASE_TAG" --draft --target "$SOURCE_REF" --title "$title"; then
+              echo "::warning::cannot pin $RELEASE_TAG to $SOURCE_REF (workflow-file permission); creating it on the default branch instead"
+              gh release create "$RELEASE_TAG" --draft --title "$title"
+            fi
           fi
           mapfile -d '' assets < <(find upload -type f -print0)
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
