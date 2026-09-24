@@ -7,11 +7,18 @@ type PageState = 'empty' | 'splash' | 'chat' | 'normal' | 'mounting'
 interface BootHarnessOptions {
   /** 模拟顶层文档（非 iframe）：脚本必须整体不工作 */
   topFrame?: boolean
+  /** 模拟 dsh 应用内部嵌套的 iframe（本脚本不作为宿主那一层参与握手） */
+  nestedFrame?: boolean
 }
 
 interface BootHarness {
+  /** 宿主（顶层文档）真实收到的消息 */
   messages: string[]
+  /** 嵌套场景下发给中间那一层 dsh 文档的消息（宿主收不到） */
+  nestedMessages: string[]
   setState: (state: PageState) => void
+  /** 触发 pagehide（帧内导航离开当前文档） */
+  leaveDocument: () => void
 }
 
 const script = readFileSync(
@@ -22,10 +29,15 @@ const script = readFileSync(
 /** 帧身份申报（子 frame 解析出 `#root` 后必然先于其它消息到达一次）。 */
 const FRAME_REPORT = 'dsh://plugin-boot:frame'
 
+/** 文档离开申报（帧内导航前上报，宿主据此作废旧确认）。 */
+const FRAME_LEAVING = 'dsh://plugin-boot:leaving'
+
 function createHarness(initialState: PageState, options: BootHarnessOptions = {}): BootHarness {
   let state = initialState
   let mutationCallback = () => {}
   const messages: string[] = []
+  const nestedMessages: string[] = []
+  const pageHideListeners: (() => void)[] = []
 
   function textNodes() {
     if (state === 'splash') {
@@ -84,16 +96,37 @@ function createHarness(initialState: PageState, options: BootHarnessOptions = {}
     disconnect() {}
   }
 
-  const top = {}
-  const window = {
-    top,
-    parent: {
-      postMessage(message: { type: string }) {
-        messages.push(message.type)
-      },
+  // 宿主直接内嵌的那一层 frame：window.parent 就是顶层文档（window.top）。
+  const top = {
+    postMessage(message: { type: string }) {
+      messages.push(message.type)
     },
-    addEventListener() {},
-    removeEventListener() {},
+  }
+  // dsh 应用内部嵌套的 iframe：消息只会到中间那一层，宿主收不到。
+  const nestedParent = {
+    postMessage(message: { type: string }) {
+      nestedMessages.push(message.type)
+    },
+  }
+  const window: {
+    top: unknown
+    parent: { postMessage: (message: { type: string }) => void }
+    addEventListener: (type: string, listener: () => void) => void
+    removeEventListener: (type: string, listener: () => void) => void
+  } = {
+    top,
+    parent: options.nestedFrame ? nestedParent : top,
+    addEventListener(type: string, listener: () => void) {
+      if (type === 'pagehide')
+        pageHideListeners.push(listener)
+    },
+    removeEventListener(type: string, listener: () => void) {
+      if (type !== 'pagehide')
+        return
+      const index = pageHideListeners.indexOf(listener)
+      if (index >= 0)
+        pageHideListeners.splice(index, 1)
+    },
   }
   if (options.topFrame)
     window.top = window
@@ -112,9 +145,14 @@ function createHarness(initialState: PageState, options: BootHarnessOptions = {}
 
   return {
     messages,
+    nestedMessages,
     setState(nextState) {
       state = nextState
       mutationCallback()
+    },
+    leaveDocument() {
+      for (const listener of [...pageHideListeners])
+        listener()
     },
   }
 }
@@ -198,6 +236,47 @@ describe('plugin boot bridge', () => {
     const harness = createHarness('normal', { topFrame: true })
 
     vi.advanceTimersByTime(60_000)
+    harness.leaveDocument()
+    expect(harness.messages).toEqual([])
+  })
+
+  // dsh 应用内部还会嵌套 iframe（插件面板等），它们既不是宿主那一层，也不代表宿主
+  // 换过文档；参与握手会让宿主的确认被无关帧的导航搅乱。
+  it('stays silent inside a frame nested in the dsh application', () => {
+    vi.useFakeTimers()
+    const harness = createHarness('splash', { nestedFrame: true })
+
+    vi.advanceTimersByTime(20_000)
+    harness.leaveDocument()
+    // splash 卡死确实会通知——但发给的是中间那一层 dsh 文档，宿主永远收不到握手消息
+    expect(harness.nestedMessages).toEqual(['dsh://plugin-boot:stalled'])
+    expect(harness.messages).toEqual([])
+  })
+
+  // issue #705 的另一半：帧内导航（整帧跳到远端登录/错误页）不换 iframe 元素，
+  // 自报过的文档必须在离开时主动作废宿主的确认，否则宿主会一直以为页面还在。
+  it('reports the document leaving after a frame-internal navigation', () => {
+    vi.useFakeTimers()
+    const harness = createHarness('splash')
+
+    vi.advanceTimersByTime(2_000)
+    harness.setState('normal')
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready'])
+
+    harness.leaveDocument()
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready', FRAME_LEAVING])
+
+    // 离开只申报一次：再次触发不重复打扰宿主
+    harness.leaveDocument()
+    expect(harness.messages).toEqual([FRAME_REPORT, 'dsh://plugin-boot:ready', FRAME_LEAVING])
+  })
+
+  it('never reports a document leaving when the frame never carried a dsh page', () => {
+    vi.useFakeTimers()
+    const harness = createHarness('mounting')
+
+    vi.advanceTimersByTime(10_000)
+    harness.leaveDocument()
     expect(harness.messages).toEqual([])
   })
 })

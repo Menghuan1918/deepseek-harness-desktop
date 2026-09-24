@@ -100,13 +100,14 @@ export const harness = defineStore({
     iframeLoaded: false,
     iframeError: false,
     /**
-     * 帧内已确认承载 dsh 文档（收到任一帧内桥消息）。
+     * 已确认承载 dsh 文档的 iframe 代（`iframeKey`）。
      *
      * iframe 的 load 事件不足以证明页面加载成功：浏览器内部错误页（代理拦截、
      * DNS 失败等）同样触发 load，且永远不会发出帧内消息（issue #705）。因此页面
-     * 是否真的起来，只以「帧内自报」为准，load 只用来把判定窗口收紧。
+     * 是否真的起来只以「帧内自报」为准，并把确认绑定到具体那一代 iframe——重挂
+     * 之后旧文档的迟到消息不能替新文档背书。
      */
-    iframeAlive: false,
+    iframeAliveKey: null as number | null,
     iframeKey: 0,
     serviceHealthy: false,
     serviceRunning: false,
@@ -122,6 +123,10 @@ export const harness = defineStore({
     /** 服务健康但 iframe 加载失败：页面覆盖层展示重试入口 */
     showIframeError(): boolean {
       return this.serviceHealthy && this.iframeError
+    },
+    /** 当前这一代 iframe 是否已自报承载 dsh 文档（重挂即失效，见 `iframeAliveKey`） */
+    iframeAlive(): boolean {
+      return this.iframeAliveKey === this.iframeKey
     },
     /**
      * 内嵌页面加载失败的补充说明：服务已就绪却没有任何帧内消息，说明帧里根本没
@@ -211,7 +216,7 @@ export const harness = defineStore({
       this.serviceHealthy = false
       this.iframeLoaded = false
       this.iframeError = false
-      this.iframeAlive = false
+      this.iframeAliveKey = null
       this.fail(message)
 
       const error = await attachStartupDiagnostics(new Error(message), true)
@@ -264,7 +269,7 @@ export const harness = defineStore({
     refreshIframe() {
       this.iframeLoaded = false
       this.iframeError = false
-      this.iframeAlive = false
+      this.iframeAliveKey = null
       if (iframeRefreshTimer !== undefined) {
         clearTimeout(iframeRefreshTimer)
       }
@@ -287,7 +292,19 @@ export const harness = defineStore({
 
     /** 帧内任一桥消息到达：确认帧里确实跑着 dsh 页面（load 事件不算数，见 state 注释） */
     markIframeAlive() {
-      this.iframeAlive = true
+      this.iframeAliveKey = this.iframeKey
+    },
+
+    /**
+     * 帧内文档开始离开（pagehide）：旧确认立即作废。
+     *
+     * 帧内导航（dsh 页面把整帧跳到远端登录/错误页）不换 iframe 元素，只靠代绑定
+     * 抓不到；新文档要么自己重新自报，要么在宽限窗内被判成「帧里没有 dsh 页面」。
+     * 同时撤回 load 结论：这一代已经没有任何已加载的文档了。
+     */
+    markIframeLeaving() {
+      this.iframeAliveKey = null
+      this.iframeLoaded = false
     },
 
     markIframeBootReady() {
@@ -441,7 +458,7 @@ export const harness = defineStore({
       this.serviceHealthy = false
       this.iframeLoaded = false
       this.iframeError = false
-      this.iframeAlive = false
+      this.iframeAliveKey = null
       this.startupPhase = 'process-boot'
       this.startupReason = i18next.t('status.loading_process')
       try {
@@ -512,7 +529,7 @@ export const harness = defineStore({
       this.serviceHealthy = false
       this.iframeLoaded = false
       this.iframeError = false
-      this.iframeAlive = false
+      this.iframeAliveKey = null
       // 重新启动/进入启动流程时先退出上一轮的错误与修复态（重启可能由插件修复、
       // 配置切换触发），避免旧的「启动失败 / Preview」等信息在启动期间闪现。
       // 注意：保留 attempts 计数，连续失败仍能命中「频繁失败」提示。
@@ -845,8 +862,8 @@ export const harness = defineStore({
 // 当成加载成功——壳层既不给重试入口也不报错，用户只能重启电脑（issue #705）。
 let iframeWatch: { loaded: boolean, timer: ReturnType<typeof setTimeout> } | null = null
 harness.$subscribe(() => {
-  const { status, serviceHealthy, iframeLoaded, iframeAlive, iframeError } = harness.$state
-  const watching = status === 'ready' && serviceHealthy && !iframeAlive && !iframeError
+  const { status, serviceHealthy, iframeLoaded, iframeError } = harness.$state
+  const watching = status === 'ready' && serviceHealthy && !harness.iframeAlive && !iframeError
   if (!watching) {
     if (iframeWatch) {
       clearTimeout(iframeWatch.timer)

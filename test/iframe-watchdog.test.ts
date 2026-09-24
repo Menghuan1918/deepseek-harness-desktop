@@ -31,7 +31,7 @@ async function mountIframe(overrides: Record<string, unknown> = {}) {
     serviceRunning: true,
     iframeLoaded: false,
     iframeError: false,
-    iframeAlive: false,
+    iframeAliveKey: null,
     busyAction: null,
     ...overrides,
   })
@@ -85,13 +85,16 @@ describe('iframe dsh document watchdog', () => {
   it('never shows the error screen while the frame reports a live dsh page', async () => {
     await mountIframe()
     harness.markIframeAlive()
+    await vi.advanceTimersByTimeAsync(0)
 
     await vi.advanceTimersByTimeAsync(IFRAME_LOAD_TIMEOUT + IFRAME_FRAME_GRACE_TIMEOUT)
     expect(harness.iframeError).toBe(false)
   })
 
   it('requires a fresh frame report after the retry remounts the iframe', async () => {
-    await mountIframe({ iframeAlive: true, iframeLoaded: true })
+    await mountIframe({ iframeLoaded: true })
+    harness.markIframeAlive()
+    await vi.advanceTimersByTimeAsync(0)
 
     harness.refreshIframe()
     await vi.advanceTimersByTimeAsync(0)
@@ -101,6 +104,55 @@ describe('iframe dsh document watchdog', () => {
     await mountIframe({ iframeLoaded: true })
     await vi.advanceTimersByTimeAsync(IFRAME_FRAME_GRACE_TIMEOUT)
     expect(harness.iframeError).toBe(true)
+  })
+
+  // 上一代文档在重挂窗口（refreshIframe 的 800ms）里发出的迟到消息不能替新文档背书。
+  it('ignores a late frame report that belongs to the previous iframe generation', async () => {
+    await mountIframe({ iframeLoaded: true })
+    harness.markIframeAlive()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.iframeAlive).toBe(true)
+
+    harness.refreshIframe()
+    harness.markIframeAlive()
+    await vi.advanceTimersByTimeAsync(800)
+
+    // 新文档提交（浏览器错误页同样会触发 load），但整代下来只有上一代的迟到自报
+    harness.markIframeLoaded()
+    await vi.advanceTimersByTimeAsync(IFRAME_FRAME_GRACE_TIMEOUT)
+
+    expect(harness.iframeAlive).toBe(false)
+    expect(harness.iframeError).toBe(true)
+  })
+
+  // 帧内导航（整帧跳到远端登录/错误页）不换 iframe 元素：自报过的文档离开后必须重新确认。
+  it('requires a fresh frame report after the frame document navigates away', async () => {
+    await mountIframe()
+    harness.markIframeAlive()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.iframeAlive).toBe(true)
+
+    harness.markIframeLeaving()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.iframeAlive).toBe(false)
+    expect(harness.iframeLoaded).toBe(false)
+
+    // 新文档再没自报（远端页面加载失败）→ 整体加载上限内给出可重试界面
+    await vi.advanceTimersByTimeAsync(IFRAME_LOAD_TIMEOUT)
+    expect(harness.iframeError).toBe(true)
+  })
+
+  it('keeps the frame alive again when the next document reports itself', async () => {
+    await mountIframe({ iframeLoaded: true })
+    harness.markIframeAlive()
+    harness.markIframeLeaving()
+    await vi.advanceTimersByTimeAsync(0)
+
+    harness.markIframeAlive()
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(IFRAME_LOAD_TIMEOUT + IFRAME_FRAME_GRACE_TIMEOUT)
+    expect(harness.iframeError).toBe(false)
   })
 
   it('explains the failure only when the frame never reported a dsh page', async () => {
