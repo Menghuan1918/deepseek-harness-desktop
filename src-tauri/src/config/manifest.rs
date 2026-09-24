@@ -318,9 +318,23 @@ impl EntrySpec {
 /// Tauri 2 在 Windows 上 `resource_dir()` 恒等于 exe 所在目录，安装包与开发产物
 /// 都会把资源按 `resources/**` 前缀落盘到 `{resource_dir}/resources/` 子目录，
 /// 因此实际资源根可能是该子目录；两处都探测不到时回落到资源目录本身。
+///
+/// 返回前统一剥离 Windows 扩展长度前缀：`resource_dir()` 取自
+/// `tauri_utils::platform::current_exe()`（内部对 exe 路径做了 canonicalize），
+/// 在 Windows 上带 `\\?\` verbatim 前缀。该前缀会随依赖托管根（`$Resources/dsh`
+/// 等）拼进入口路径，而随包内核的入口要交给 node 当主模块：node 的
+/// `resolveMainPath` 解析 verbatim 路径会直接以
+/// `EISDIR: illegal operation on a directory, lstat 'C:'` 退出（Node 25 实测），
+/// 随包核心因此永远起不来。CLI shim 也会把这个前缀写进 `.cmd`，同样要归一化。
 pub fn resource_root<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     let dir = app.path().resource_dir().ok()?;
-    Some(pick_resource_root(&dir).unwrap_or(dir))
+    Some(simplify_resource_root(pick_resource_root(&dir).unwrap_or(dir)))
+}
+
+/// 归一化资源根：`dunce::simplified` 剥掉 Windows 的 `\\?\` 前缀（非 Windows 为 no-op），
+/// 不改动文件系统、也不要求路径存在。
+fn simplify_resource_root(path: PathBuf) -> PathBuf {
+    dunce::simplified(&path).to_path_buf()
 }
 
 /// 资源根探测顺序：扁平布局（exe 同级）优先，再 `resources/` 子目录布局。
@@ -738,6 +752,23 @@ mod tests {
         assert_eq!(pick_resource_root(&dir), Some(dir.clone()));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 随包资源构建（离线包）会把核心托管根指向 `$Resources/dsh`，该路径会作为
+    /// node 的主模块参数。`resource_dir()` 在 Windows 上是 canonicalize 结果（带
+    /// `\\?\`），而 node 的 resolveMainPath 解析 verbatim 路径会直接以
+    /// `EISDIR: ... lstat 'C:'` 退出，因此资源根必须先归一化。
+    #[test]
+    fn resource_root_simplifies_windows_verbatim_prefix() {
+        let verbatim = PathBuf::from(r"\\?\C:\app\resources\dsh");
+        let simplified = simplify_resource_root(verbatim);
+        if cfg!(windows) {
+            assert_eq!(simplified, PathBuf::from(r"C:\app\resources\dsh"));
+            assert!(!simplified.to_string_lossy().starts_with(r"\\?\"));
+        } else {
+            // 非 Windows 上 dunce::simplified 是 no-op，路径原样保留
+            assert_eq!(simplified, PathBuf::from(r"\\?\C:\app\resources\dsh"));
+        }
     }
 
     #[test]
