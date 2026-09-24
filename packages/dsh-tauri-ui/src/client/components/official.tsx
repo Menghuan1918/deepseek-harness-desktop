@@ -43,7 +43,6 @@ export {
   MarkdownText,
   Menu,
   Modal,
-  OnboardingSurface,
   Pill,
   projectUserText,
   rankByName,
