@@ -93,6 +93,11 @@ runs:
 
         # 刻意不用关联数组：macOS runner 的 /bin/bash 是 3.2（`declare -A` 需要 bash 4），
         # 而 `shell: bash` 会解析到它，用了会让 macOS 离线包构建在下载前就失败。
+        # 资产表先落到变量再解析：`while ... < <(node ...)` 里脚本失败不会让步骤失败，
+        # 只会得到一张空表，最后以「变量未设置」这种看不出原因的报错收场。
+        assets="$(node scripts/bundle-metadata.mjs --assets --platform "$PLATFORM" --arch "$ARCH" $git_flag)"
+        [ -n "$assets" ] || { echo "::error::failed to resolve bundle assets"; exit 1; }
+
         while IFS='|' read -r key name url sha sha_url; do
           [ -n "${key:-}" ] || continue
           case "$key" in
@@ -101,7 +106,7 @@ runs:
             pnpm) pnpm_name="$name"; pnpm_url="$url"; pnpm_sha="$sha" ;;
             git) git_name="$name"; git_url="$url"; git_sha="$sha" ;;
           esac
-        done < <(node scripts/bundle-metadata.mjs --assets --platform "$PLATFORM" --arch "$ARCH" $git_flag)
+        done <<< "$assets"
 
         # Node.js 运行时：摘要取自官方 SHASUMS256.txt，与 assets 同源同版本。
         fetch "$node_url" "${workdir}/${node_name}"
@@ -154,19 +159,25 @@ runs:
         trap 'rm -rf "$workdir"' EXIT
 
         extract() {
-          local archive="$1" dest="$2"
-          mkdir -p "$dest"
-          case "$archive" in
+          # 归档先取绝对路径：解压要在目标目录里执行（`cd "$out"`），
+          # 相对路径在那之后就失效了。局部变量刻意不复用调用方的名字：
+          # bash 是动态作用域，被调用方 `read` 到同名变量会写回调用方的局部变量
+          # （`flatten` 里的 `read` 一旦 EOF 就会把它清空）。
+          local src out
+          src="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+          out="$2"
+          mkdir -p "$out"
+          case "$src" in
             *.zip)
               # Windows 的 Git Bash 不一定带 unzip；Windows 10+ 自带的 bsdtar 能解 zip。
               if command -v unzip >/dev/null 2>&1; then
-                (cd "$dest" && unzip -q "$archive")
+                (cd "$out" && unzip -q "$src")
               else
-                (cd "$dest" && tar -xf "$archive")
+                (cd "$out" && tar -xf "$src")
               fi
               ;;
             *)
-              (cd "$dest" && tar -xzf "$archive")
+              (cd "$out" && tar -xzf "$src")
               ;;
           esac
         }
@@ -174,8 +185,8 @@ runs:
         # 与 Rust `download::utils::flatten_directory` 一致：解压结果只有唯一一层
         # 子目录时把内容上提，保证运行时根就是预期的那一层。
         flatten() {
-          local dir="$1" entries=()
-          while IFS= read -r entry; do entries+=("$entry"); done < <(find "$dir" -mindepth 1 -maxdepth 1)
+          local dir="$1" entries=() child
+          while IFS= read -r child; do entries+=("$child"); done < <(find "$dir" -mindepth 1 -maxdepth 1)
           if [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ]; then
             shopt -s dotglob
             mv "${entries[0]}"/* "$dir"/
@@ -199,6 +210,11 @@ runs:
           echo "${key} archive unpacks to ${entry}"
         }
 
+        # 资产表先落到变量再解析（理由同第一步）：脚本失败必须让步骤失败，
+        # 而不是解析出一张空表、一个入口都不检查就通过。
+        assets="$(node scripts/bundle-metadata.mjs --assets --platform "$PLATFORM" --arch "$ARCH" $git_flag)"
+        [ -n "$assets" ] || { echo "::error::failed to resolve bundle assets"; exit 1; }
+
         while IFS='|' read -r key name url sha sha_url; do
           [ -n "${key:-}" ] || continue
           archive="src-tauri/resources/${name}"
@@ -214,7 +230,7 @@ runs:
             *) echo "::error::unknown bundled key ${key}"; exit 1 ;;
           esac
           check_entry "$key" "$archive" "$entry"
-        done < <(node scripts/bundle-metadata.mjs --assets --platform "$PLATFORM" --arch "$ARCH" $git_flag)
+        done <<< "$assets"
 
         # 解压后的运行时树不得进安装包：那正是这次要消掉的体积。
         for legacy in node pnpm dsh git; do
