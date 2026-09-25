@@ -74,14 +74,12 @@ fn read_manifest_dsh_version(dir: &Path) -> Option<String> {
 /// tags（无 label，预览标记按 tag 命名兜底），再失败降级为磁盘扫描，只列出
 /// 本地、激活与已下载的历史版本。
 pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
-    let (release_metas, remote_catalog_available) = fetch_release_catalog(app_handle).await;
+    let (release_metas, remote_catalog_available) = fetch_release_catalog().await;
     rows_with_release_catalog(app_handle, release_metas, remote_catalog_available)
 }
 
 /// 版本行数据源：GitHub releases → git tags → 空（离线/限流时调用方降级为磁盘扫描）。
-async fn fetch_release_catalog(
-    app_handle: &AppHandle,
-) -> (Vec<download::DshPkgReleaseMeta>, bool) {
+async fn fetch_release_catalog() -> (Vec<download::DshPkgReleaseMeta>, bool) {
     match download::fetch_dsh_pkg_releases().await {
         Ok(metas) => (metas, true),
         Err(e) => {
