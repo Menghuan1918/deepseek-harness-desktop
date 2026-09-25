@@ -57,6 +57,7 @@ pub(super) fn find_user_dsh_bin(app_handle: &AppHandle) -> Option<PathBuf> {
         let mut dirs = path_dirs;
         if let Ok(home) = app_handle.path().home_dir() {
             dirs.push(home.join(".local").join("bin"));
+            append_unix_dsh_dirs(&mut dirs, &home);
         }
         #[cfg(target_os = "macos")]
         dirs.extend([
@@ -93,6 +94,78 @@ fn scan_dirs_for_user_dsh(dirs: &[PathBuf], candidates: &[&str]) -> Option<PathB
         }
     }
     None
+}
+
+/// Unix GUI 进程的 PATH 可能早于用户安装（且 nvm/volta/asdf/fnm 等版本管理器
+/// 只把 node 目录注入 shell 内 PATH，桌面菜单/自启的 GUI 进程看不到），补充这些
+/// 工具的标准用户目录。
+///
+/// 覆盖的布局（issue #302 只修了 Windows，Unix 侧漏检，见 issue #229 / #443）：
+/// - nvm：`~/.nvm/versions/node/<version>/bin`；
+/// - volta：`~/.volta/bin`；
+/// - asdf：`~/.asdf/shims`；
+/// - fnm：`~/.local/share/fnm/node-versions/<version>/installation/bin`。
+///
+/// 只补充能确定存在的绝对目录，且按顺序去重。继承 PATH 仍优先。
+#[cfg(unix)]
+fn append_unix_dsh_dirs(dirs: &mut Vec<PathBuf>, home: &Path) {
+    let mut append = |dir: PathBuf| {
+        if dir.is_absolute() && dir.is_dir() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    };
+
+    append(home.join(".volta").join("bin"));
+    append(home.join(".asdf").join("shims"));
+
+    append_version_dirs(
+        &mut append,
+        &home.join(".nvm").join("versions").join("node"),
+    );
+    append_version_dirs(
+        &mut append,
+        &home
+            .join(".local")
+            .join("share")
+            .join("fnm")
+            .join("node-versions"),
+    );
+}
+
+/// 遍历 `<root>/<version>/` 形态的版本目录，把各版本下的 `bin` 目录追加进去。
+///
+/// 按语义化版本**降序**（较新版本先被扫描到，多版本并存时优先命中新装的 dsh）；
+/// 版本名无法解析时排在其后，仍保证不漏检。目录缺失或不可读时静默跳过——
+/// 探测失败不应阻断启动。
+#[cfg(unix)]
+fn append_version_dirs(append: &mut impl FnMut(PathBuf), root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut versions: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    versions.sort_by_key(|dir| std::cmp::Reverse(version_key(dir)));
+    for version in versions {
+        // nvm：`<version>/bin`；fnm：`<version>/installation/bin` 与 `<version>/bin`
+        append(version.join("bin"));
+        append(version.join("installation").join("bin"));
+    }
+}
+
+/// 版本目录名的排序键：解析为 `(semver, 原名)`，解析失败时 semver 视为最小，
+/// 从而排在所有可解析版本之后（`Option<Version>` 的 `Ord` 已满足该语义）。
+#[cfg(unix)]
+fn version_key(dir: &Path) -> (Option<semver::Version>, String) {
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let parsed = semver::Version::parse(name.trim_start_matches('v')).ok();
+    (parsed, name)
 }
 
 /// Windows GUI 进程的 PATH 可能早于用户安装（且 fnm 等版本管理器只把 node 目录
@@ -538,5 +611,88 @@ mod tests {
         let candidates = prefix_candidates(&bin);
         assert!(candidates.contains(&root));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// issue #229 / #443：nvm 全局安装的 `dsh` 必须被发现——GUI 进程拿不到
+    /// nvm 注入的 PATH，旧逻辑只补 `~/.local/bin`，导致 Unix 侧漏检。
+    /// 多版本并存时较新的版本目录必须先于较旧的被扫描到。
+    #[cfg(unix)]
+    #[test]
+    fn append_unix_dirs_finds_nvm_version_bins_newest_first() {
+        let home = temp_dir("unix-nvm");
+        let older = home.join(".nvm/versions/node/v22.19.0/bin");
+        let newer = home.join(".nvm/versions/node/v24.19.0/bin");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::create_dir_all(&newer).unwrap();
+
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        append_unix_dsh_dirs(&mut dirs, &home);
+
+        let newer_pos = dirs.iter().position(|d| d == &newer);
+        let older_pos = dirs.iter().position(|d| d == &older);
+        assert!(newer_pos.is_some(), "较新版本 bin 未纳入: {dirs:?}");
+        assert!(older_pos.is_some(), "较旧版本 bin 未纳入: {dirs:?}");
+        assert!(newer_pos < older_pos, "较新版本应先于较旧版本: {dirs:?}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// volta / asdf 的标准目录同样纳入；不存在的目录不得被追加（避免无谓 stat）。
+    #[cfg(unix)]
+    #[test]
+    fn append_unix_dirs_covers_volta_asdf_and_skips_missing() {
+        let home = temp_dir("unix-managers");
+        let volta = home.join(".volta/bin");
+        let asdf = home.join(".asdf/shims");
+        std::fs::create_dir_all(&volta).unwrap();
+        std::fs::create_dir_all(&asdf).unwrap();
+
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        append_unix_dsh_dirs(&mut dirs, &home);
+
+        assert!(dirs.contains(&volta), "volta bin 未纳入: {dirs:?}");
+        assert!(dirs.contains(&asdf), "asdf shims 未纳入: {dirs:?}");
+        assert!(
+            !dirs.iter().any(|d| d.ends_with("node-versions")),
+            "不应追加不存在的根目录"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// fnm（Unix 布局）的 `<version>/installation/bin` 也要能定位到。
+    #[cfg(unix)]
+    #[test]
+    fn append_unix_dirs_finds_fnm_installation_bin() {
+        let home = temp_dir("unix-fnm");
+        let installation = home.join(".local/share/fnm/node-versions/v24.19.0/installation/bin");
+        std::fs::create_dir_all(&installation).unwrap();
+
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        append_unix_dsh_dirs(&mut dirs, &home);
+
+        assert!(
+            dirs.contains(&installation),
+            "fnm installation bin 未纳入: {dirs:?}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 版本排序必须按语义而非字符串：`v9.0.0` 字符串序在 `v24.0.0` 之前，但语义上
+    /// 更旧，必须排在后面——否则多版本并存时会优先命中旧版本的 dsh。
+    #[cfg(unix)]
+    #[test]
+    fn append_version_dirs_orders_semantically_not_lexically() {
+        let home = temp_dir("unix-semver-order");
+        let newer = home.join(".nvm/versions/node/v24.0.0/bin");
+        let older = home.join(".nvm/versions/node/v9.0.0/bin");
+        std::fs::create_dir_all(&newer).unwrap();
+        std::fs::create_dir_all(&older).unwrap();
+
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        append_unix_dsh_dirs(&mut dirs, &home);
+
+        let newer_pos = dirs.iter().position(|d| d == &newer).unwrap();
+        let older_pos = dirs.iter().position(|d| d == &older).unwrap();
+        assert!(newer_pos < older_pos, "v24 应排在 v9 之前: {dirs:?}");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
