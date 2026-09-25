@@ -309,13 +309,15 @@ async fn install_with_cancel(
         // 区分 git 传输层失败与 allowBuilds 构建门禁：前者是 pnpm 走了 git+ssh
         // （用户环境无 SSH 配置），后者才是补充白名单可自愈的。传输层错误给出
         // 可读指引，避免用户被 dsh 那条 allowBuilds 提示误导。
-        let network_error = network_error_hint(&last_output).is_some()
-            // 供应链校验的误判只在最后一次尝试的输出里判：拼接串会让早先一次的网络字样
-            // 给真·违规「背书」，把本该如实上报的供应链信号降级成网络问题。
+        //
+        // 分类一律只读**最后一次尝试**的输出：`last_output` 是历次 allowBuilds 重试的
+        // 拼接串，早先一次的网络字样（`fetch failed`/`econnreset` 等）会给最终一次的真·
+        // 发布时间违规「背书」，把失败原因整体归错。拼接串仍只用于日志与用户可见的诊断文本。
+        let network_error = network_error_hint(&last_attempt).is_some()
             || policy_verification_network_failure(&last_attempt)
-            || (exit_code == 3 && last_output.trim().is_empty());
-        let hint = git_transport_hint(&last_output);
-        let store_hint = store_mismatch_hint(&last_output);
+            || (exit_code == 3 && last_attempt.trim().is_empty());
+        let hint = git_transport_hint(&last_attempt);
+        let store_hint = store_mismatch_hint(&last_attempt);
         let network_hint = network_error.then_some(
             "NETWORK_ERROR: plugin registry request failed; check network or proxy settings and retry.",
         );
@@ -583,6 +585,10 @@ async fn run_plugin_install_with_transient_retry(
 /// 直接 `tokio::time::sleep` 会让取消最多等到退避结束（供应链校验 30s、瞬时文件系统
 /// 64s）：用户点了取消，安装却还在转圈。每轮尝试前另有取消检查兜底，这里只负责不让
 /// 退避本身成为最长的一段等待。
+///
+/// 只有值变成 `true` 才算取消：`watch` 的任何一次写入都会唤醒 `changed()`，包括写入
+/// `false` 与发送端被 drop（`changed()` 返回 `Err`）——那些情况必须继续等满退避，否则
+/// 一次无关的唤醒就能让重试提前发生，退避形同虚设。
 async fn sleep_or_cancelled(
     delay: std::time::Duration,
     cancel: Option<&tokio::sync::watch::Receiver<bool>>,
@@ -591,13 +597,31 @@ async fn sleep_or_cancelled(
         tokio::time::sleep(delay).await;
         return false;
     };
-    // `watch::Receiver` 的 `changed` 需要 &mut，克隆一个专用于等待（发送端只 drop
-    // 一次就会让 `changed` 返回 Err，那时按「未取消」处理——退避结束照常继续）。
+    // 两个副本分工：`signal` 只用于等待变更（`changed` 需要 &mut），`probe` 只用于读值，
+    // 免得 select 的处理分支里同时借可变与不可变。
     let mut signal = signal.clone();
-    tokio::select! {
-        _ = tokio::time::sleep(delay) => false,
-        changed = signal.changed() => changed.is_ok() && *signal.borrow(),
+    let probe = signal.clone();
+    if *probe.borrow() {
+        return true;
     }
+    let timer = tokio::time::sleep(delay);
+    tokio::pin!(timer);
+    loop {
+        tokio::select! {
+            _ = &mut timer => return false,
+            changed = signal.changed() => {
+                if *probe.borrow() {
+                    return true;
+                }
+                if changed.is_err() {
+                    // 发送端已 drop：值不可能再变 true，跳出后等满退避如实返回。
+                    break;
+                }
+            }
+        }
+    }
+    timer.await;
+    false
 }
 
 /// 判断 `dsh plugin` 失败是否为「刚重建的链接被立即回读」的瞬时文件系统错误。
@@ -737,5 +761,29 @@ mod tests {
         assert!(!sleep_or_cancelled(std::time::Duration::from_millis(10), Some(&rx)).await);
         // 没有取消通道（单插件路径传 None）→ 等价于普通 sleep
         assert!(!sleep_or_cancelled(std::time::Duration::from_millis(10), None).await);
+    }
+
+    #[tokio::test]
+    async fn sleep_or_cancelled_ignores_false_updates_during_the_wait() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let started = std::time::Instant::now();
+        // 等待期间两次写入 false：`watch` 的每次写入都会唤醒 `changed()`，若把它当成
+        // 「已取消/已结束」，退避会被缩短到 40ms 左右。
+        let wait = sleep_or_cancelled(std::time::Duration::from_millis(150), Some(&rx));
+        let noise = async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = tx.send(false);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = tx.send(false);
+        };
+
+        let (cancelled, ()) = tokio::join!(wait, noise);
+
+        assert!(!cancelled);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(120),
+            "false 唤醒不得缩短退避，实际等了 {:?}",
+            started.elapsed()
+        );
     }
 }

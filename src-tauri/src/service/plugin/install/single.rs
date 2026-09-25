@@ -342,19 +342,21 @@ async fn run_single_plugin_command(
     if exit_code != 0 {
         log::error!("dsh plugin {action} failed for {id} with exit code {exit_code}");
         // lockfile 供应链校验因 registry 元数据拉取失败而误判违规时，对用户而言就是
-        // 网络问题：给「检查网络后重试」而不是一条看不懂的供应链违规。判定只看最后
-        // 一次尝试的输出——历次拼接会让早先一次的网络字样给真·违规「背书」。
-        let network_error = network_error_hint(&output).is_some()
+        // 网络问题：给「检查网络后重试」而不是一条看不懂的供应链违规。分类只看最后
+        // 一次尝试的输出——历次拼接会让早先一次的网络字样给真·违规「背书」；拼接串
+        // 仍用于用户可见的诊断文本。
+        let hint = git_transport_hint(&last_attempt);
+        let network_error = network_error_hint(&last_attempt).is_some()
             || policy_verification_network_failure(&last_attempt)
-            || (exit_code == 3 && output.trim().is_empty());
-        let store_hint = store_mismatch_hint(&output);
+            || (exit_code == 3 && last_attempt.trim().is_empty());
+        let store_hint = store_mismatch_hint(&last_attempt);
         let message = if network_error {
             "NETWORK_ERROR: plugin registry request failed; check network or proxy settings and retry."
                 .to_string()
         } else if let Some(store_hint) = store_hint.as_deref() {
             store_hint.to_string()
         } else {
-            pick_error_message(&output, git_transport_hint(&output))
+            pick_error_message(&output, hint)
         };
         if let Err(e) = errors::record(app_handle, id, action, &message) {
             log::warn!("failed to record plugin error for {id}: {e}");
