@@ -1,5 +1,6 @@
 import type { PropsWithOverlays } from '@overlastic/react'
-import { AlertDialog, Button, InputGroup, Label, Link, TextField } from '@heroui/react'
+import { TriangleExclamationFill } from '@gravity-ui/icons'
+import { AlertDialog, Button, Chip, InputGroup, Label, TextField } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -69,9 +70,10 @@ export function CoreUpgradeProfileDialog(props: CoreUpgradeProfileDialogProps) {
               </TextField>
             </AlertDialog.Body>
             <AlertDialog.Footer className="justify-end">
-              <Link className="text-warning" onPress={() => disclosure.confirm({ mode: 'ignore' })}>
+              <Chip className="rounded-md cursor-pointer" color="warning" variant="soft" onClick={() => disclosure.confirm({ mode: 'ignore' })}>
+                <TriangleExclamationFill width={12} />
                 {t('core.breaking_ignore')}
-              </Link>
+              </Chip>
               <div className="flex flex-row items-center gap-2">
                 <Button className="rounded-md" variant="tertiary" onPress={disclosure.cancel}>
                   {t('buttons.cancel')}

@@ -171,6 +171,15 @@ describe('更新提示入口（桌面外壳 / 调试页）走同一守卫', () =
     expect(source).toMatch(/return false/)
     expect(source).toMatch(/return true/)
   })
+
+  it('已落盘的新版本即使随后启动失败也不报「没切换」（否则会回滚出旧档案配新核心）', () => {
+    const source = updaterSource()
+
+    // 安装结果记在 try 之外，catch 里回传它而不是一律 false
+    expect(source).toMatch(/let installed = false/)
+    expect(source).toMatch(/installed = changed/)
+    expect(source).toMatch(/catch \(err\) \{[\s\S]*?return installed/)
+  })
 })
 
 describe('警告对话框控件', () => {
@@ -188,7 +197,7 @@ describe('警告对话框控件', () => {
     expect(source).not.toMatch(/<Input[\s>]/)
   })
 
-  it('「无视风险切换」用 HeroUI Link，且与取消/确认按钮同处一行的 footer', () => {
+  it('「无视风险切换」是 warning Chip，与取消/确认按钮同处一行的 footer', () => {
     const source = dialogSource()
     const footerStart = source.indexOf('<AlertDialog.Footer')
     const footerEnd = source.indexOf('</AlertDialog.Footer>')
@@ -197,8 +206,9 @@ describe('警告对话框控件', () => {
     expect(footerEnd).toBeGreaterThan(footerStart)
 
     const footer = source.slice(footerStart, footerEnd)
-    expect(source).toMatch(/import \{[^}]+Link[^}]*\} from '@heroui\/react'/)
-    expect(footer).toMatch(/<Link[\s>]/)
+    expect(source).toMatch(/import \{[^}]+Chip[^}]*\} from '@heroui\/react'/)
+    expect(footer).toMatch(/<Chip[\s>]/)
+    expect(footer).toMatch(/color="warning"/)
     expect(footer).toContain('core.breaking_ignore')
     expect(footer).toMatch(/disclosure\.confirm\(\{ mode: 'ignore' \}\)/)
     expect(footer).toContain('buttons.cancel')
