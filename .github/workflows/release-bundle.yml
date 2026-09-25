@@ -9,8 +9,11 @@ name: Build & Release (Offline Bundle)
 # 手动触发有两条路：
 # - 留空 `tag`：试跑。构建当前 ref，发一个 `test-<ref>-<run>` 测试预发布，不碰任何
 #   已发布的 release（与 release.yml 的手动触发约定一致）。
-# - 指定 `tag`：为已有 release 补构建。必须**从该 tag 指向的提交**触发（ref 选对应
-#   tag），因为构建源恒为触发提交，而产物是 `--clobber` 上传的。
+# - 指定 `tag`：为已有 release 补构建。构建源是该 tag 指向的提交，为避免用触发 ref 的
+#   构建脚本（以及密钥）去签出发布提交，必须**从该 tag 的 ref 触发**。
+#
+# 自动路径（workflow_run）的构建源同理取自 tag：合并 release/* PR 时 release.yml 把 tag
+# 建在 merge commit 上，而触发运行的 head_sha 是 PR 分支的 head，两者不是同一个提交。
 on:
   workflow_run:
     workflows: ['Build & Release']
@@ -63,16 +66,16 @@ jobs:
       should_build: ${{ steps.release.outputs.should_build }}
       tag: ${{ steps.release.outputs.tag }}
       prerelease: ${{ steps.release.outputs.prerelease }}
-      version: ${{ steps.release.outputs.version }}
+      version: ${{ steps.meta.outputs.version }}
       source_ref: ${{ steps.release.outputs.source_ref }}
       dsh_tag: ${{ steps.meta.outputs.dsh_tag }}
     steps:
       - name: Checkout triggering commit
         uses: actions/checkout@v7
         with:
-          # 构建源恒为触发提交：workflow_run 用触发运行时的 head_sha（release.yml 真正
-          # 构建的提交），手动触发用所选 ref。真实发布路径下 tag 必须指向同一个提交
-          # （见 Resolve release tag），因此工作区、元数据、产物版本天然同源。
+          # 只用它推导默认 tag 与试跑路径的构建源：workflow_run 用触发运行时的 head_sha，
+          # 手动触发用所选 ref。合并 release/* PR 时这个 head_sha 只是 PR 分支的 head，
+          # 不是发布提交——真正的构建源按 tag 推导，见 Resolve release tag。
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
           # 不把仓库写令牌留在 .git/config 里（后续步骤不需要 push）。
@@ -87,11 +90,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
           RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           TAG_INPUT: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
-          SOURCE_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          TRIGGER_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
@@ -99,11 +103,13 @@ jobs:
           prerelease=false
           manual=false
           [ "$EVENT_NAME" = "workflow_dispatch" ] && manual=true
+          # 默认构建源是触发提交（试跑路径用它）；正式发布路径在下面改写成 tag 指向的提交。
+          source_ref="$TRIGGER_REF"
 
           emit() {
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
             echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
-            echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+            echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
             echo "version=$version" >> "$GITHUB_OUTPUT"
           }
           # 自动路径（workflow_run 为每一次成功运行都触发，含测试发布）只跳过并告警；
@@ -114,9 +120,12 @@ jobs:
             echo "::warning::$1"
             exit 0
           }
-          reject() {
-            echo "::error::$1"
-            exit 1
+          fail() {
+            if [ "$manual" = true ]; then
+              echo "::error::$1; dispatch this workflow from the $tag ref, or clear the tag input to publish a test prerelease instead"
+              exit 1
+            fi
+            skip "$1; skipping the offline bundle build"
           }
 
           if [ "$manual" = true ] && [ -z "$tag" ]; then
@@ -126,8 +135,15 @@ jobs:
             prerelease=true
             emit
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "offline bundle test release: $tag ($version) from $SOURCE_REF"
+            echo "offline bundle test release: $tag ($version) from $source_ref"
             exit 0
+          fi
+
+          # release.yml 的手动触发是试跑：它发的是 `test-<ref>-<run>` 预发布，tag 建在
+          # 默认分支上而不指向本次构建的提交；按版本号推导出的 `v<version>` 只可能命中
+          # 无关的旧发布。这类运行不参与自动打包，需要离线包时手动触发本 workflow。
+          if [ "$TRIGGER_EVENT" = "workflow_dispatch" ]; then
+            skip "the triggering Build & Release run is a manual test release, whose tag does not point at the commit it built; for a published release dispatch this workflow with its tag (from that tag's ref), or leave the tag input empty for a bundle test prerelease"
           fi
 
           if [ -z "$tag" ] && [[ "$RUN_HEAD_BRANCH" == v* ]]; then
@@ -140,33 +156,54 @@ jobs:
           gh release view "$tag" >/dev/null 2>&1 \
             || skip "release $tag does not exist, skipping the offline bundle build"
 
-          # 构建源恒为触发提交，而 finalize 是 `gh release upload --clobber`：必须确认
-          # 目标 release 的 tag 正好指向这个提交，否则就会用别的提交构建的产物覆盖该版本
-          # 已发布的离线包。tag 解析不到也算不安全——GitHub 会在 tag ref 被删除后保留
-          # release 记录，那时 `gh release view` 成功而 `git rev-parse` 失败。
+          # 构建源必须是 **tag 指向的提交**，而不是触发运行的 head_sha：合并 release/* PR 时
+          # release.yml 把 tag 建在 merge commit 上，而 workflow_run 的 head_sha 是 PR 分支的
+          # head——两者不是同一个提交，按 head_sha 构建会被下面的同源校验挡掉，正式发布因此
+          # 永远出不了离线包。tag 是 release 的权威来源，finalize 的
+          # `gh release upload --clobber` 也就只会覆盖同一个提交构建的产物。
+          #
+          # 解析不到时**不回退**到触发提交：GitHub 在 tag ref 被删除后仍保留 release 记录，
+          # 那时 `gh release view` 成功而解析失败，必须当作不安全。release 提交早于离线包
+          # 流水线时（同一版本号的旧 tag、试跑分支）同样只跳过并告警，不去构建一个没有
+          # `scripts/bundle-metadata.mjs` 的提交。
           tag_commit="$(git rev-parse --verify --quiet "${tag}^{commit}" || true)"
           if [ -z "$tag_commit" ]; then
-            hint="cannot resolve tag $tag locally"
-          elif [ "$tag_commit" != "$SOURCE_REF" ]; then
-            hint="tag $tag points at $tag_commit but this run builds $SOURCE_REF"
-          else
-            emit
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "offline bundle target release: $tag ($version) from $SOURCE_REF"
-            exit 0
+            fail "cannot resolve tag $tag locally"
+          elif ! git cat-file -e "${tag_commit}:scripts/bundle-metadata.mjs" 2>/dev/null; then
+            fail "tag $tag points at $tag_commit, which predates the offline bundle pipeline"
+          elif [ "$manual" = true ] && [ "$(git rev-parse HEAD)" != "$tag_commit" ]; then
+            fail "tag $tag points at $tag_commit but this run is dispatched from $(git rev-parse HEAD)"
           fi
 
-          if [ "$manual" = true ]; then
-            reject "$hint; dispatch this workflow from the release commit (pick the $tag tag as the ref), or clear the tag input to publish a test prerelease instead"
+          source_ref="$tag_commit"
+          emit
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "offline bundle target release: $tag ($version) from $source_ref"
+          if [ "$source_ref" != "$TRIGGER_REF" ]; then
+            echo "triggering head $TRIGGER_REF is not the release commit; building the tagged commit instead"
           fi
-          skip "$hint; skipping the offline bundle build"
+
+      # 构建源、元数据与产物版本必须来自同一个提交：上面按 tag 推导出的 source_ref 是发布
+      # 提交，而工作区此刻还停在触发 ref 上（合并 release/* PR 时两者不同）。这里重新签出
+      # 发布提交，后面的 `scripts/bundle-metadata.mjs` 与产物版本号都以它为准。
+      - name: Checkout release commit
+        if: steps.release.outputs.should_build == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve bundled core tag
         id: meta
         if: steps.release.outputs.should_build == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/bundle-metadata.mjs
+        run: |
+          set -euo pipefail
+          # 产物名里的版本号取自 release 提交，而不是触发 dispatch 的那个 ref。
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          node scripts/bundle-metadata.mjs
 
   build-macos:
     name: Build macOS Offline Bundle
