@@ -38,6 +38,7 @@ export interface BundleConstants {
 export type BundlePlatform = 'windows' | 'macos' | 'linux'
 export type BundleArch = 'x64' | 'arm64'
 
+export const BUNDLED_DIRS: Record<string, string>
 export const DSH_PKG_REPO: string
 
 export function stripJsonc(raw: string): string
@@ -63,11 +64,17 @@ export function bundleAssets(input: {
   arch: BundleArch
   constants: BundleConstants
   dshTag: string
-  /** 随包 MinGit（默认 false；Windows 且确实要随包 Git 时才需要） */
+  /** 随包 MinGit（默认 false；Windows 且清单未被改写时才需要） */
   withGit?: boolean
 }): BundleAssets
 
 export function toAssetTable(assets: BundleAssets): string
+
+export function applyBundleManifest(input: {
+  repo?: string
+  platform: BundlePlatform
+  withGit?: boolean
+}): { file: string, applied: string[] }
 
 export function findReleaseTag(releases: unknown, version: string): string
 

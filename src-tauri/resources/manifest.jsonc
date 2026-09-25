@@ -22,11 +22,10 @@
   "dependencies": {
     // 依赖映射规范：AppData 的 dependencies.json 只记录每个依赖的安装根
     // （null = 用系统环境）；入口相对路径与默认托管根以本表为准。
-    // managedRoot / 映射值支持两种形态：
+    // managedRoot / 映射值支持三种形态：
     //   $AppData/...    AppData 数据目录（debug 构建为 <base>/dev 的同级）
+    //   $Resources/...  安装包资源目录（`resources/...` 为等价旧写法）
     //   绝对路径         任意位置（如加载本地捆绑版内核）
-    // 随包资源（离线包）不再把解压产物放进安装目录：安装目录只留上游压缩包，
-    // 首次启动解压到本表声明的 AppData 托管根。
     "node": {
       "engine": ">=22.22.0",
       "entry": {
