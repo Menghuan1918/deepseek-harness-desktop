@@ -73,10 +73,9 @@
     return parts.join(' ')
   }
 
-  function post(level, message) {
+  function postPayload(level, message) {
     try {
-      var path = framePath()
-      var text = path && path !== '/' ? path + ' ' + message : message
+      var text = String(message)
       if (text.length > MAX_CHARS) text = text.slice(0, MAX_CHARS) + '…[truncated]'
       window.parent.postMessage({
         source: SOURCE,
@@ -87,7 +86,7 @@
     } catch (_) {}
   }
 
-  function send(level, message) {
+  function sendPayload(level, message) {
     var now = Date.now()
     if (now - windowStart >= LIMIT_WINDOW_MS) {
       windowStart = now
@@ -95,7 +94,7 @@
       if (suppressed > 0) {
         var dropped = suppressed
         suppressed = 0
-        post('warn', dropped + ' frame log entries suppressed')
+        postPayload('warn', dropped + ' frame log entries suppressed')
       }
     }
     if (sentInWindow >= MAX_PER_WINDOW) {
@@ -103,7 +102,12 @@
       return
     }
     sentInWindow += 1
-    post(level, message)
+    postPayload(level, message)
+  }
+
+  function send(level, message) {
+    var path = framePath()
+    sendPayload(level, path && path !== '/' ? path + ' ' + message : message)
   }
 
   function capture(level, original, args) {
@@ -142,13 +146,13 @@
 
   // dsh 应用内部还嵌套 iframe（插件面板等），它们的 postMessage 只会到中间那一层
   // 文档；这里逐层向上接力，接力链在「宿主直接内嵌的那一层」终止（顶层文档无本脚本）。
+  // 接力同样过本帧的限额与截断：子帧可以伪造 payload 反复直发，不设限就能灌满前台日志。
   window.addEventListener('message', function (event) {
     var data = event && event.data
     if (!data || typeof data !== 'object' || data.source !== SOURCE || data.type !== TYPE) return
     if (event.source === window.parent) return
     if (window.parent === window) return
-    try {
-      window.parent.postMessage(data, '*')
-    } catch (_) {}
+    if (typeof data.message !== 'string' || data.message === '') return
+    sendPayload(data.level === 'error' ? 'error' : 'warn', data.message)
   })
 })()

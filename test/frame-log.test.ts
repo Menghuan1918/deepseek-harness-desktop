@@ -216,6 +216,29 @@ describe('frame log bridge', () => {
     expect(harness.posts).toEqual([])
   })
 
+  it('limits relayed nested entries with the same budget', () => {
+    vi.useFakeTimers()
+    const harness = createHarness()
+
+    for (let index = 0; index < 25; index += 1) {
+      harness.fireMessage(
+        { source: 'dsh-frame-log-bridge', type: 'dsh://frame-log', level: 'error', message: `nested ${index}` },
+        {},
+      )
+    }
+
+    expect(harness.posts).toHaveLength(20)
+    expect(harness.posts[0].message).toBe('nested 0')
+  })
+
+  it('drops a relayed payload that carries no message text', () => {
+    const harness = createHarness()
+
+    harness.fireMessage({ source: 'dsh-frame-log-bridge', type: 'dsh://frame-log', level: 'error' }, {})
+
+    expect(harness.posts).toEqual([])
+  })
+
   it('limits a console.error storm and reports the suppressed count', () => {
     vi.useFakeTimers()
     const harness = createHarness()
