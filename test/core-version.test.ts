@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { coreMajorMinor, isCoreUnsupported, isCoreUpgrade, MIN_SUPPORTED_CORE_VERSION } from '@/utils/core-version'
+import { coreProfileName, isCoreUnsupported, isCoreUpgrade, MIN_SUPPORTED_CORE_VERSION } from '@/utils/core-version'
+import { normalizeProfileId } from '@/utils/profile-id'
 
 /**
  * issue #596：随包内置插件依赖的平台种子词自 dsh 0.1.5 起才存在，核心低于最低支持
@@ -37,22 +38,42 @@ describe('isCoreUnsupported', () => {
   })
 })
 
-describe('coreMajorMinor', () => {
-  it('只取主/次版本号，丢掉 patch 与预发布标识', () => {
-    expect(coreMajorMinor('0.17.1')).toBe('0.17')
-    expect(coreMajorMinor('0.18.0-rc.1')).toBe('0.18')
-    expect(coreMajorMinor('1.2.3')).toBe('1.2')
+/**
+ * 版本档案建议名必须带 patch、且带 `Core-` 前缀：
+ * - patch 升级同样可能带破坏性更改（用户实测 0.1.5-rc.2 → 0.1.7-rc.2）。只取 `x.y` 时
+ *   两个核心经 `normalizeProfileId` 归一化后都会落成 `01`，用户照默认名确认其实切回
+ *   同一个档案，隔离等于没做（见最后一条 id 断言）；
+ * - 档案在 UI 上的展示名 = 清单名去 `dsh-profile-` 前缀后首字母大写，也就是 id 本身，
+ *   所以没有前缀时列表里只有 `017` 这种看不懂的名字（见 `Core-` 断言）；
+ * - 同一 patch 的 rc 不参与取名，避免每次 rc 都新建档案。
+ */
+describe('coreProfileName', () => {
+  it('取主/次/补丁版本号并加 Core- 前缀，丢掉预发布标识', () => {
+    expect(coreProfileName('0.1.7-rc.2')).toBe('Core-0.1.7')
+    expect(coreProfileName('0.17.1')).toBe('Core-0.17.1')
+    expect(coreProfileName('0.18.0-rc.1')).toBe('Core-0.18.0')
+    expect(coreProfileName('1.2.3')).toBe('Core-1.2.3')
   })
 
-  it('剥掉 dsh-/src- 前缀后再取主/次版本号', () => {
-    expect(coreMajorMinor('dsh-0.1.0-rc.8-32331963388')).toBe('0.1')
-    expect(coreMajorMinor('src-2.0.0')).toBe('2.0')
+  it('同一个 patch 的 rc 共用档案名', () => {
+    expect(coreProfileName('0.1.7-rc.1')).toBe(coreProfileName('0.1.7-rc.2'))
+    expect(coreProfileName('0.1.7-rc.2')).toBe('Core-0.1.7')
+  })
+
+  it('剥掉 dsh-/src- 前缀后再取名', () => {
+    expect(coreProfileName('dsh-0.1.0-rc.8-32331963388')).toBe('Core-0.1.0')
+    expect(coreProfileName('src-2.0.0')).toBe('Core-2.0.0')
   })
 
   it('版本缺失或不可解析时为空串', () => {
-    expect(coreMajorMinor('')).toBe('')
-    expect(coreMajorMinor('local')).toBe('')
-    expect(coreMajorMinor('app-0.1.0-rc.8')).toBe('')
+    expect(coreProfileName('')).toBe('')
+    expect(coreProfileName('local')).toBe('')
+    expect(coreProfileName('app-0.1.0-rc.8')).toBe('')
+  })
+
+  it('patch 不同的两个核心归一化后仍是两个不同档案 id，且名字可读', () => {
+    expect(normalizeProfileId(coreProfileName('0.1.5-rc.2'))).toBe('core-015')
+    expect(normalizeProfileId(coreProfileName('0.1.7-rc.2'))).toBe('core-017')
   })
 })
 

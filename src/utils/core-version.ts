@@ -28,10 +28,22 @@ export function compareVersions(a: string, b: string): number {
   return semver.compare(pa, pb)
 }
 
-/** 主/次版本号（`x.x`，不含 patch 与预发布标识）；缺失或不可解析时为空串 */
-export function coreMajorMinor(version: string): string {
+/**
+ * 版本档案的建议名（`Core-x.y.z`，含 patch、不含预发布标识）；缺失或不可解析时为空串。
+ *
+ * 必须带上 patch：破坏性更改在 patch 之间同样发生（用户实测 0.1.5-rc.2 → 0.1.7-rc.2），
+ * 只取 `x.y` 会让两个核心共用一个档案——经 `normalizeProfileId` 归一化后 `0.1.5` 与
+ * `0.1.7` 都落成 `01`，用户在弹窗里照默认名确认，实际切回的就是同一个档案，等于没隔离。
+ * 预发布标识（`-rc.2`）不参与取名：同一 patch 的 rc 之间共用档案，避免每次 rc 都新建。
+ *
+ * 前缀 `Core-` 不是装饰：`create_profile` 只拿归一化后的 id 建目录，而档案在 UI 上的
+ * 展示名取自清单 `name` 去掉 `dsh-profile-` 前缀（首字母大写，见
+ * `service::profile::display_name`），所以没有前缀时列表里就是一个光秃秃的 `017`，
+ * 用户根本看不出它是核心版本档案；带上前缀即 `Core-017`。
+ */
+export function coreProfileName(version: string): string {
   const parsed = semver.parse(stripVersionPrefix(version))
-  return parsed ? `${parsed.major}.${parsed.minor}` : ''
+  return parsed ? `Core-${parsed.major}.${parsed.minor}.${parsed.patch}` : ''
 }
 
 /**
