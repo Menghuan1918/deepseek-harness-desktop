@@ -85,7 +85,8 @@ export async function checkHealthViaProxy(): Promise<ReadinessProbeResult> {
 
     const lower = result.toLowerCase()
     if (lower.startsWith('healthy')) {
-      console.warn('[Harness] health check passed:', result.split(' - <!doctype html>')[0])
+      // 正常路径不写日志：探测每次启动至少跑两遍（就绪轮询 + completeReadiness 复核），
+      // 成功噪音只会盖住真正有用的失败重试行。
       return {
         healthy: true,
         notOwned: false,
