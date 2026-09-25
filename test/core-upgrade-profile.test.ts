@@ -90,6 +90,17 @@ describe('确认后的编排顺序：档案 → 核心 → 重启', () => {
     expect(failureBranch).toContain('core.breaking_profile_failed')
     expect(failureBranch).toMatch(/return/)
   })
+
+  it('核心切换失败时回滚到切换前的档案', () => {
+    const body = bodyOf(coreSource(), 'async function onActivate')
+    const failureIndex = body.indexOf('core.switch_failed')
+    expect(failureIndex).toBeGreaterThan(-1)
+
+    const failureBranch = body.slice(body.lastIndexOf('catch', failureIndex))
+    expect(failureBranch).toMatch(/await restoreActiveProfile\(previousProfileId\)/)
+    // 档案本来就没换（目标档案已使用中）时不做无意义的回滚
+    expect(failureBranch).toContain('previousProfileId !== switchedProfileId')
+  })
 })
 
 describe('activateVersionProfile：缺失才新建，已存在只切换', () => {
@@ -104,7 +115,7 @@ describe('activateVersionProfile：缺失才新建，已存在只切换', () => 
   it('已存在时切到该档案并直接返回，不再新建', () => {
     const body = bodyOf(coreSource(), 'async function activateVersionProfile')
     const existsIndex = body.indexOf('if (existing)')
-    const returnIndex = body.indexOf('return id', existsIndex)
+    const returnIndex = body.indexOf('return { id, previousId }', existsIndex)
     const createIndex = body.indexOf('\'create_profile\'')
 
     expect(existsIndex).toBeGreaterThan(-1)
@@ -118,6 +129,25 @@ describe('activateVersionProfile：缺失才新建，已存在只切换', () => 
 
     expect(body).toContain('invoke<Profile>(\'create_profile\', { name })')
     expect(body).toContain('invoke<Profile>(\'set_active_profile\', { id: created.id })')
+  })
+
+  it('一并返回切换前的在用档案，供核心失败时回滚', () => {
+    const body = bodyOf(coreSource(), 'async function activateVersionProfile')
+
+    expect(body).toContain('profiles.find(p => p.active)?.id')
+    expect(body).toMatch(/Promise<\{ id: string, previousId: string \}>/)
+    expect(body).toMatch(/return \{ id: created\.id, previousId \}/)
+  })
+})
+
+describe('restoreActiveProfile：回滚不掩盖原始失败', () => {
+  it('切回原档案，回滚失败只记日志，并始终失效档案查询', () => {
+    const body = bodyOf(coreSource(), 'async function restoreActiveProfile')
+
+    expect(body).toContain('invoke<Profile>(\'set_active_profile\', { id })')
+    expect(body).toMatch(/console\.error/)
+    expect(body).toMatch(/finally \{/)
+    expect(body).toContain('queryKeys.profiles')
   })
 })
 

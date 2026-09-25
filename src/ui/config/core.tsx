@@ -144,22 +144,39 @@ export function ConfigCore() {
    *
    * 档案名按后端归一化后的 id 匹配（`0.17` → `017`），因此这里先取列表再决定是否新建，
    * 不能直接 create——已存在时后端会以 `PROFILE_EXISTS` 拒绝。
+   *
+   * 返回 `previousId`（切换前使用中的档案）供核心切换失败时回滚：档案与核心是两次独立的
+   * 写盘，核心没切成不能把用户留在「旧核心 + 新档案」的组合上。
    */
-  async function activateVersionProfile(name: string): Promise<string> {
+  async function activateVersionProfile(name: string): Promise<{ id: string, previousId: string }> {
     const profiles = await queryClient.fetchQuery({
       queryKey: queryKeys.profiles,
       queryFn: () => invoke<Profile[]>('get_profiles'),
     })
+    const previousId = profiles.find(p => p.active)?.id ?? ''
     const id = normalizeProfileId(name)
     const existing = profiles.find(p => p.id === id)
     if (existing) {
       if (!existing.active)
         await invoke<Profile>('set_active_profile', { id })
-      return id
+      return { id, previousId }
     }
     const created = await invoke<Profile>('create_profile', { name })
     await invoke<Profile>('set_active_profile', { id: created.id })
-    return created.id
+    return { id: created.id, previousId }
+  }
+
+  /** 回滚档案：核心切换失败时切回原档案；回滚失败只记日志，不盖住原始失败提示 */
+  async function restoreActiveProfile(id: string) {
+    try {
+      await invoke<Profile>('set_active_profile', { id })
+    }
+    catch (err) {
+      console.error('[ConfigCore] restore active profile failed:', err)
+    }
+    finally {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.profiles })
+    }
   }
 
   async function onActivate(core: HarnessCore) {
@@ -224,9 +241,13 @@ export function ConfigCore() {
       }
     }
     // 先落档案再切核心：两者都由同一次重启生效，顺序颠倒会让新核心先于配套档案运行。
+    let previousProfileId = ''
+    let switchedProfileId = ''
     if (profileName) {
       try {
-        await activateVersionProfile(profileName)
+        const activated = await activateVersionProfile(profileName)
+        previousProfileId = activated.previousId
+        switchedProfileId = activated.id
         void queryClient.invalidateQueries({ queryKey: queryKeys.profiles })
       }
       catch (err) {
@@ -257,6 +278,10 @@ export function ConfigCore() {
     catch (err) {
       console.error('[ConfigCore] switch failed:', err)
       toast(t('core.switch_failed'), {})
+      // 核心没切成就把档案切回去：否则下次启动会跑在「旧核心 + 新档案」上，
+      // 用户会看到自己的插件与设置「凭空消失」。
+      if (previousProfileId && previousProfileId !== switchedProfileId)
+        await restoreActiveProfile(previousProfileId)
     }
   }
 
