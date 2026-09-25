@@ -99,7 +99,12 @@ export default c([
   c('[class$="sidebarCol"]', {
     borderRight: 'none !important',
   }),
-  c('[data-dsh-center-col]', {
+  // 官方的中栏是「别名底色 + 左上 16px 圆角」，声明挂在文档根属性 `[data-windows-titlebar]`
+  // 上（dsh-client-ui-layout），该属性由官方桌面宿主写入；本仓壳层不写，中栏透明就会整块
+  // 露出布局帧的侧栏底色（插件页一并变灰）。故按类名后缀补等价声明。
+  // 不加 `!important`：官方 `[data-platform=darwin] .centerCol` 等更高特异性的声明须继续压过本条。
+  c('[class$="centerCol"]', {
+    background: 'var(--dsw-alias-bg-base)',
     borderRadius: '16px 0 0 0',
     cornerShape: 'round',
   }),
