@@ -474,4 +474,36 @@ describe('L2 客户端', () => {
       await app.close()
     }
   })
+
+  /**
+   * 样式的**归属**是宿主回收的前提（issue #655）。
+   *
+   * 宿主的客户端模块系统在每个插件 factory 物化后调 `claimStyles`：把文档里所有没有
+   * `data-plugin` 的 `<style>` 盖上「刚物化的那个插件」的戳，之后该插件重载
+   * （`removeOwnedStyles`）就把它们一并删掉。css-render 只写 `cssr-id`，不自报归属的
+   * 表会被别的插件收养、再被别人的重载误删；而插件的引用计数还停在 >0，样式不会回挂——
+   * 症状就是用户报的「偶发 UI 整体混乱，刷新才好」。断言对象是真实页面里的 DOM。
+   */
+  it('验证插件 cssr 样式标签都自报 data-plugin 归属，不会被别人的重载连带删除', async () => {
+    const app = await newDshPage(browser, { ready: PET_STYLES })
+    try {
+      const ownership = await app.frame.evaluate(() => {
+        const tags = Array.from(document.querySelectorAll('style[cssr-id]'))
+        return {
+          total: tags.length,
+          untagged: tags.filter(tag => !tag.hasAttribute('data-plugin')).map(tag => tag.getAttribute('cssr-id')),
+        }
+      })
+
+      expect(ownership.total, '前置：本批插件必须真的挂上了 cssr 样式表，否则这条断言无从谈起').toBeGreaterThan(0)
+      expect(
+        ownership.untagged,
+        `未自报归属的 cssr 标签会被 claimStyles 认领给下一个物化的插件，再被它的 removeOwnedStyles 删除（实测未归属：${JSON.stringify(ownership.untagged)}）`,
+      ).toEqual([])
+      expect(app.errors, '样式归属不得抛出应用级错误').toEqual([])
+    }
+    finally {
+      await app.close()
+    }
+  })
 })
