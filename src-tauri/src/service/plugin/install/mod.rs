@@ -76,7 +76,7 @@ use allowlist::{add_allow_build_keys, parse_allowlist_keys};
 use artifact::{ensure_plugin_entry_built, verify_installed_products};
 use diagnose::{
     diagnostic_suffix, git_transport_hint, network_error_hint, pick_error_message,
-    store_mismatch_hint,
+    policy_verification_network_failure, store_mismatch_hint,
 };
 use pnpm::ensure_pnpm;
 use spec::{bundled_dir_of, normalize_git_spec, preset_spec_for_install, spec_argument};
@@ -103,6 +103,24 @@ fn transient_fs_retry_delay(retry: usize) -> std::time::Duration {
         .checked_shl(retry.saturating_sub(1) as u32)
         .unwrap_or(64)
         .min(64);
+    std::time::Duration::from_secs(seconds)
+}
+
+/// lockfile supply-chain 校验因 registry 元数据拉不到而误判违规时的重试上限
+/// （见 [`policy_verification_network_failure`]）。实测 registry 短暂不可用能让
+/// 「已发布三周的 entry」连续失败数分钟：pnpm 自己重试两轮后放弃，这里再按退避
+/// 把窗口拉到约一分钟以覆盖这类抖动；不设更大上限是因为每次重试都要重跑整条
+/// `dsh plugin add`。
+const POLICY_VERIFICATION_RETRIES: usize = 4;
+/// 该重试的首次延迟；后续延迟按指数增长，最多 30 秒。
+const POLICY_VERIFICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn policy_verification_retry_delay(retry: usize) -> std::time::Duration {
+    let seconds = POLICY_VERIFICATION_RETRY_DELAY
+        .as_secs()
+        .checked_shl(retry.saturating_sub(1) as u32)
+        .unwrap_or(30)
+        .min(30);
     std::time::Duration::from_secs(seconds)
 }
 
@@ -282,10 +300,17 @@ async fn install_with_cancel(
 
     if exit_code != 0 {
         log::error!("dsh plugin install failed with exit code {exit_code}");
+        // 先无条件落一行 pnpm 原始诊断：后面的分类文案（网络 / store 指引）会丢掉细节，
+        // 而用户贴进 issue 的日志必须能看到 pnpm 究竟报了什么。
+        let detail = pick_error_message(&last_output, None);
+        if !detail.is_empty() {
+            log::error!("dsh plugin install diagnostic: {detail}");
+        }
         // 区分 git 传输层失败与 allowBuilds 构建门禁：前者是 pnpm 走了 git+ssh
         // （用户环境无 SSH 配置），后者才是补充白名单可自愈的。传输层错误给出
         // 可读指引，避免用户被 dsh 那条 allowBuilds 提示误导。
         let network_error = network_error_hint(&last_output).is_some()
+            || policy_verification_network_failure(&last_output)
             || (exit_code == 3 && last_output.trim().is_empty());
         let hint = git_transport_hint(&last_output);
         let store_hint = store_mismatch_hint(&last_output);
@@ -345,9 +370,6 @@ async fn install_with_cancel(
             ));
         }
         let detail = pick_error_message(&last_output, None);
-        if !detail.is_empty() {
-            log::error!("dsh plugin install diagnostic: {detail}");
-        }
         return Err(format!(
             "PREINSTALL_FAILED: dsh plugin exited with code {exit_code}{}",
             diagnostic_suffix(&detail)
@@ -481,11 +503,35 @@ async fn run_plugin_install_with_transient_retry(
     owner: ProcessOwner,
 ) -> Result<(i32, String), String> {
     let mut attempt = 0usize;
+    let mut policy_attempt = 0usize;
     loop {
         let (exit_code, output) = run_plugin_with_allow_build_retry(
             app_handle, node, args, cwd, envs, window, action, cancel, owner,
         )
         .await?;
+        // 先判网络类：pnpm 把「元数据拉不到」渲染成供应链违规，重跑整条命令最有效。
+        if exit_code != 0
+            && policy_attempt < POLICY_VERIFICATION_RETRIES
+            && policy_verification_network_failure(&output)
+        {
+            policy_attempt += 1;
+            let delay = policy_verification_retry_delay(policy_attempt);
+            log::warn!(
+                "dsh plugin {action} failed the lockfile supply-chain check because registry \
+                 metadata could not be fetched; retrying ({policy_attempt}/{POLICY_VERIFICATION_RETRIES}) \
+                 after {delay:?}"
+            );
+            let _ = window.emit(
+                PREINSTALL_LOG_EVENT,
+                PreinstallLogPayload {
+                    line: format!(
+                        "[harness] registry 元数据拉取失败，依赖校验未通过，正在重试（{policy_attempt}/{POLICY_VERIFICATION_RETRIES}）…"
+                    ),
+                },
+            );
+            tokio::time::sleep(delay).await;
+            continue;
+        }
         if exit_code != 0
             && attempt < TRANSIENT_FS_RETRIES
             && is_transient_fs_install_failure(exit_code, &output)
@@ -583,6 +629,22 @@ mod tests {
         assert_eq!(
             transient_fs_retry_delay(8),
             std::time::Duration::from_secs(64)
+        );
+    }
+
+    #[test]
+    fn policy_verification_retry_delay_uses_capped_exponential_backoff() {
+        assert_eq!(
+            policy_verification_retry_delay(1),
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(
+            policy_verification_retry_delay(2),
+            std::time::Duration::from_secs(10)
+        );
+        assert_eq!(
+            policy_verification_retry_delay(4),
+            std::time::Duration::from_secs(30)
         );
     }
 

@@ -111,6 +111,29 @@ pub(super) fn network_error_hint(output: &str) -> Option<&'static str> {
         .then_some("网络连接失败，请检查网络或代理设置后重试。")
 }
 
+/// pnpm 的 lockfile supply-chain 校验（`minimumReleaseAge`）要按 registry 元数据核对
+/// 每个条目的发布时间；元数据拉不到时 pnpm 会把条目**直接判成违规**并以
+/// `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` 中止，输出里唯一的线索只有
+/// `[WARN] GET https://registry.npmjs.org/<pkg> error (unknown)` —— 用户看到的
+/// 「违反供应链策略」其实是网络问题（实测 `undici@7.29.1` 已发布 21 天仍被判违规）。
+/// 命中即说明重跑同一条命令大概率能过，调用方据此重试。
+///
+/// 真·发布时间违规（版本确实太新）不带任何拉取失败信号，绝不命中：那种失败重试无用，
+/// 也不该把供应链信号降级成网络问题。
+pub(super) fn policy_verification_network_failure(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    if !lower.contains("err_pnpm_minimum_release_age_violation") {
+        return false;
+    }
+    const FETCH_FAILURES: [&str; 4] = [
+        "error (unknown)",
+        "will retry in",
+        "fetch failed",
+        "failed to fetch",
+    ];
+    FETCH_FAILURES.iter().any(|signal| lower.contains(signal))
+}
+
 pub(super) fn git_transport_hint(output: &str) -> Option<&'static str> {
     const SIGNALS: &[(&str, &str)] = &[
         (
@@ -290,6 +313,30 @@ mod tests {
         // allowBuilds 场景（prepare 构建被拦）不应误判为传输层错误
         let out = "[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] ...\nallowBuilds:\n  node-pty: true\n";
         assert!(git_transport_hint(out).is_none());
+    }
+
+    // ---- lockfile supply-chain 校验因 registry 元数据拉取失败而误判违规 ----
+
+    /// 用户实测（pnpm 11.7.0，`undici@7.29.1` 已发布 21 天）：判定违规的唯一线索是
+    /// registry 元数据请求失败，而不是发布时间。
+    const POLICY_VERIFICATION_FETCH_FAILURE: &str = "✗ Lockfile failed supply-chain policy check (4 entries in 2.7s) [ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION]\n1 lockfile entries failed verification:\n[WARN] GET https://registry.npmjs.org/undici error (unknown). Will retry in 10 seconds. 2 retries left.\n";
+
+    #[test]
+    fn policy_verification_failure_detects_registry_fetch_error() {
+        assert!(policy_verification_network_failure(
+            POLICY_VERIFICATION_FETCH_FAILURE
+        ));
+    }
+
+    #[test]
+    fn policy_verification_failure_ignores_real_release_age_violation() {
+        // 真违规会给出发布时间与阈值、没有拉取失败信号：重试无用，也不该改判成网络问题。
+        let real = "[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] undici@7.29.1 was published recently (released 5 minutes ago; minimumReleaseAge is 1440)\n";
+        assert!(!policy_verification_network_failure(real));
+        assert!(!policy_verification_network_failure(
+            "ERR_PNPM_FETCH_404 registry error"
+        ));
+        assert!(!policy_verification_network_failure(""));
     }
 
     // ---- pnpm store 布局不兼容（ERR_PNPM_UNEXPECTED_STORE 一族）----
