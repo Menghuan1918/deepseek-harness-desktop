@@ -47,7 +47,7 @@ export function CoreUpgradeProfileDialog(props: CoreUpgradeProfileDialogProps) {
           <AlertDialog.Dialog className="sm:max-w-[420px]">
             <AlertDialog.CloseTrigger />
             <AlertDialog.Header>
-              <AlertDialog.Icon status="danger" />
+              <AlertDialog.Icon status="warning" />
               <AlertDialog.Heading>{t('core.breaking_title')}</AlertDialog.Heading>
             </AlertDialog.Header>
             <AlertDialog.Body className="space-y-3">
