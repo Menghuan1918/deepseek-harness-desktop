@@ -4,8 +4,12 @@ import { registerSettings } from './settings'
 const mocks = vi.hoisted(() => ({
   settings: {
     launcherAvailable: false,
+    launcherShortcut: undefined as { keys: readonly string[], aria?: string } | undefined,
     setLauncherAvailable(value: boolean): void {
       mocks.settings.launcherAvailable = value
+    },
+    setLauncherShortcut(value: { keys: readonly string[], aria?: string } | undefined): void {
+      mocks.settings.launcherShortcut = value
     },
   },
 }))
@@ -24,10 +28,11 @@ vi.mock('dsh-tauri/client', () => ({
 
 afterEach(() => {
   mocks.settings.launcherAvailable = false
+  mocks.settings.launcherShortcut = undefined
 })
 
 /** 用最小 slots 面记录注入点：inject 只登记，register 由激活回调按需触发。 */
-function activate() {
+function activate(shortcuts?: unknown) {
   const injected: Array<{ key: string, activate: () => unknown }> = []
   const registered: string[] = []
   const ctx = {
@@ -41,6 +46,10 @@ function activate() {
         return (): void => {}
       },
     },
+    effect(callback: () => () => void) {
+      return callback()
+    },
+    get: () => shortcuts,
   }
 
   ;(registerSettings as unknown as (this: unknown) => void).call(ctx)
@@ -76,5 +85,40 @@ describe('registerSettings launcher seat', () => {
 
     dispose?.()
     expect(mocks.settings.launcherAvailable).toBe(false)
+  })
+
+  /** 左下菜单的「Ctrl+,」提示来自核心 `settings.open` 的生效绑定，配置变更后重发。 */
+  it('publishes the settings shortcut for the official launcher', () => {
+    let notify = (): void => {}
+    const { injected } = activate({
+      catalog: {
+        getSnapshot: () => [
+          { id: 'session.new', keys: ['Ctrl+N'] },
+          { id: 'settings.open', keys: ['Ctrl+,'], aria: 'Control+,' },
+        ],
+        subscribe(listener: () => void) {
+          notify = listener
+          return (): void => {}
+        },
+      },
+    })
+
+    for (const entry of injected)
+      entry.activate()
+
+    expect(mocks.settings.launcherShortcut).toEqual({ keys: ['Ctrl+,'], aria: 'Control+,' })
+
+    notify()
+    expect(mocks.settings.launcherShortcut).toEqual({ keys: ['Ctrl+,'], aria: 'Control+,' })
+  })
+
+  /** 老核心没有快捷键服务：不写值，座位拿不到就不渲染提示。 */
+  it('leaves the shortcut unset without the core service', () => {
+    const { injected } = activate()
+
+    for (const entry of injected)
+      entry.activate()
+
+    expect(mocks.settings.launcherShortcut).toBeUndefined()
   })
 })
