@@ -2,30 +2,27 @@
 
 ## deepseek-ai/deepseek-harness
 
-The desktop-carrier and official-account behaviours in this package are derived
-from the upstream Electron desktop implementation of the same features.
-Upstream sources are MIT-licensed:
-
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Cross-checked revision: `477b4f420553e8a52c2fbccc464d7561b239c443` (`dsh-v0.1.7-rc.2`,
-  the revision vendored at `source/deepseek-harness`); the account-stream carrier
-  gate and the sidebar/DOM contracts this package mirrors are unchanged from
-  `0.1.7-alpha.1`
+- Version: `dsh-v0.1.7-rc.2`
+- Revision: `477b4f420553e8a52c2fbccc464d7561b239c443`
+- Source: `source/deepseek-harness`
 - License: MIT — Copyright (c) 2026 DeepSeek
 
-Derived behaviour (upstream → this package):
+Derived (upstream → this package):
 
-| Upstream | This package | What was taken |
-| --- | --- | --- |
-| `apps/desktop/src/main.ts` — `platformLoginUrl()`, `welcomeBackend.account.watch(...)`, `shell.openExternal(...)` while `attempt.phase === 'waiting-browser'` | `src/client/register/account.ts` | The watch → open flow. The Tauri shell has no Electron main process, so the same flow runs in the embedded UI and opens through the shell's `open_external_url`. |
-| `packages/client/ui-settings-account/src/client/index.ts` — `ctx.remote.$stream({ name: 'account', open: signal => ctx.remote.account.watch(signal) })` consuming `frame.value` / `frame.accept()`, gated by `'dshDesktop' in globalThis` | `src/client/register/account.ts` | The account-stream consumption pattern and the carrier gate, mirrored so upstream UI and this package observe the same state. |
-| `apps/desktop/src/preload-app.ts` — `contextBridge.exposeInMainWorld('dshDesktop', <app origin> ? createProductApi() : { protocolVersion: 1 })` | `src/host/apply.ts` | The carrier marker. Only upstream's non-app-origin value `{ protocolVersion: 1 }` is published; none of the Electron product APIs (`browser`, `updates`) are faked. |
-| `packages/host/webserver` — structured index-injection rows (`global`, `script`, `script-src`, …) | `src/host/types/harness.ts` (`IndexInjectRow`) | The row contract this package pushes into `webserver/index-inject`. |
-| `apps/desktop/src/main.ts` — `app.setAsDefaultProtocolClient('dsh')` + `open-url` handling that only focuses the primary window for `dsh://open` | `src-tauri/src/desktop/deep_link.rs` (app shell, outside this package) | The deep-link action set, so the Platform success page's "open app" button reaches this app. |
+- `apps/desktop/src/main.ts` — `platformLoginUrl()`, `welcomeBackend.account.watch(...)`, `shell.openExternal(...)` while `attempt.phase === 'waiting-browser'` → `src/client/register/account.ts`: the watch → open flow, run in the embedded UI and opened through the shell's `open_external_url`.
+- `packages/client/ui-settings-account/src/client/index.ts` — `ctx.remote.$stream({ name: 'account', open: signal => ctx.remote.account.watch(signal) })` consuming `frame.value` / `frame.accept()`, gated by `'dshDesktop' in globalThis` → `src/client/register/account.ts`: the account-stream consumption pattern and carrier gate.
+- `apps/desktop/src/preload-app.ts` — `contextBridge.exposeInMainWorld('dshDesktop', <app origin> ? createProductApi() : { protocolVersion: 1 })` → `src/host/apply.ts`: the carrier marker; only `{ protocolVersion: 1 }` is published, no Electron product API (`browser`, `updates`) is faked.
+- `packages/host/webserver` — structured index-injection rows (`global`, `script`, `script-src`, …) → `src/host/types/harness.ts` (`IndexInjectRow`).
+- `apps/desktop/src/main.ts` — `app.setAsDefaultProtocolClient('dsh')` + `open-url` handling that focuses the primary window for `dsh://open` → `src-tauri/src/desktop/deep_link.rs` (app shell).
 
-Not derived: `src/host/service/gate.ts` adapts this repo's own embedded-WebView
-authentication constraints; upstream only defines the `connection` gate
-semantics it overrides.
+Not derived:
+
+- `src/host/service/gate.ts` adapts this repo's embedded-WebView authentication constraints; upstream only defines the `connection` gate semantics it overrides.
+
+Note:
+
+- The account-stream carrier gate and the sidebar/DOM contracts mirrored here are unchanged from `0.1.7-alpha.1`.
 
 ## License
 

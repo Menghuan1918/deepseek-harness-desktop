@@ -25,3 +25,26 @@ describe('sidebar rail logo', () => {
     expect(show, '恢复规则必须排在隐藏规则之后').toBeGreaterThan(hide)
   })
 })
+
+/**
+ * 中栏表面契约。
+ *
+ * 官方桌面端（Windows 标题栏形态）把中栏画成「别名底色 + 左上 16px 圆角」，触发条件是
+ * 宿主在文档根打的 `data-windows-titlebar`（`dsh-client-ui-layout` 的
+ * `[data-windows-titlebar] .centerCol`）。桌面壳的标题栏在 iframe 之外，该属性在本仓
+ * 永不存在——中栏一旦保持透明，整块右栏（插件页一并）就会露出布局帧的侧栏底色，
+ * 圆角也无从渲染。这里按生成 CSS 断言等价声明存在，且不再依赖无人写入的标记选择器。
+ */
+describe('center column surface', () => {
+  const css = globalStyle.render()
+
+  it('中栏按类名后缀以别名底色绘制并带左上 16px 圆角', () => {
+    expect(css).toMatch(
+      /\[class\$="centerCol"\]\s*\{[^}]*background:\s*var\(--dsw-alias-bg-base\);[^}]*border-radius:\s*16px 0 0 0;[^}]*corner-shape:\s*round;[^}]*\}/,
+    )
+  })
+
+  it('中栏规则不再依赖运行时无人写入的 data-dsh-center-col 标记', () => {
+    expect(css).not.toContain('data-dsh-center-col')
+  })
+})

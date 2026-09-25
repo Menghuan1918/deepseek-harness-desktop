@@ -2,33 +2,20 @@
 
 ## deepseek-ai/deepseek-harness
 
-This package is a development-only playground and carries no official source.
-It renders the component registry of `dsh-tauri-ui` and therefore shows, but
-does not copy, official client UI components. Upstream sources are MIT-licensed:
-
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Cross-checked revision: `c36a83ff6bb95e3f82cf79f9be7c724270a8aa61`
-  (`dsh-v0.1.7-alpha.1` — the `source/deepseek-harness` gitlink and the `dsh:`
-  catalog pin in `pnpm-workspace.yaml`)
-- Bundled runtime cross-check: `477b4f420553e8a52c2fbccc464d7561b239c443`
-  (`dsh-v0.1.7-rc.2`)
+- Version: `dsh-v0.1.7-rc.2`
+- Revision: `477b4f420553e8a52c2fbccc464d7561b239c443`
+- Source: `source/deepseek-harness`
+- Catalog pin: `dsh:` → `0.1.7-alpha.1` (`pnpm-workspace.yaml`)
 - License: MIT — Copyright (c) 2026 DeepSeek
+- Not copied: a development-only playground that renders the component registry of `dsh-tauri-ui`, so it shows — but does not copy — official client UI components.
 
 Official surface referenced:
 
-- The playground documents the `reexport` (official implementation forwarded as
-  is, styles from the official CSS Modules) and `refork` (official CSS
-  reproduced locally because only the newer kernel implements or exports the
-  component) distinctions of the `dsh-tauri-ui` registry, including the official
-  class each refork maps to (`src/client/ui/components-playground/ui-components.tsx:112,128-130,252`).
-- Official `Menu` is wired into the chip triggers so selection state, chevron
-  rotation and popover placement behave like the shipped UI
-  (`ui-components.tsx:57`); two kernel generations export the official icons
-  barrel under different names, so icons are consumed through `@gravity-ui/icons`
-  re-exported by `dsh-tauri-ui/client` (`ui-components.tsx:262`).
-
-See `packages/dsh-tauri-ui/THIRD_PARTY_NOTICES.md` for the derivation table of
-those official components.
+- Registry semantics: the `reexport` (official implementation forwarded as is, styles from the official CSS Modules) and `refork` (official CSS reproduced locally because only the newer kernel implements or exports the component) distinctions, including the official class each refork maps to (`src/client/ui/components-playground/ui-components.tsx:112,128-130,252`).
+- Official `Menu`: wired into the chip triggers so selection state, chevron rotation and popover placement behave like the shipped UI (`ui-components.tsx:57`).
+- Icons: two kernel generations export the official icons barrel under different names, so icons are consumed through `@gravity-ui/icons` re-exported by `dsh-tauri-ui/client` (`ui-components.tsx:262`).
+- Derivation table of those official components: `packages/dsh-tauri-ui/THIRD_PARTY_NOTICES.md`.
 
 ## License
 
