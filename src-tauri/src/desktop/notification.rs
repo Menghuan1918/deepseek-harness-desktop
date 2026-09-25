@@ -251,6 +251,10 @@ pub fn enable_notification_permissions(
         };
 
         for origin in origins {
+            // 每个 origin 要写 12 种 permission：逐个 INFO 会在一毫秒内刷出二十多行，
+            // 把 desktop.log 真正有用的行挤走。正常路径只留一条 debug 汇总
+            // （`RUST_LOG=debug` 可见），失败仍逐次告警。
+            log::debug!("[permission] resetting persisted permissions for {origin}");
             for kind in permission_kinds() {
                 let origin_str = origin.clone();
                 let hstring = HSTRING::from(origin.as_str());
@@ -264,7 +268,6 @@ pub fn enable_notification_permissions(
                     COREWEBVIEW2_PERMISSION_STATE_ALLOW
                 };
 
-                log::info!("[permission] setting persisted permission for {origin_str}");
                 profile4.SetPermissionState(
                     kind,
                     &hstring,
