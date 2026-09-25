@@ -3,15 +3,14 @@
 //! 桌面端不再假设 node/pnpm/dsh 一定装在固定的 AppData 路径下，而是把每个依赖
 //! 的**安装根**记在映射表里：
 //!
-//! - 路径 → 使用该根（任意绝对路径，或 `$AppData/...` 令牌，见
+//! - 路径 → 使用该根（可为任意绝对路径，或 `resources/...` 令牌，见
 //!   [`super::manifest::resolve_location`]）；
 //! - `null` → 由系统环境满足，桌面端不托管该依赖；
 //! - 键缺失 → 尚未探测，按清单的 `managedRoot` 默认托管根解析。
 //!
 //! 入口相对路径由清单 `dependencies.<key>.entry` 决定，因此「装在哪」与「入口形状」
-//! 各有一处真值。离线包（随包资源）只把压缩包放进安装目录，解压产物一律落在 AppData
-//! 的托管根，因此路径解析逻辑与普通安装完全一致。写入单点收口到 [`record`]，且内容
-//! 不变时不落盘。
+//! 各有一处真值。将来做本地捆绑版只需把清单（或映射表）指向 `resources/*`，路径解析
+//! 逻辑无需改动。写入单点收口到 [`record`]，且内容不变时不落盘。
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -178,8 +177,9 @@ pub fn managed_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
 /// 当前生效的依赖根：映射指定的根优先，否则回落清单默认托管根
 ///
 /// 映射表里的值同样按 [`manifest::resolve_location`] 解析：绝对路径原样使用（任意
-/// 位置），`$AppData/...` 指向数据目录。因此切换内核只需在映射表里写任意绝对路径，
-/// 不必改动清单或重装。
+/// 位置），`$AppData/...` / `$Resources/...` 指向数据目录 / 安装包资源根。因此本地
+/// 捆绑 / 切换内核只需在映射表里写 `"dsh": "$Resources/dsh"` 或任意绝对路径，不必
+/// 改动清单或重装。
 ///
 /// 清单把 `dependencies.<key>.overridable` 声明为 false 时，映射表记录的位置一律
 /// 被忽略（本地捆绑版内核固定随包，不允许被运行时改写）。
@@ -193,11 +193,7 @@ pub fn active_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
     if overridable {
         if let Some(Some(recorded)) = mapped(app, key) {
             let resolved = manifest::resolve_location(app, &recorded.to_string_lossy());
-            // 安装目录里的记录同样不采信：旧离线包把依赖根写在那里，而现在解压产物
-            // 一律落在 AppData，老记录只会把应用钉在旧树上。
-            let inside_install_dir =
-                manifest::resource_root(app).is_some_and(|root| resolved.starts_with(root));
-            if resolved.exists() && !inside_install_dir {
+            if resolved.exists() {
                 return resolved;
             }
         }
@@ -205,82 +201,19 @@ pub fn active_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
     managed_root(app, key)
 }
 
-/// 随包资源压缩包（离线包在安装目录 `resources/` 下随包分发的原始资产名）；不随包时为 None。
-///
-/// 文件名由 [`super::runtime::bundled_archive_filename`] 按同一套常量推导，与
-/// `.github/actions/prepare-bundle-resources` 落盘的名字同源。
-pub fn bundled_archive<R: Runtime>(app: &AppHandle<R>, key: &str) -> Option<PathBuf> {
-    let name = super::runtime::bundled_archive_filename(key)?;
-    let path = manifest::resource_root(app)?.join(name);
-    path.is_file().then_some(path)
-}
-
-/// 托管根里记录「这份产物解压自哪个随包压缩包」的指纹文件。
-const BUNDLED_STAMP_FILE: &str = ".bundled-archive";
-
-/// 随包压缩包指纹：文件名 + 字节数 + 修改时间。dsh 资产名不含版本
-/// （`deepseek-harness-pkg-*.zip`），换版本只能靠体积与时间戳区分；升级安装必然重写该
-/// 文件，三者合起来足以判定新旧。内容摘要要在每次就绪判定时整读压缩包（内核包 60MB+），
-/// 代价远高于收益。
-fn archive_fingerprint(archive: &Path) -> Option<String> {
-    let metadata = std::fs::metadata(archive).ok()?;
-    let name = archive.file_name()?.to_string_lossy();
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    Some(format!("{name}:{}:{modified}", metadata.len()))
-}
-
-/// 托管根与随包压缩包是否不同源（无记录、记录不匹配都算）。
-fn archive_stamp_differs(root: &Path, archive: &Path) -> bool {
-    let Some(fingerprint) = archive_fingerprint(archive) else {
-        return false;
-    };
-    std::fs::read_to_string(root.join(BUNDLED_STAMP_FILE))
-        .map(|recorded| recorded.trim() != fingerprint)
-        .unwrap_or(true)
-}
-
-fn write_archive_stamp(root: &Path, archive: &Path) {
-    let Some(fingerprint) = archive_fingerprint(archive) else {
-        return;
-    };
-    let _ = std::fs::create_dir_all(root);
-    let _ = std::fs::write(root.join(BUNDLED_STAMP_FILE), fingerprint);
-}
-
-/// 随包压缩包是否比托管根里的产物新（没有随包压缩包时恒为 false）。
-///
-/// 离线包升级会替换安装目录里的压缩包，而 AppData 里的解压产物留在原地：不比对指纹
-/// 就会一直用旧运行时。判定只在「托管根就是这份压缩包的解压目标」时有意义。
-pub fn bundled_archive_is_stale<R: Runtime>(app: &AppHandle<R>, key: &str) -> bool {
-    match bundled_archive(app, key) {
-        Some(archive) => archive_stamp_differs(&managed_root(app, key), &archive),
-        None => false,
-    }
-}
-
-/// 解压落盘后记录指纹：下次启动据此判定「随包压缩包已换新版」而重新解压。
-pub fn record_bundled_archive_stamp<R: Runtime>(app: &AppHandle<R>, key: &str) {
-    if let Some(archive) = bundled_archive(app, key) {
-        write_archive_stamp(&managed_root(app, key), &archive);
-    }
-}
-
-/// 随包资源构建的随包核心根（普通安装为 None）。
+/// 随包资源构建的随包核心根（`$Resources/dsh`）；非随包构建为 None。
 ///
 /// 这类安装的运行时全部随安装包分发（见 `.github/actions/prepare-bundle-resources`），
 /// 运行期下载在离线机器上必然失败：启动就绪判定据此放宽「补不上的依赖」，核心面板据此
 /// 把随包内核作为「本地」项置顶。
 ///
-/// 判定按**是否存在随包内核压缩包**，返回的却是托管根：离线包不再把解压产物放进安装目录，
-/// 随包核心解压后就落在与普通安装相同的托管根上，因此「本地」标识与运行路径解耦。
+/// 判定按**清单托管根**而不是当前生效根：随包核心始终是安装目录里那一份，与该依赖
+/// 当前是否被映射到别处的槽位无关。
 pub fn bundled_core_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
-    bundled_archive(app, DEP_DSH)?;
-    Some(managed_root(app, DEP_DSH))
+    let root = manifest::resource_root(app)?;
+    let managed = managed_root(app, DEP_DSH);
+    // 资源根自身不算：只有把核心托管到 `$Resources/<name>` 才是随包构建。
+    (managed != root && managed.starts_with(&root)).then_some(managed)
 }
 
 /// 入口相对路径（相对依赖根）：清单 `dependencies.<key>.entry`，未声明时用内置默认
@@ -430,6 +363,7 @@ mod tests {
         let manifest = manifest::read_at(&path).expect("manifest should parse");
         // 清单声明的托管根可以是 `$AppData/...` 令牌，因此比较**解析后**的位置
         let base = PathBuf::from("C:/app-data");
+        let resources = PathBuf::from("C:/app-resources");
         for (key, root, entry) in [
             (DEP_NODE, default_managed_root(DEP_NODE), default_entry(DEP_NODE)),
             (DEP_PNPM, default_managed_root(DEP_PNPM), default_entry(DEP_PNPM)),
@@ -439,64 +373,11 @@ mod tests {
             let spec = manifest.dependencies.get(key).expect("spec should exist");
             let declared = spec.managed_root.as_deref().expect("managedRoot");
             assert_eq!(
-                manifest::resolve_location_from(&base, declared),
+                manifest::resolve_location_from(&base, Some(&resources), declared),
                 base.join(root),
                 "{key}"
             );
             assert_eq!(spec.entry.resolve(), Some(entry), "{key}");
         }
-    }
-
-    #[test]
-    fn shipped_manifest_never_points_into_the_installer_resources() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join(manifest::MANIFEST_FILE);
-        let manifest = manifest::read_at(&path).expect("manifest should parse");
-        for (key, spec) in &manifest.dependencies {
-            let Some(declared) = spec.managed_root.as_deref() else {
-                continue;
-            };
-            // 解压产物一律落在 AppData：托管根不得再引用已废弃的 `$Resources` / `resources/`
-            assert!(
-                !declared.to_ascii_lowercase().starts_with("$resources")
-                    && !declared
-                        .replace('\\', "/")
-                        .to_ascii_lowercase()
-                        .starts_with("resources/"),
-                "{key}: {declared}"
-            );
-        }
-    }
-
-    #[test]
-    fn archive_stamp_detects_a_repacked_bundle() {
-        let dir = temp_path("stamp");
-        let root = dir.join("root");
-        let archive = dir.join("pnpm-11.7.0.tgz");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&archive, b"first").unwrap();
-
-        // 没有指纹（首次安装）与换个压缩包都算「需要解压」
-        assert!(archive_stamp_differs(&root, &archive));
-        let fingerprint = archive_fingerprint(&archive).expect("fingerprint");
-        assert!(
-            fingerprint.starts_with("pnpm-11.7.0.tgz:5:"),
-            "{fingerprint}"
-        );
-        write_archive_stamp(&root, &archive);
-        assert!(!archive_stamp_differs(&root, &archive));
-
-        // 同名换版本：字节数变化即重新解压
-        std::fs::write(&archive, b"second-revision").unwrap();
-        assert!(archive_stamp_differs(&root, &archive));
-
-        // 文件名变化（dsh 之外的资产都带版本号）同样触发
-        let renamed = dir.join("pnpm-11.8.0.tgz");
-        std::fs::write(&renamed, b"second-revision").unwrap();
-        write_archive_stamp(&root, &archive);
-        assert!(archive_stamp_differs(&root, &renamed));
-
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

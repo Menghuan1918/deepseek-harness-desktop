@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
@@ -6,13 +6,13 @@ import { pathToFileURL } from 'node:url'
 // 离线安装包（offline bundle）构建元数据。版本号、资产名与下载前缀全部取自
 // `src-tauri/src/config/constants.rs` 与 `src-tauri/resources/manifest.jsonc`，
 // 不在 workflow 或本脚本里另抄一份常量。
-//
-// 资产名同时也是随包落盘名：`.github/actions/prepare-bundle-resources` 把下载到的
-// 压缩包按原名放进 `src-tauri/resources/`，运行期由
-// `config::runtime::bundled_archive_filename` 按同一套常量推导出同一个名字。
 
 const DSH_PKG_REPO = 'dsh-tauri-desk/deepseek-harness-pkg'
 const DSH_LATEST_DOWNLOAD_SEGMENT = 'releases/latest/download/'
+const RESOURCES_TOKEN = '$Resources'
+
+/** 随包资源目录名（= `src-tauri/resources/<dir>`，也是清单 `$Resources/<dir>` 的落点）。 */
+const BUNDLED_DIRS = { node: 'node', pnpm: 'pnpm', dsh: 'dsh', git: 'git' }
 
 function bundleError(message, cause) {
   const error = new Error(`BUNDLE_METADATA: ${message}`)
@@ -200,7 +200,7 @@ export function readBuildConstants(repo = process.cwd()) {
  *
  * 默认只随包 Node / pnpm / 内核三项：MinGit 约 35 MiB，而绝大多数 Windows 机器已有
  * 可用的系统 Git，内网补装又必然失败（应用侧据「随包资源」构建放宽 Git 就绪判定，
- * 见 `config::dependencies::bundled_core_dir`）。确有需要时用 `--with-git` 显式开启。
+ * 见 `config::dependencies::is_bundled_install`）。确有需要时用 `--with-git` 显式开启。
  */
 export function bundleTargets(platform, { withGit = false } = {}) {
   const keys = ['node', 'pnpm', 'dsh']
@@ -239,7 +239,7 @@ export function bundleAssets({ platform, arch, constants, dshTag, withGit = fals
       sha256Url: '',
     },
   }
-  if (bundleTargets(platform, { withGit }).includes('git')) {
+  if (platform === 'windows' && withGit) {
     const name = mingitAssetName(arch, constants.mingitVersion)
     assets.git = {
       name,
@@ -262,6 +262,45 @@ export function toAssetTable(assets) {
   return Object.entries(assets)
     .map(([key, asset]) => [key, asset.name, asset.url, asset.sha256 ?? '', asset.sha256Url ?? ''].join('|'))
     .join('\n')
+}
+
+/**
+ * 把清单里的依赖托管根改写成 `$Resources/<dir>`。
+ *
+ * 离线包把运行时随安装包分发，`managedRoot` 必须指向安装包资源目录。
+ *
+ * `overridable` 按依赖区分：
+ * - Node / pnpm（以及可选的 MinGit）置 false：它们固定随包，本机既有的
+ *   `dependencies.json` 记录（旧的非离线安装留下、可能已被删除）不该盖过随包资源；
+ * - 内核保持 true：随包内核是核心面板里置顶的「本地」项，用户要能下载并切换到
+ *   AppData 里的其它版本，也能切回来——切换正是通过依赖映射表实现的。
+ *
+ * 改写结果直接写回 `src-tauri/resources/manifest.jsonc`（构建产物，不提交），
+ * 因此注释与缩进按 JSON 重新序列化。未随包的依赖（默认的 MinGit）保持清单原值，
+ * 不能指向并不存在的 `$Resources/git`。
+ */
+export function applyBundleManifest({ repo = process.cwd(), platform, withGit = false } = {}) {
+  if (!['windows', 'macos', 'linux'].includes(platform))
+    throw bundleError(`platform must be windows|macos|linux, got ${JSON.stringify(platform)}`)
+  const manifest = readManifest(repo)
+  const dependencies = manifest?.dependencies
+  if (!dependencies || typeof dependencies !== 'object')
+    throw bundleError('manifest.jsonc is missing the dependencies section')
+
+  const applied = []
+  for (const key of bundleTargets(platform, { withGit })) {
+    const spec = dependencies[key]
+    if (!spec || typeof spec !== 'object')
+      throw bundleError(`manifest.jsonc is missing dependencies.${key}`)
+    const managedRoot = `${RESOURCES_TOKEN}/${BUNDLED_DIRS[key]}`
+    spec.managedRoot = managedRoot
+    spec.overridable = key === 'dsh'
+    applied.push(`${key} -> ${managedRoot} (overridable: ${spec.overridable})`)
+  }
+
+  const file = manifestPath(repo)
+  writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+  return { file, applied }
 }
 
 /** 解析 GitHub Release 响应中版本号命中推荐版本的 tag（与 Rust 侧版本解析同源）。 */
@@ -306,11 +345,13 @@ function appendOutputs(outputPath, values) {
 }
 
 function parseArgs(argv) {
-  const args = { assets: false, platform: '', arch: '', withGit: false }
+  const args = { assets: false, manifest: false, platform: '', arch: '', withGit: false }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--assets')
       args.assets = true
+    else if (arg === '--manifest')
+      args.manifest = true
     else if (arg === '--with-git')
       args.withGit = true
     else if (arg === '--platform')
@@ -343,6 +384,13 @@ async function main() {
     return
   }
 
+  if (args.manifest) {
+    requirePlatformArch(args)
+    const { file, applied } = applyBundleManifest({ repo, platform: args.platform, withGit: args.withGit })
+    process.stdout.write(`${file}\n${applied.map(line => `  ${line}`).join('\n')}\n`)
+    return
+  }
+
   const dshTag = await resolveDshTag(dshVersion)
   appendOutputs(process.env.GITHUB_OUTPUT, {
     node_version: constants.nodeVersion,
@@ -366,5 +414,6 @@ if (entryPoint && import.meta.url === pathToFileURL(path.resolve(entryPoint)).hr
 }
 
 export {
+  BUNDLED_DIRS,
   DSH_PKG_REPO,
 }

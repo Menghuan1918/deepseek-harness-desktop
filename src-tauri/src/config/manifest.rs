@@ -265,7 +265,7 @@ pub struct PresetPetExt {
 pub struct DependencySpec {
     /// 入口相对路径（相对依赖根），按平台覆盖：`default` / `windows` / `macos` / `linux`
     pub entry: EntrySpec,
-    /// AppData 下的默认托管根（相对 AppData 基础目录）
+    /// AppData 下的默认托管根（相对 AppData 基础目录，或 `resources/...`）
     pub managed_root: Option<String>,
     /// 是否允许运行期覆盖为任意位置
     pub overridable: bool,
@@ -313,7 +313,7 @@ impl EntrySpec {
     }
 }
 
-/// 安装包资源根：清单与随包资源压缩包的解析基准。
+/// 安装包资源根：`resources/...` 位置令牌与入口路径的解析基准。
 ///
 /// Tauri 2 在 Windows 上 `resource_dir()` 恒等于 exe 所在目录，安装包与开发产物
 /// 都会把资源按 `resources/**` 前缀落盘到 `{resource_dir}/resources/` 子目录，
@@ -321,11 +321,11 @@ impl EntrySpec {
 ///
 /// 返回前统一剥离 Windows 扩展长度前缀：`resource_dir()` 取自
 /// `tauri_utils::platform::current_exe()`（内部对 exe 路径做了 canonicalize），
-/// 在 Windows 上带 `\\?\` verbatim 前缀。该前缀会随依赖托管根拼进入口路径，
-/// 而已装内核的入口要交给 node 当主模块：node 的
+/// 在 Windows 上带 `\\?\` verbatim 前缀。该前缀会随依赖托管根（`$Resources/dsh`
+/// 等）拼进入口路径，而随包内核的入口要交给 node 当主模块：node 的
 /// `resolveMainPath` 解析 verbatim 路径会直接以
-/// `EISDIR: illegal operation on a directory, lstat 'C:'` 退出（Node 25 实测）。
-/// CLI shim 也会把这个前缀写进 `.cmd`，同样要归一化。
+/// `EISDIR: illegal operation on a directory, lstat 'C:'` 退出（Node 25 实测），
+/// 随包核心因此永远起不来。CLI shim 也会把这个前缀写进 `.cmd`，同样要归一化。
 pub fn resource_root<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     let dir = app.path().resource_dir().ok()?;
     Some(simplify_resource_root(pick_resource_root(&dir).unwrap_or(dir)))
@@ -456,31 +456,42 @@ pub fn dependency_spec<R: Runtime>(app: &AppHandle<R>, key: &str) -> Option<Depe
     with_manifest(app, |manifest| manifest.dependencies.get(key).cloned())?
 }
 
-/// 位置令牌解析：绝对路径原样返回，其余相对 AppData 基础目录——依赖可以托管在
-/// AppData，也可以由用户指定到任意盘符。
+/// 位置令牌解析：`resources/...` 相对安装包资源根，其余相对 AppData 基础目录，
+/// 绝对路径原样返回——依赖可以位于任意位置（AppData 托管、安装目录捆绑、
+/// 或用户指定的其它盘符）。
 pub fn resolve_location<R: Runtime>(app: &AppHandle<R>, raw: &str) -> PathBuf {
-    resolve_location_from(&super::runtime::get_base_dir(app), raw)
+    resolve_location_from(
+        &super::runtime::get_base_dir(app),
+        resource_root(app).as_deref(),
+        raw,
+    )
 }
 
-/// 位置令牌解析（依赖可位于任意位置：AppData 托管、或用户指定的其它盘符）：
+/// 位置令牌解析（依赖可位于任意位置：AppData 托管、安装目录捆绑、或用户指定的其它盘符）：
 ///
 /// - 绝对路径（`C:/...`、`/opt/...`）原样返回；
 /// - `$AppData/...`（大小写不敏感）= AppData 基础目录，debug 构建即 `<base>/dev` 的同级；
+/// - `$Resources/...` = 安装包资源根（`resources/` 为等价旧写法），探测不到时回落 AppData；
 /// - 其余相对路径 = 相对 AppData 基础目录。
-///
-/// 早期离线包曾用 `$Resources/...`（旧写法 `resources/...`）把依赖托管根指进安装包资源目录，
-/// 该令牌已废弃：解压产物一律落在 AppData，安装包内只留压缩包。
-pub fn resolve_location_from(base: &Path, raw: &str) -> PathBuf {
+pub fn resolve_location_from(base: &Path, resource_root: Option<&Path>, raw: &str) -> PathBuf {
     let value = raw.trim();
     if PathBuf::from(value).is_absolute() {
         return PathBuf::from(value);
     }
     let normalized = value.replace('\\', "/");
     if let Some(rest) = normalized.strip_prefix("./") {
-        return resolve_location_from(base, rest);
+        return resolve_location_from(base, resource_root, rest);
     }
     if let Some(rest) = strip_prefix_ci(&normalized, "$appdata") {
         return join_token(base, rest);
+    }
+    if let Some(rest) = strip_prefix_ci(&normalized, "$resources") {
+        return join_token(resource_root.unwrap_or(base), rest);
+    }
+    if let Some(rest) = normalized.strip_prefix("resources/") {
+        if let Some(root) = resource_root {
+            return join_token(root, rest);
+        }
     }
     base.join(value)
 }
@@ -743,9 +754,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// 用户可以把依赖托管根指向任意绝对路径（本地核心构建的常见做法）。`resource_dir()`
-    /// 在 Windows 上是 canonicalize 结果（带 `\\?\`），而 node 的 resolveMainPath 解析
-    /// verbatim 路径会直接以 `EISDIR: ... lstat 'C:'` 退出，因此资源根必须先归一化。
+    /// 随包资源构建（离线包）会把核心托管根指向 `$Resources/dsh`，该路径会作为
+    /// node 的主模块参数。`resource_dir()` 在 Windows 上是 canonicalize 结果（带
+    /// `\\?\`），而 node 的 resolveMainPath 解析 verbatim 路径会直接以
+    /// `EISDIR: ... lstat 'C:'` 退出，因此资源根必须先归一化。
     #[test]
     fn resource_root_simplifies_windows_verbatim_prefix() {
         let verbatim = PathBuf::from(r"\\?\C:\app\resources\dsh");
@@ -762,6 +774,7 @@ mod tests {
     #[test]
     fn location_token_resolves_arbitrary_bases() {
         let base = PathBuf::from("C:/app/data");
+        let resources = PathBuf::from("C:/app/resources");
         let absolute = if cfg!(windows) {
             "D:/anywhere"
         } else {
@@ -769,15 +782,19 @@ mod tests {
         };
 
         assert_eq!(
-            resolve_location_from(&base, "dependencies/dsh"),
+            resolve_location_from(&base, Some(&resources), "dependencies/dsh"),
             base.join("dependencies/dsh")
         );
         assert_eq!(
-            resolve_location_from(&base, r"dependencies\node"),
-            base.join(r"dependencies\node")
+            resolve_location_from(&base, Some(&resources), "resources/dsh"),
+            resources.join("dsh")
         );
         assert_eq!(
-            resolve_location_from(&base, absolute),
+            resolve_location_from(&base, Some(&resources), r"resources\node"),
+            resources.join("node")
+        );
+        assert_eq!(
+            resolve_location_from(&base, Some(&resources), absolute),
             PathBuf::from(absolute)
         );
     }
@@ -785,6 +802,7 @@ mod tests {
     #[test]
     fn location_prefix_tokens_are_case_insensitive_and_typed() {
         let base = PathBuf::from("C:/app/data");
+        let resources = PathBuf::from("C:/app/resources");
 
         for raw in [
             "$AppData/runtime",
@@ -797,21 +815,29 @@ mod tests {
             } else {
                 base.clone()
             };
-            assert_eq!(resolve_location_from(&base, raw), expected, "{raw}");
+            assert_eq!(
+                resolve_location_from(&base, Some(&resources), raw),
+                expected,
+                "{raw}"
+            );
         }
 
-        // 已废弃的资源令牌按普通相对路径落到 AppData：旧安装包留下的
-        // `"dsh": "$Resources/dsh"` 记录因此不再命中旧安装目录，回落到托管根重装。
         for raw in ["$Resources/dsh", "$resources/dsh", r"$RESOURCES\dsh"] {
-            assert_eq!(resolve_location_from(&base, raw), base.join(raw), "{raw}");
+            assert_eq!(
+                resolve_location_from(&base, Some(&resources), raw),
+                resources.join("dsh"),
+                "{raw}"
+            );
         }
+
+        // 资源根探测不到时回落 AppData，而不是相对当前工作目录
         assert_eq!(
-            resolve_location_from(&base, "resources/dsh"),
-            base.join("resources/dsh")
+            resolve_location_from(&base, None, "$Resources/dsh"),
+            base.join("dsh")
         );
         // 前缀不完整（不是令牌）时按普通相对路径处理
         assert_eq!(
-            resolve_location_from(&base, "$resourcesfoo/dsh"),
+            resolve_location_from(&base, Some(&resources), "$resourcesfoo/dsh"),
             base.join("$resourcesfoo/dsh")
         );
     }

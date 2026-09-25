@@ -358,22 +358,6 @@ pub fn get_mingit_download_url() -> Result<String, String> {
     ))
 }
 
-/// 随包资源压缩包文件名（相对安装包资源根）。
-///
-/// 离线包只把**压缩包**随安装包分发（解压产物一律落在 AppData），文件名就是上游资产名：
-/// `.github/actions/prepare-bundle-resources` 直接按 `scripts/bundle-metadata.mjs --assets`
-/// 的资产名落盘，这里按同一套常量重新推导，因此清单不必再记一份文件名，运行期也不必
-/// 解析目录。
-pub fn bundled_archive_filename(key: &str) -> Option<String> {
-    match key {
-        dependencies::DEP_NODE => node_pkg_filename(env::consts::OS, env::consts::ARCH).ok(),
-        dependencies::DEP_PNPM => Some(format!("pnpm-{PNPM_VERSION}.tgz")),
-        dependencies::DEP_DSH => dsh_pkg_asset_filename().ok(),
-        dependencies::DEP_GIT if cfg!(windows) => mingit_pkg_filename(env::consts::ARCH).ok(),
-        _ => None,
-    }
-}
-
 /// Windows MinGit 官方发行包固定 SHA-256。
 #[cfg_attr(not(windows), allow(dead_code))] // 仅 Windows 的 MinGit 任务使用
 pub fn get_mingit_sha256() -> Result<&'static str, String> {
@@ -467,13 +451,8 @@ pub fn get_git_cmd_dir<R: Runtime>(_app_handle: &AppHandle<R>) -> Option<PathBuf
 #[cfg(windows)]
 pub fn git_runtime_ready<R: Runtime>(app_handle: &AppHandle<R>) -> bool {
     find_system_git_binary().is_some()
-        // 随包 MinGit 换新版后同样要重解压：旧产物的指纹对不上就当未安装。
-        || (git_binary_works(&get_mingit_binary_path(app_handle))
-            && !dependencies::bundled_archive_is_stale(app_handle, dependencies::DEP_GIT))
-        // 随包构建放宽只在「没有随包 MinGit 压缩包」时成立：真随包了 MinGit，
-        // 就必须让它走解压流程，否则放宽会把该任务跳过、Git 永远装不上。
-        || (dependencies::bundled_core_dir(app_handle).is_some()
-            && dependencies::bundled_archive(app_handle, dependencies::DEP_GIT).is_none())
+        || git_binary_works(&get_mingit_binary_path(app_handle))
+        || dependencies::bundled_core_dir(app_handle).is_some()
 }
 
 /// 非 Windows 平台不属于本次空白 Windows 环境的自动配置范围。
@@ -834,43 +813,5 @@ mod tests {
                 "os: {os}, arch: {arch}, err: {err}"
             );
         }
-    }
-
-    #[test]
-    fn bundled_archive_filenames_mirror_the_bundled_assets() {
-        // 必须与 `.github/actions/prepare-bundle-resources` 落盘的文件名一致
-        // （资产名来自 `scripts/bundle-metadata.mjs --assets`），否则运行期找不到随包压缩包。
-        let node = bundled_archive_filename(dependencies::DEP_NODE).expect("node archive");
-        assert!(node.starts_with(&format!("node-{NODE_VERSION}-")), "{node}");
-        assert_eq!(
-            bundled_archive_filename(dependencies::DEP_PNPM).expect("pnpm archive"),
-            format!("pnpm-{PNPM_VERSION}.tgz")
-        );
-        let dsh = bundled_archive_filename(dependencies::DEP_DSH).expect("dsh archive");
-        assert!(dsh.starts_with("deepseek-harness-pkg-"), "{dsh}");
-
-        if cfg!(windows) {
-            assert_eq!(
-                bundled_archive_filename(dependencies::DEP_GIT).expect("mingit archive"),
-                mingit_pkg_filename(env::consts::ARCH).expect("supported arch")
-            );
-        } else {
-            // MinGit 只在 Windows 随包
-            assert!(bundled_archive_filename(dependencies::DEP_GIT).is_none());
-        }
-
-        // 扩展名必须落在 `download::ensure_extract` 能识别的归档格式内
-        for key in [
-            dependencies::DEP_NODE,
-            dependencies::DEP_PNPM,
-            dependencies::DEP_DSH,
-        ] {
-            let name = bundled_archive_filename(key).expect("bundled archive name");
-            assert!(
-                name.ends_with(".zip") || name.ends_with(".tgz") || name.ends_with(".tar.gz"),
-                "{name}"
-            );
-        }
-        assert!(bundled_archive_filename("unknown").is_none());
     }
 }

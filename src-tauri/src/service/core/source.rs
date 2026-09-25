@@ -67,8 +67,8 @@ pub struct HarnessCore {
     pub above_recommended: bool,
     /// 本地存在但远程 pkg 仓库已不再提供的历史槽位。
     pub orphaned: bool,
-    /// 是否随安装包分发（离线包在安装目录里随包内核压缩包，解压到 AppData 托管根）：
-    /// 核心面板把它置顶并标记「本地」，且不提供卸载——它是内网/离线环境唯一的兜底内核。
+    /// 是否随安装包分发（离线包把内核托管到 `$Resources/dsh`）：核心面板把它置顶并
+    /// 标记「本地」，且不提供卸载——它是内网/离线环境唯一的兜底内核。
     pub bundled: bool,
     /// 资源清单中的推荐版本，用于切换前风险提示。
     pub recommended_version: Option<String>,
@@ -161,7 +161,7 @@ pub fn active_dsh_binary(app_handle: &AppHandle) -> PathBuf {
     }
 }
 
-/// 当前生效的核心是否就是随安装包分发的那份（离线包随包压缩包解压到托管根）。
+/// 当前生效的核心是否就是随安装包分发的那份（离线包把内核托管到 `$Resources/dsh`）。
 ///
 /// 判定「来源是 App **且** 生效根就是随包内核目录」：切到本地核心时映射被记为系统环境、
 /// 生效根回落到随包目录，此时不能再算作随包内核。
