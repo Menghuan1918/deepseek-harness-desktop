@@ -1,4 +1,5 @@
-import type { HarnessCore } from '@/types'
+import type { HarnessCore, Profile } from '@/types'
+import type { CoreUpgradeChoice, CoreUpgradeProfileDialogProps } from '@/ui/dialog/core-upgrade-profile'
 import { ArrowRotateRight, ChevronRight, CircleArrowDown as DownloadIcon, FolderOpen } from '@gravity-ui/icons'
 import { Button, Checkbox, Chip, Description, Label, Spinner } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
@@ -16,8 +17,10 @@ import { queryKeys } from '@/config/query-keys'
 import { useInvalidateOnSettingUpdated } from '@/hooks/use-invalidate-on-setting-updated'
 import { store } from '@/store'
 import { useCoreBreakingConfirm } from '@/ui/config/hooks/use-core-breaking-confirm'
+import { CoreUpgradeProfileDialog } from '@/ui/dialog/core-upgrade-profile'
 import { DownloadCoreDialog } from '@/ui/dialog/update-core'
-import { compareVersions, isCoreUnsupported, MIN_SUPPORTED_CORE_VERSION } from '@/utils/core-version'
+import { compareVersions, coreMajorMinor, isCoreMajorMinorUpgrade, isCoreUnsupported, MIN_SUPPORTED_CORE_VERSION } from '@/utils/core-version'
+import { normalizeProfileId } from '@/utils/profile-id'
 import { silence } from '@/utils/silence'
 import { toast } from '@/utils/toast'
 
@@ -31,7 +34,8 @@ import { toast } from '@/utils/toast'
  *   降级为 git tags / 磁盘扫描，仅显示已下载版本）。预览版（Pre-release label
  *   或 tag 命名）照常列出、可下载安装，但带「预览版」标签、不参与更新提示。
  * - 切换核心：持久化后**自动重启**服务（需求 5），重启走 harness store 的
- *   restart 流程（停止 → 重新启动 → 健康检查）。
+ *   restart 流程（停止 → 重新启动 → 健康检查）。跨主/次版本升级时先弹「破坏性更改」
+ *   警告，确认后把当前档案换成与目标版本配套的版本档案（缺失则新建），再切核心并重启。
  * - 下载版本：拉指定 tag 的发布资产到历史槽位（不激活），随后可切换；
  *   卸载仅允许非激活的已下载版本。
  * - 本地核心更新：通过用户包管理器 CLI（npm install -g @latest / pnpm add -g @latest）。
@@ -41,6 +45,7 @@ import { toast } from '@/utils/toast'
 export function ConfigCore() {
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
   const [downloadDialogHolder, openDownloadDialog] = useOverlay(DownloadCoreDialog, { type: 'holder' })
+  const [upgradeDialogHolder, openUpgradeDialog] = useOverlay<CoreUpgradeProfileDialogProps, CoreUpgradeChoice>(CoreUpgradeProfileDialog, { type: 'holder' })
   const { holder: coreBreakingHolder, confirmCoreBreaking } = useCoreBreakingConfirm()
 
   const { t } = useTranslation()
@@ -134,6 +139,29 @@ export function ConfigCore() {
     }
   }
 
+  /**
+   * 取（或建）版本档案并切为使用中：同名档案已存在则直接切换，缺失才新建。
+   *
+   * 档案名按后端归一化后的 id 匹配（`0.17` → `017`），因此这里先取列表再决定是否新建，
+   * 不能直接 create——已存在时后端会以 `PROFILE_EXISTS` 拒绝。
+   */
+  async function activateVersionProfile(name: string): Promise<string> {
+    const profiles = await queryClient.fetchQuery({
+      queryKey: queryKeys.profiles,
+      queryFn: () => invoke<Profile[]>('get_profiles'),
+    })
+    const id = normalizeProfileId(name)
+    const existing = profiles.find(p => p.id === id)
+    if (existing) {
+      if (!existing.active)
+        await invoke<Profile>('set_active_profile', { id })
+      return id
+    }
+    const created = await invoke<Profile>('create_profile', { name })
+    await invoke<Profile>('set_active_profile', { id: created.id })
+    return created.id
+  }
+
   async function onActivate(core: HarnessCore) {
     if (core.active || busy || !core.present)
       return
@@ -147,26 +175,65 @@ export function ConfigCore() {
       })
       return
     }
-    try {
-      const isRiskyVersion = core.recommendedVersion !== null
-        && (core.aboveRecommended || compareVersions(core.version, core.recommendedVersion) > 0)
-      await openDialog({
-        status: isRiskyVersion ? 'danger' : 'warning',
-        title: isRiskyVersion ? t('core.recommended_warning_title') : t('core.switch_confirm_title'),
-        description: (
-          <p>
-            <If
-              cond={isRiskyVersion}
-              then={t('core.recommended_warning_desc', { version: core.recommendedVersion ?? '' })}
-              else={t('core.switch_confirm_desc', { version: displayVersion(core) })}
-            />
-          </p>
-        ),
-      })
+    const activeCore = cores.find(c => c.active)
+    const fromVersion = activeCore ? displayVersion(activeCore) : ''
+    const toVersion = displayVersion(core)
+    // 跨主/次版本升级 = 破坏性更改：核心与档案配套，先让用户把当前档案换成配套档案。
+    // 该弹窗本身包含「切换」语义，因此不再叠加一次普通的切换确认。
+    const breakingUpgrade = isCoreMajorMinorUpgrade(
+      activeCore ? coreVersionKey(activeCore) : '',
+      coreVersionKey(core),
+    )
+    let profileName = ''
+    if (breakingUpgrade) {
+      try {
+        const choice = await openUpgradeDialog({
+          fromVersion,
+          toVersion,
+          defaultName: coreMajorMinor(coreVersionKey(core)),
+        })
+        if (choice.mode === 'profile')
+          profileName = choice.name
+      }
+      catch (e) {
+        silence(e, 'core switch: breaking upgrade dialog cancelled')
+        return
+      }
     }
-    catch (e) {
-      silence(e, 'core switch: dialog cancelled')
-      return
+    else {
+      try {
+        const isRiskyVersion = core.recommendedVersion !== null
+          && (core.aboveRecommended || compareVersions(core.version, core.recommendedVersion) > 0)
+        await openDialog({
+          status: isRiskyVersion ? 'danger' : 'warning',
+          title: isRiskyVersion ? t('core.recommended_warning_title') : t('core.switch_confirm_title'),
+          description: (
+            <p>
+              <If
+                cond={isRiskyVersion}
+                then={t('core.recommended_warning_desc', { version: core.recommendedVersion ?? '' })}
+                else={t('core.switch_confirm_desc', { version: displayVersion(core) })}
+              />
+            </p>
+          ),
+        })
+      }
+      catch (e) {
+        silence(e, 'core switch: dialog cancelled')
+        return
+      }
+    }
+    // 先落档案再切核心：两者都由同一次重启生效，顺序颠倒会让新核心先于配套档案运行。
+    if (profileName) {
+      try {
+        await activateVersionProfile(profileName)
+        void queryClient.invalidateQueries({ queryKey: queryKeys.profiles })
+      }
+      catch (err) {
+        console.error('[ConfigCore] switch version profile failed:', err)
+        toast(t('core.breaking_profile_failed'), {})
+        return
+      }
     }
     try {
       // 激活后由 restart 完成时统一失效核心查询；这里不等待联网列表重拉，
@@ -476,6 +543,7 @@ export function ConfigCore() {
 
       {dialogHolder}
       {downloadDialogHolder}
+      {upgradeDialogHolder}
       {coreBreakingHolder}
     </div>
   )
@@ -484,6 +552,11 @@ export function ConfigCore() {
 /** 版本展示：优先版本号，缺失回落来源 id */
 function displayVersion(version: HarnessCore): string {
   return version.version || (version.source === 'local' ? 'local' : 'app')
+}
+
+/** 版本判定用的版本串：版本号缺失时回落到 release tag（列表排序同款兜底） */
+function coreVersionKey(core: HarnessCore): string {
+  return core.version || core.tag
 }
 
 /**

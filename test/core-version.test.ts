@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isCoreUnsupported, MIN_SUPPORTED_CORE_VERSION } from '@/utils/core-version'
+import { coreMajorMinor, isCoreMajorMinorUpgrade, isCoreUnsupported, MIN_SUPPORTED_CORE_VERSION } from '@/utils/core-version'
 
 /**
  * issue #596：随包内置插件依赖的平台种子词自 dsh 0.1.5 起才存在，核心低于最低支持
@@ -34,5 +34,53 @@ describe('isCoreUnsupported', () => {
   it('带 dsh-/src- 前缀的 release tag 按同一基线判定', () => {
     expect(isCoreUnsupported('dsh-0.1.2-rc.1')).toBe(true)
     expect(isCoreUnsupported('src-0.1.5-rc.1')).toBe(false)
+  })
+})
+
+describe('coreMajorMinor', () => {
+  it('只取主/次版本号，丢掉 patch 与预发布标识', () => {
+    expect(coreMajorMinor('0.17.1')).toBe('0.17')
+    expect(coreMajorMinor('0.18.0-rc.1')).toBe('0.18')
+    expect(coreMajorMinor('1.2.3')).toBe('1.2')
+  })
+
+  it('剥掉 dsh-/src- 前缀后再取主/次版本号', () => {
+    expect(coreMajorMinor('dsh-0.1.0-rc.8-32331963388')).toBe('0.1')
+    expect(coreMajorMinor('src-2.0.0')).toBe('2.0')
+  })
+
+  it('版本缺失或不可解析时为空串', () => {
+    expect(coreMajorMinor('')).toBe('')
+    expect(coreMajorMinor('local')).toBe('')
+    expect(coreMajorMinor('app-0.1.0-rc.8')).toBe('')
+  })
+})
+
+/**
+ * 跨主/次版本的升级才触发「破坏性更改 → 请切换档案」，patch 升级与降级一律放行：
+ * 漏提示只是少一次提醒，误报会把正常切换挡在弹窗后面。
+ */
+describe('isCoreMajorMinorUpgrade', () => {
+  it('跨次版本或主版本的升级为 true', () => {
+    expect(isCoreMajorMinorUpgrade('0.17.1', '0.18.0')).toBe(true)
+    expect(isCoreMajorMinorUpgrade('0.17.1', '1.0.0')).toBe(true)
+    expect(isCoreMajorMinorUpgrade('0.17.1', '1.2.0-rc.1')).toBe(true)
+  })
+
+  it('同主次版本的 patch 升级不算破坏性升级', () => {
+    expect(isCoreMajorMinorUpgrade('0.17.1', '0.17.2')).toBe(false)
+    expect(isCoreMajorMinorUpgrade('0.17.1', '0.17.1')).toBe(false)
+  })
+
+  it('降级不算升级', () => {
+    expect(isCoreMajorMinorUpgrade('0.18.0', '0.17.1')).toBe(false)
+    expect(isCoreMajorMinorUpgrade('1.0.0', '0.9.9')).toBe(false)
+  })
+
+  it('任一侧版本缺失或不可解析时不误报', () => {
+    expect(isCoreMajorMinorUpgrade('', '0.18.0')).toBe(false)
+    expect(isCoreMajorMinorUpgrade('local', '0.18.0')).toBe(false)
+    expect(isCoreMajorMinorUpgrade('0.17.1', '')).toBe(false)
+    expect(isCoreMajorMinorUpgrade('0.17.1', 'app')).toBe(false)
   })
 })
