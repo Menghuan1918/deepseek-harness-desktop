@@ -2,31 +2,19 @@
 
 ## deepseek-ai/deepseek-harness
 
-This package carries no official source. Its per-turn Git snapshot and file
-restore path are this repo's own; only the input-dock chip mirrors the official
-deliverables row. Upstream sources are MIT-licensed:
-
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Cross-checked revision: `c36a83ff6bb95e3f82cf79f9be7c724270a8aa61`
-  (`dsh-v0.1.7-alpha.1` — the `source/deepseek-harness` gitlink and the `dsh:`
-  catalog pin in `pnpm-workspace.yaml`)
-- Bundled runtime cross-check: `477b4f420553e8a52c2fbccc464d7561b239c443`
-  (`dsh-v0.1.7-rc.2`)
+- Version: `dsh-v0.1.7-rc.2`
+- Revision: `477b4f420553e8a52c2fbccc464d7561b239c443`
+- Source: `source/deepseek-harness`
+- Catalog pin: `dsh:` → `0.1.7-alpha.1` (`pnpm-workspace.yaml`)
 - License: MIT — Copyright (c) 2026 DeepSeek
+- Not copied: the per-turn Git snapshot and file restore path are this repo's own; only the input-dock chip mirrors the official deliverables row.
 
 Mirrored official surface:
 
-- **Chip form and position** — the "N files changed +x -y" chip reproduces the
-  official deliverables row and disappears when the turn ends
-  (`src/client/components/running-changes-chip.cssr.ts:7`).
-- **Count colours** — `+N` green / `-M` red match the official deliverables row
-  (`src/client/components/change-counts.tsx:5`,
-  `src/client/styles/counts.cssr.ts:8`,
-  `src/client/components/running-changes-chip.cssr.test.ts:26`).
-- **Dock order** — the chip is ordered against the official dock rows (official
-  `todo` = 0, `goal` = 10, `queue` = 20, worktree banner = -10): a negative order
-  places it above the official task list and worktree banner
-  (`src/client/constants/index.ts:12`, `src/client/register/running-chip.ts:5`).
+- Chip form and position: the "N files changed +x -y" chip reproduces the official deliverables row and disappears when the turn ends (`src/client/components/running-changes-chip.cssr.ts:7`).
+- Count colours: `+N` green / `-M` red match the official deliverables row (`src/client/components/change-counts.tsx:5`, `src/client/styles/counts.cssr.ts:8`, `src/client/components/running-changes-chip.cssr.test.ts:26`).
+- Dock order: the chip is ordered against the official dock rows (official `todo` = 0, `goal` = 10, `queue` = 20, worktree banner = -10); a negative order places it above the official task list and worktree banner (`src/client/constants/index.ts:12`, `src/client/register/running-chip.ts:5`).
 
 ## License
 
