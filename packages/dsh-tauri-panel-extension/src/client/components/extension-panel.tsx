@@ -1,8 +1,9 @@
 import type { ReactElement } from 'react'
 import type { MarketFace } from '../service/market.types'
 import { SegmentedControl } from 'dsh-tauri-ui/client'
-import { useEffect, useId, useState } from 'react'
+import { useId, useState } from 'react'
 import { locale } from '../locales'
+import { resolveActiveTab } from './extension-panel.utils'
 import { MarketTab } from './market-tab'
 import { McpTab } from './mcp-tab'
 import { SkillsTab } from './skills-tab'
@@ -31,9 +32,14 @@ export function ExtensionPanel({ createSkill, market }: ExtensionPanelProps): Re
     { id: 'mcp', label: t('mcpTab'), render: () => <McpTab t={t} /> },
   ]
   const initialId = rows[0]?.id ?? 'skills'
-  const [activeId, setActiveId] = useState(initialId)
+  const [requestedId, setRequestedId] = useState(initialId)
   const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set([initialId]))
-  useEffect(() => setVisited(previous => previous.has(activeId) ? previous : new Set([...previous, activeId])), [activeId])
+  const activeId = resolveActiveTab(rows, requestedId)
+
+  const select = (next: string): void => {
+    setRequestedId(next)
+    setVisited(previous => (previous.has(next) ? previous : new Set([...previous, next])))
+  }
 
   return (
     <div className="dshp-extension">
@@ -44,7 +50,7 @@ export function ExtensionPanel({ createSkill, market }: ExtensionPanelProps): Re
             label={t('extension')}
             value={activeId}
             options={rows.map(row => ({ value: row.id, label: row.label }))}
-            onChange={setActiveId}
+            onChange={select}
           />
         </div>
         {rows.filter(row => row.id === activeId || visited.has(row.id)).map((row) => {
