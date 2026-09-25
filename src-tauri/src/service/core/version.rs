@@ -68,6 +68,54 @@ fn read_manifest_dsh_version(dir: &Path) -> Option<String> {
 /// tags（无 label，预览标记按 tag 命名兜底），再失败降级为磁盘扫描，只列出
 /// 本地、激活与已下载的历史版本。
 pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
+    let (release_metas, remote_catalog_available) = fetch_release_catalog(app_handle).await;
+    rows_with_release_catalog(app_handle, release_metas, remote_catalog_available)
+}
+
+/// 版本行数据源：GitHub releases → git tags → 空（离线/限流时调用方降级为磁盘扫描）。
+async fn fetch_release_catalog(
+    app_handle: &AppHandle,
+) -> (Vec<download::DshPkgReleaseMeta>, bool) {
+    match download::fetch_dsh_pkg_releases().await {
+        Ok(metas) => (metas, true),
+        Err(e) => {
+            log::warn!(
+                "Failed to fetch dsh pkg releases ({}), falling back to git tags",
+                e
+            );
+            match download::fetch_dsh_pkg_tags().await {
+                Ok(tags) => (
+                    tags.into_iter()
+                        .map(|(tag, _)| download::DshPkgReleaseMeta {
+                            tag,
+                            prerelease: false,
+                        })
+                        .collect(),
+                    true,
+                ),
+                Err(e) => {
+                    log::warn!("Failed to fetch dsh pkg tags: {}", e);
+                    (Vec::new(), false)
+                }
+            }
+        }
+    }
+}
+
+/// 只用本地信息（激活记录 + 磁盘槽位）构造核心列表，不联网。
+///
+/// 核心切换是纯本地操作，回包不该等一轮 GitHub 往返（`fetch_dsh_pkg_releases`
+/// 数秒级，离线更久）；切换后的「新激活行」与离线列表都走这条路。
+fn list_local(app_handle: &AppHandle) -> Vec<HarnessCore> {
+    rows_with_release_catalog(app_handle, Vec::new(), false)
+}
+
+/// 按给定版本行数据源构造核心列表（`release_metas` 为空即离线/本地视图）。
+fn rows_with_release_catalog(
+    app_handle: &AppHandle,
+    release_metas: Vec<download::DshPkgReleaseMeta>,
+    remote_catalog_available: bool,
+) -> Vec<HarnessCore> {
     let source = active_source(app_handle);
     let local = local_core(app_handle);
     let local_bin = local
@@ -123,30 +171,6 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     // 版本行：GitHub releases（最新在前，含 Pre-release label）→ 按版本去重，
     // 同版本只保留最后一个 tag。releases 拉取失败（离线/限流）时回退 git tags，
     // 预览标记按 tag 命名兜底（见 `download::is_preview_tag`）。
-    let (release_metas, remote_catalog_available) = match download::fetch_dsh_pkg_releases().await {
-        Ok(metas) => (metas, true),
-        Err(e) => {
-            log::warn!(
-                "Failed to fetch dsh pkg releases ({}), falling back to git tags",
-                e
-            );
-            match download::fetch_dsh_pkg_tags().await {
-                Ok(tags) => (
-                    tags.into_iter()
-                        .map(|(tag, _)| download::DshPkgReleaseMeta {
-                            tag,
-                            prerelease: false,
-                        })
-                        .collect(),
-                    true,
-                ),
-                Err(e) => {
-                    log::warn!("Failed to fetch dsh pkg tags: {}", e);
-                    (Vec::new(), false)
-                }
-            }
-        }
-    };
     let mut version_tags: Vec<(String, String, bool)> = Vec::new(); // (version, tag, preview)，保持首次出现顺序
     for meta in &release_metas {
         let Some(version) = download::parse_version_from_tag(&meta.tag) else {
@@ -379,12 +403,13 @@ pub async fn set_active(app_handle: &AppHandle, id: &str) -> Result<HarnessCore,
     } else {
         return Err(format!("CORE_INVALID_ID: {id}"));
     }
-    // 查询核心列表可能联网；不要让慢查询继续占用切换锁，重启流程会在
-    // set_active 返回后通过同一把锁与启动串行化。
+    // 先释放切换锁再构造回包：重启流程要拿同一把锁与启动串行化，而回包已是纯本地
+    // 构造（`list_local`），不必也不该在锁内多做一步。
     drop(transition_guard);
 
-    list(app_handle)
-        .await
+    // 回包只用本地列表构造，不再调用联网的 `list()`：核心切换是本地操作，为拿一个
+    // 返回行等一轮 GitHub 往返会让「切换核心」白等数秒（离线更久）。
+    list_local(app_handle)
         .into_iter()
         .find(|c| c.active)
         .ok_or_else(|| "CORE_NOT_FOUND: active core disappeared after switch".to_string())

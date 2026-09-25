@@ -31,10 +31,15 @@ export const harnessUpdater = defineStore({
       }
     },
 
-    /** 手动更新：重新下载安装新版并重启服务 */
-    async handleUpdate() {
+    /**
+     * 手动更新：重新下载安装新版并重启服务。
+     *
+     * 返回是否真的切到了新版本：false 表示未发生安装（已是最新/无法校验）或安装失败——
+     * 调用方据此回滚为本次更新预先切换的版本档案（旧核心不能配新档案）。
+     */
+    async handleUpdate(): Promise<boolean> {
       if (this.updating)
-        return
+        return false
       this.updating = true
       let unlistenInstall: UnlistenFn | null = null
       try {
@@ -59,14 +64,16 @@ export const harnessUpdater = defineStore({
           if (this.updateInfo) {
             toast(i18next.t('update.verify_failed'), { variant: 'danger' })
           }
-          return
+          return false
         }
         await harness.launchAndWait()
         this.updateInfo = null
+        return true
       }
       catch (err) {
         console.error('[Harness] update failed:', err)
         harness.fail(String(err))
+        return false
       }
       finally {
         unlistenInstall?.()
