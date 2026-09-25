@@ -1000,9 +1000,17 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
 
 // configure tauri builder
 pub fn builder() -> tauri::Builder<tauri::Wry> {
-    let builder = tauri::Builder::default()
-        // E2E：内嵌 WebDriver server（仅在 TAURI_WEBDRIVER_PORT 存在时监听）。
-        .plugin(tauri_plugin_wdio_webdriver::init())
+    let mut builder = tauri::Builder::default();
+
+    // E2E：内嵌 WebDriver server 只在 E2E 进程装配（`@wdio/tauri-service` 拉起应用时注入
+    // TAURI_WEBDRIVER_PORT）。插件一旦注册就会无条件监听 127.0.0.1:4445，并接管每个 webview
+    // 的 script dialog（默认弹窗被禁用，转成等 WebDriver 应答、最长 30s 的 pending alert）；
+    // 正常 dev/release 会话既不该开这个端口，也不该动用户的弹窗与文件选择。
+    if crate::config::is_e2e_run() {
+        builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    }
+
+    let builder = builder
         .manage(crate::desktop::pet_mouse::PetMouseStreamState::default())
         .setup(|app| {
             let app_handle = app.handle().clone();
