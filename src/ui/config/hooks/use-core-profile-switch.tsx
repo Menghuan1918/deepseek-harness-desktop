@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useTranslation } from 'react-i18next'
 import { queryKeys } from '@/config/query-keys'
 import { CoreUpgradeProfileDialog } from '@/ui/dialog/core-upgrade-profile'
-import { coreMajorMinor, isCoreUpgrade } from '@/utils/core-version'
+import { coreProfileName, isCoreUpgrade } from '@/utils/core-version'
 import { normalizeProfileId } from '@/utils/profile-id'
 import { toast } from '@/utils/toast'
 
@@ -68,7 +68,7 @@ export function useCoreProfileSwitch() {
       choice = await openDialog({
         fromVersion: from,
         toVersion,
-        defaultName: coreMajorMinor(toVersion),
+        defaultName: coreProfileName(toVersion),
       })
     }
     catch {

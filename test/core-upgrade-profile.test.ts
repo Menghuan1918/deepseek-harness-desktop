@@ -51,11 +51,11 @@ describe('版本比对一律走本地数据', () => {
     expect(body).not.toContain('\'get_cores\'')
   })
 
-  it('任何更新的版本都判定为升级，默认档案名取目标版本的主/次版本号（x.x）', () => {
+  it('任何更新的版本都判定为升级，默认档案名取目标版本号（含 patch，Core-x.y.z）', () => {
     const body = bodyOf(guardSource(), 'async function guardCoreUpgrade')
 
     expect(body).toContain('isCoreUpgrade(from, toVersion)')
-    expect(body).toContain('coreMajorMinor(toVersion)')
+    expect(body).toContain('coreProfileName(toVersion)')
     expect(body).toMatch(/defaultName:/)
   })
 })
@@ -183,7 +183,7 @@ describe('更新提示入口（桌面外壳 / 调试页）走同一守卫', () =
 })
 
 describe('警告对话框控件', () => {
-  it('档案名默认填 x.x、可编辑，并用 InputGroup 组合而非自绘 Label + Input', () => {
+  it('档案名默认填目标版本号（含 patch）、可编辑，并用 InputGroup 组合而非自绘 Label + Input', () => {
     const source = dialogSource()
 
     expect(source).toMatch(/useState\(props\.defaultName\)/)

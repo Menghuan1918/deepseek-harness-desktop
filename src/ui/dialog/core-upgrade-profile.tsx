@@ -16,7 +16,7 @@ export interface CoreUpgradeProfileDialogProps extends PropsWithOverlays {
   fromVersion: string
   /** 目标核心版本（展示用） */
   toVersion: string
-  /** 档案名默认值：目标版本的主/次版本号（`x.x`） */
+  /** 档案名默认值：目标版本号（含 patch，如 `Core-0.1.7`；同一 patch 的 rc 共用档案） */
   defaultName: string
 }
 
@@ -47,7 +47,7 @@ export function CoreUpgradeProfileDialog(props: CoreUpgradeProfileDialogProps) {
           <AlertDialog.Dialog className="sm:max-w-[420px]">
             <AlertDialog.CloseTrigger />
             <AlertDialog.Header>
-              <AlertDialog.Icon status="warning" />
+              <AlertDialog.Icon status="danger" />
               <AlertDialog.Heading>{t('core.breaking_title')}</AlertDialog.Heading>
             </AlertDialog.Header>
             <AlertDialog.Body className="space-y-3">
