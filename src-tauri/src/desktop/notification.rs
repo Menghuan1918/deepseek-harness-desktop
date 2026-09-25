@@ -323,11 +323,12 @@ pub fn enable_notification_permissions(
 
         let _ = frame3.add_ContentLoading(
             &FrameContentLoadingEventHandler::create(Box::new(move |_, _| {
-                // 通知桥、剪贴板图片桥与 boot 探测桥需要 iframe 上下文执行。
+                // 通知桥、剪贴板图片桥、帧内日志桥与 boot 探测桥需要 iframe 上下文执行。
                 // （导航桥 / 缩放快捷键 / 全局样式已分别由 dsh-tauri、dsh-tauri-ui 插件承担。）
                 for script in [
                     crate::desktop::notification::NOTIFICATION_SHIM_JS,
                     crate::desktop::paste::PASTE_SHIM_JS,
+                    crate::desktop::frame_log::FRAME_LOG_BRIDGE_JS,
                     crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS,
                 ] {
                     let script = HSTRING::from(script);

@@ -577,7 +577,7 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
     // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、
-    // 剪贴板图片桥与 boot 探测桥注入所有 frame（脚本均带幂等守卫，重复注入安全）。
+    // 剪贴板图片桥、帧内日志桥与 boot 探测桥注入所有 frame（脚本均带幂等守卫，重复注入安全）。
     // 导航桥（侧边栏）、缩放快捷键与 iframe 全局样式已分别由 dsh-tauri /
     // dsh-tauri-ui 插件在 iframe 内实现，不再注入对应脚本。
     #[cfg(not(windows))]
@@ -586,6 +586,7 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
         .initialization_script_for_all_frames(crate::desktop::compat::ITERATOR_HELPERS_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
+        .initialization_script_for_all_frames(crate::desktop::frame_log::FRAME_LOG_BRIDGE_JS)
         .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS);
 
     let webview_window = webview_builder.build()?;
@@ -670,13 +671,14 @@ pub fn build_extra_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::W
         .icon(app.default_window_icon().unwrap().clone())?;
 
     // 非 Windows 平台没有 WebView2 的 FrameCreated/ContentLoading 流程，兼容桥、
-    // 通知桥、剪贴板图片桥与 boot 探测桥必须按窗口重新注入（与主窗口一致）。
+    // 通知桥、剪贴板图片桥、帧内日志桥与 boot 探测桥必须按窗口重新注入（与主窗口一致）。
     #[cfg(not(windows))]
     let webview_builder = webview_builder
         .initialization_script_for_all_frames(crate::desktop::compat::ABORT_SIGNAL_ANY_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::compat::ITERATOR_HELPERS_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
+        .initialization_script_for_all_frames(crate::desktop::frame_log::FRAME_LOG_BRIDGE_JS)
         .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS);
 
     #[cfg(target_os = "macos")]
