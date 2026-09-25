@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import type { MarketFace } from '../service/market.types'
 import { SegmentedControl } from 'dsh-tauri-ui/client'
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { locale } from '../locales'
 import { resolveActiveTab } from './extension-panel.utils'
 import { MarketTab } from './market-tab'
@@ -35,11 +35,9 @@ export function ExtensionPanel({ createSkill, market }: ExtensionPanelProps): Re
   const [requestedId, setRequestedId] = useState(initialId)
   const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set([initialId]))
   const activeId = resolveActiveTab(rows, requestedId)
-
-  const select = (next: string): void => {
-    setRequestedId(next)
-    setVisited(previous => (previous.has(next) ? previous : new Set([...previous, next])))
-  }
+  // 市场服务消失时会回落到别的标签页：那也已经「打开过」，同样要留在挂载集里，
+  // 否则市场一回来它就卸载，用户在那一页里的状态被丢掉。
+  useEffect(() => setVisited(previous => previous.has(activeId) ? previous : new Set([...previous, activeId])), [activeId])
 
   return (
     <div className="dshp-extension">
@@ -50,7 +48,7 @@ export function ExtensionPanel({ createSkill, market }: ExtensionPanelProps): Re
             label={t('extension')}
             value={activeId}
             options={rows.map(row => ({ value: row.id, label: row.label }))}
-            onChange={select}
+            onChange={setRequestedId}
           />
         </div>
         {rows.filter(row => row.id === activeId || visited.has(row.id)).map((row) => {

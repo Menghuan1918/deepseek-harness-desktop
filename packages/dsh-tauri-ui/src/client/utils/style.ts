@@ -20,7 +20,8 @@ function existingElement(id?: string): HTMLStyleElement | null {
 /**
  * 挂载一张 cssr 样式表，返回释放函数；同一个 `CNode` 多次挂载只落一个标签。
  * @param cnode - `.cssr.ts` 导出的样式节点。
- * @param id - 样式标签的 `cssr-id`，也是卸载时的唯一凭据。
+ * @param id - 样式标签的 `cssr-id`，也是卸载时的唯一凭据；**必须全文档唯一**——同 id 视为同一张表，
+ *   挂载时会摘掉旧表另挂，好让活表记在本次挂载的节点名下（否则旧实例卸载会把它摘掉）。
  * @param owner - 归属插件 id，落进 `data-plugin`；默认本插件（本助手由 `dsh-tauri-ui` 提供）。
  */
 export function mountStyle(cnode: CNode, id?: string, owner: string = PLUGIN_ID): () => void {
