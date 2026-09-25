@@ -224,10 +224,10 @@ describe('警告对话框控件', () => {
     expect(source).toMatch(/isDisabled=\{!profileId\}/)
   })
 
-  it('warning 状态的 AlertDialog，警告文案同时给出源版本与目标版本', () => {
+  it('danger 状态的 AlertDialog，警告文案同时给出源版本与目标版本', () => {
     const source = dialogSource()
 
-    expect(source).toMatch(/status="warning"/)
+    expect(source).toMatch(/status="danger"/)
     expect(source).toMatch(/core\.breaking_desc', \{ from: props\.fromVersion, to: props\.toVersion \}/)
   })
 })
