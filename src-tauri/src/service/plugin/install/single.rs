@@ -37,7 +37,10 @@ pub async fn update(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     run_single_plugin_command(app_handle, id, "update", &update_pnpm_args(id)).await
 }
 
-/// 升级时转发给 pnpm 的参数：`update <id> --latest`。
+/// 升级时转发给 pnpm 的参数：`<id> --latest`。
+///
+/// `update` 动词不写在这里：它由 [`single_plugin_args`] 作为动作统一放在参数最前，
+/// 重复一次会变成 `pnpm update update <id>`（见该函数的说明）。
 ///
 /// `--latest` 不能省：profile 里的依赖 spec 通常是范围（`catalog:` 或 `^x.y.z`），
 /// 裸 `pnpm update` 只在声明范围内取值——档案的 spec 是 `catalog:` 时范围来自
@@ -47,7 +50,7 @@ pub async fn update(app_handle: &AppHandle, id: &str) -> Result<(), String> {
 /// pnpm 自己把 catalog 条目改写到新版本；git spec 不受影响（`--latest` 不会把
 /// `github:owner/repo` 退化成 semver 范围，实测原样保留）。
 fn update_pnpm_args(id: &str) -> Vec<String> {
-    vec!["update".to_string(), id.to_string(), "--latest".to_string()]
+    vec![id.to_string(), "--latest".to_string()]
 }
 
 /// 依赖的「解析指纹」：profile `pnpm-lock.yaml` 当前 importer（`importers["."]`）
@@ -100,13 +103,8 @@ fn installed_package_version(profile: &Path, id: &str) -> Option<String> {
 
 /// 卸载单个插件：`dsh plugin --profile <当前档案> remove <id>`
 pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
-    let command_result = run_single_plugin_command(
-        app_handle,
-        id,
-        "remove",
-        &["remove".to_string(), id.to_string()],
-    )
-    .await;
+    let command_result =
+        run_single_plugin_command(app_handle, id, "remove", &[id.to_string()]).await;
     // `dsh plugin remove` 以子进程退出码为准，可能出现「命令成功但插件仍在」的
     // 边界（如 bundle 层残留、pnpm 静默失败）；node_modules / lockfile 损坏时
     // （典型：安装只写入了 profile 清单而产物缺失，见 issue #90）pnpm 甚至会
@@ -239,6 +237,24 @@ pub(crate) async fn uninstall_deprecated_plugins(app_handle: &AppHandle) -> Resu
     }
 }
 
+/// `dsh plugin` 的参数：`plugin --profile <档案> <action> <sub_args...>`。
+///
+/// `dsh plugin` 把 `--profile` 之后的参数**原样**转发给 pnpm（`dsh plugin --profile
+/// <name> <pnpm-args...>`），所以动作动词只能出现一次：`sub_args` 里再带一次动词，
+/// pnpm 收到的就是 `pnpm remove remove <id>`（issue #715 日志中的 `pnpm remove
+/// remove dshmarket`）——`remove` 会去找一个名为 `remove` 的依赖，卸载/升级因此
+/// 不生效甚至失败。
+fn single_plugin_args(profile: &str, action: &str, sub_args: &[String]) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("plugin"),
+        OsString::from("--profile"),
+        OsString::from(profile),
+        OsString::from(action),
+    ];
+    args.extend(sub_args.iter().map(OsString::from));
+    args
+}
+
 /// 执行单个插件的升级/卸载：准备环境 → 停止服务 → 运行 `dsh plugin` →
 /// 失败记录错误、成功清除错误。
 async fn run_single_plugin_command(
@@ -308,14 +324,12 @@ async fn run_single_plugin_command(
         None
     };
 
-    let mut args = vec![
-        dsh_bin.as_os_str().to_os_string(),
-        OsString::from("plugin"),
-        OsString::from("--profile"),
-        OsString::from(active_profile(app_handle)),
-        OsString::from(action),
-    ];
-    args.extend(sub_args.iter().map(OsString::from));
+    let mut args = vec![dsh_bin.as_os_str().to_os_string()];
+    args.extend(single_plugin_args(
+        &active_profile(app_handle),
+        action,
+        sub_args,
+    ));
 
     let cwd = config::get_dsh_install_path(app_handle);
     log::info!("Running dsh plugin {action} for {id}");
@@ -639,8 +653,45 @@ mod tests {
         // 「退出码 0 但什么都没装」的假成功——正是 sidebar 0.18.1→0.19.0 不生效的根因。
         assert_eq!(
             update_pnpm_args("dsh-better-sidebar"),
-            vec!["update", "dsh-better-sidebar", "--latest"]
+            vec!["dsh-better-sidebar", "--latest"]
         );
+    }
+
+    /// 回归 issue #715：`dsh plugin` 把动作之后的参数原样转发给 pnpm，动作动词因此
+    /// 只能出现一次。升级/卸载曾把动词同时放进 `action` 与 `sub_args`，实际执行
+    /// `pnpm remove remove <id>`、`pnpm update update <id> --latest`。
+    #[test]
+    fn single_plugin_args_keep_the_pnpm_verb_once() {
+        let remove = single_plugin_args("tauri", "remove", &["dshmarket".to_string()]);
+        assert_eq!(
+            remove,
+            vec!["plugin", "--profile", "tauri", "remove", "dshmarket"]
+        );
+
+        let update = single_plugin_args("tauri", "update", &update_pnpm_args("dsh-better-sidebar"));
+        assert_eq!(
+            update,
+            vec![
+                "plugin",
+                "--profile",
+                "tauri",
+                "update",
+                "dsh-better-sidebar",
+                "--latest"
+            ]
+        );
+
+        for (action, args) in [("remove", &remove), ("update", &update)] {
+            let joined: Vec<String> = args
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                joined.iter().filter(|argument| *argument == action).count(),
+                1,
+                "{action} must appear exactly once in {joined:?}"
+            );
+        }
     }
 
     /// 造一个最小 profile：写入 `pnpm-lock.yaml` 与 `node_modules/dsh-probe/package.json`。
