@@ -131,6 +131,14 @@ skips the download phase, reads the archive and feeds it through the ordinary ex
 path (`download::ensure_extract` → `flatten_directory`), landing in the same app-data
 managed roots a download would use.
 
+An upgrade replaces those archives but leaves the app-data trees in place, so each
+extraction also records a fingerprint of its archive (`<managed root>/.bundled-archive`,
+name + byte size) and a mismatching fingerprint makes the dependency count as *not*
+installed (see `config::dependencies::bundled_archive_is_stale`). A rebundled Node/pnpm/core
+is therefore unpacked once on the next launch, while an unchanged archive is not touched
+again. A core the user switched to a downloaded slot is exempt — re-unpacking the bundled
+archive there would overwrite the selected version.
+
 Only what running `dsh` itself needs is bundled. Git is deliberately left out: it is not
 required to start the harness, only git-backed features (worktree, `github:` plugins) are,
 and an air-gapped machine can never provision it later. A bundled build therefore stops

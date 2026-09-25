@@ -195,8 +195,8 @@ pub fn active_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
             let resolved = manifest::resolve_location(app, &recorded.to_string_lossy());
             // 安装目录里的记录同样不采信：旧离线包把依赖根写在那里，而现在解压产物
             // 一律落在 AppData，老记录只会把应用钉在旧树上。
-            let inside_install_dir = manifest::resource_root(app)
-                .is_some_and(|root| resolved.starts_with(root));
+            let inside_install_dir =
+                manifest::resource_root(app).is_some_and(|root| resolved.starts_with(root));
             if resolved.exists() && !inside_install_dir {
                 return resolved;
             }
@@ -213,6 +213,53 @@ pub fn bundled_archive<R: Runtime>(app: &AppHandle<R>, key: &str) -> Option<Path
     let name = super::runtime::bundled_archive_filename(key)?;
     let path = manifest::resource_root(app)?.join(name);
     path.is_file().then_some(path)
+}
+
+/// 托管根里记录「这份产物解压自哪个随包压缩包」的指纹文件。
+const BUNDLED_STAMP_FILE: &str = ".bundled-archive";
+
+/// 随包压缩包指纹：文件名 + 字节数。dsh 资产名不含版本（`deepseek-harness-pkg-*.zip`），
+/// 换版本只能靠体积区分；升级安装会把新压缩包同名覆盖，字节数随之改变。
+fn archive_fingerprint(archive: &Path) -> Option<String> {
+    let name = archive.file_name()?.to_string_lossy();
+    let size = std::fs::metadata(archive).ok()?.len();
+    Some(format!("{name}:{size}"))
+}
+
+/// 托管根与随包压缩包是否不同源（无记录、记录不匹配都算）。
+fn archive_stamp_differs(root: &Path, archive: &Path) -> bool {
+    let Some(fingerprint) = archive_fingerprint(archive) else {
+        return false;
+    };
+    std::fs::read_to_string(root.join(BUNDLED_STAMP_FILE))
+        .map(|recorded| recorded.trim() != fingerprint)
+        .unwrap_or(true)
+}
+
+fn write_archive_stamp(root: &Path, archive: &Path) {
+    let Some(fingerprint) = archive_fingerprint(archive) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(root);
+    let _ = std::fs::write(root.join(BUNDLED_STAMP_FILE), fingerprint);
+}
+
+/// 随包压缩包是否比托管根里的产物新（没有随包压缩包时恒为 false）。
+///
+/// 离线包升级会替换安装目录里的压缩包，而 AppData 里的解压产物留在原地：不比对指纹
+/// 就会一直用旧运行时。判定只在「托管根就是这份压缩包的解压目标」时有意义。
+pub fn bundled_archive_is_stale<R: Runtime>(app: &AppHandle<R>, key: &str) -> bool {
+    match bundled_archive(app, key) {
+        Some(archive) => archive_stamp_differs(&managed_root(app, key), &archive),
+        None => false,
+    }
+}
+
+/// 解压落盘后记录指纹：下次启动据此判定「随包压缩包已换新版」而重新解压。
+pub fn record_bundled_archive_stamp<R: Runtime>(app: &AppHandle<R>, key: &str) {
+    if let Some(archive) = bundled_archive(app, key) {
+        write_archive_stamp(&managed_root(app, key), &archive);
+    }
 }
 
 /// 随包资源构建的随包核心根（普通安装为 None）。
@@ -412,5 +459,31 @@ mod tests {
                 "{key}: {declared}"
             );
         }
+    }
+
+    #[test]
+    fn archive_stamp_detects_a_repacked_bundle() {
+        let dir = temp_path("stamp");
+        let root = dir.join("root");
+        let archive = dir.join("pnpm-11.7.0.tgz");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&archive, b"first").unwrap();
+
+        // 没有指纹（首次安装）与换个压缩包都算「需要解压」
+        assert!(archive_stamp_differs(&root, &archive));
+        write_archive_stamp(&root, &archive);
+        assert!(!archive_stamp_differs(&root, &archive));
+
+        // 同名换版本：字节数变化即重新解压
+        std::fs::write(&archive, b"second-revision").unwrap();
+        assert!(archive_stamp_differs(&root, &archive));
+
+        // 文件名变化（dsh 之外的资产都带版本号）同样触发
+        let renamed = dir.join("pnpm-11.8.0.tgz");
+        std::fs::write(&renamed, b"second-revision").unwrap();
+        write_archive_stamp(&root, &archive);
+        assert!(archive_stamp_differs(&root, &renamed));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

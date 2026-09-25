@@ -467,7 +467,9 @@ pub fn get_git_cmd_dir<R: Runtime>(_app_handle: &AppHandle<R>) -> Option<PathBuf
 #[cfg(windows)]
 pub fn git_runtime_ready<R: Runtime>(app_handle: &AppHandle<R>) -> bool {
     find_system_git_binary().is_some()
-        || git_binary_works(&get_mingit_binary_path(app_handle))
+        // 随包 MinGit 换新版后同样要重解压：旧产物的指纹对不上就当未安装。
+        || (git_binary_works(&get_mingit_binary_path(app_handle))
+            && !dependencies::bundled_archive_is_stale(app_handle, dependencies::DEP_GIT))
         // 随包构建放宽只在「没有随包 MinGit 压缩包」时成立：真随包了 MinGit，
         // 就必须让它走解压流程，否则放宽会把该任务跳过、Git 永远装不上。
         || (dependencies::bundled_core_dir(app_handle).is_some()

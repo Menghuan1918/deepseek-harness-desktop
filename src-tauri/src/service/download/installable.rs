@@ -81,7 +81,11 @@ impl Installable for Nodejs {
         // 用那个 ABI 不匹配的运行时启动。
         if config::prefer_bundled_node_runtime() {
             return config::bundled_node_binary(app).is_some()
-                && config::is_runtime_compatible(app);
+                && config::is_runtime_compatible(app)
+                && !config::dependencies::bundled_archive_is_stale(
+                    app,
+                    config::dependencies::DEP_NODE,
+                );
         }
         if let Some(local_node) = config::get_local_node_path() {
             log::info!(
@@ -90,7 +94,9 @@ impl Installable for Nodejs {
             );
             return true;
         }
-        config::get_node_binary_path(app).exists() && config::is_runtime_compatible(app)
+        config::get_node_binary_path(app).exists()
+            && config::is_runtime_compatible(app)
+            && !config::dependencies::bundled_archive_is_stale(app, config::dependencies::DEP_NODE)
     }
     fn record_mapping(&self, app: &AppHandle) {
         let managed = config::get_node_install_path(app);
@@ -123,7 +129,15 @@ impl Installable for Dsh {
         config::get_dsh_install_path(app)
     }
     fn check_installed(&self, app: &AppHandle) -> bool {
-        config::get_dsh_binary_path(app).exists()
+        if !config::get_dsh_binary_path(app).exists() {
+            return false;
+        }
+        // 随包压缩包解压出的托管根要跟随新版安装包（升级只替换压缩包，AppData 里的
+        // 解压产物留在原地）。只有生效根就是托管根时才让陈旧的压缩包判成待重装：用户
+        // 自选的下载槽位不在此列，否则重解压会覆盖用户选定的版本。
+        let active = config::dependencies::active_root(app, config::dependencies::DEP_DSH);
+        active != config::dependencies::managed_root(app, config::dependencies::DEP_DSH)
+            || !config::dependencies::bundled_archive_is_stale(app, config::dependencies::DEP_DSH)
     }
     fn record_mapping(&self, app: &AppHandle) {
         // 记录**当前生效的根**而不是清单托管根：随包资源构建（离线包）里用户可以把内核
@@ -162,6 +176,7 @@ impl Installable for Pnpm {
             return true;
         }
         config::get_pnpm_binary_path(app).exists()
+            && !config::dependencies::bundled_archive_is_stale(app, config::dependencies::DEP_PNPM)
     }
     fn record_mapping(&self, app: &AppHandle) {
         let managed = config::get_pnpm_install_path(app);

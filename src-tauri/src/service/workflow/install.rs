@@ -98,7 +98,8 @@ pub async fn install(
         log::debug!("Processing task {}/{}", index + 1, tasks.len());
         // 已安装但版本/commit 与最新 release 不一致时强制重新下载。
         // 随包内核压缩包例外：本地压缩包就是权威版本，按 release 判定「过期」会把
-        // 随包旧核心每次启动都重解压一遍。
+        // 随包旧核心每次启动都重解压一遍；安装包换了新版压缩包的情况由
+        // `bundled_archive_is_stale` 指纹判定（见 `Dsh::check_installed`）。
         // 版本优先（与 resolve_update 的判定完全一致）：dsh 的 rc 发布会复用
         // 同一 git commit（record_commit 不变），只比 commit 会把 rc.8 之于
         // rc.7 误判为"已最新"而跳过下载——日志表现为"All installation tasks
@@ -235,6 +236,10 @@ pub async fn install(
         log::info!("Extraction completed");
         // 解压落盘即建立该依赖的路径映射（新用户 / 缺少内核的场景）。
         task.record_mapping(app_handle);
+        // 随包压缩包记指纹：安装包升级换了新版压缩包时，下次启动据此重解压。
+        if bundled.is_some() {
+            config::dependencies::record_bundled_archive_stamp(app_handle, kind.dependency_key());
+        }
         tracker.end_phase();
 
         // 记录本次安装对应的 release tag 与 commit，供下次启动比对
