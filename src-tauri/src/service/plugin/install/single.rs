@@ -17,7 +17,8 @@ use crate::service::workflow;
 use super::artifact::{ensure_plugin_entry_built, installed_package_name};
 use super::build_plugin_envs;
 use super::diagnose::{
-    git_transport_hint, network_error_hint, pick_error_message, store_mismatch_hint,
+    git_transport_hint, network_error_hint, pick_error_message,
+    policy_verification_network_failure, store_mismatch_hint,
 };
 use super::errors;
 use super::installed_name;
@@ -333,23 +334,29 @@ async fn run_single_plugin_command(
 
     let cwd = config::get_dsh_install_path(app_handle);
     log::info!("Running dsh plugin {action} for {id}");
-    let (exit_code, output) = run_plugin_with_allow_build_retry(
+    let (exit_code, output, last_attempt) = run_plugin_with_allow_build_retry(
         app_handle, &node, &args, &cwd, &envs, &window, action, None, owner,
     )
     .await?;
 
     if exit_code != 0 {
         log::error!("dsh plugin {action} failed for {id} with exit code {exit_code}");
-        let network_error =
-            network_error_hint(&output).is_some() || (exit_code == 3 && output.trim().is_empty());
-        let store_hint = store_mismatch_hint(&output);
+        // lockfile 供应链校验因 registry 元数据拉取失败而误判违规时，对用户而言就是
+        // 网络问题：给「检查网络后重试」而不是一条看不懂的供应链违规。分类只看最后
+        // 一次尝试的输出——历次拼接会让早先一次的网络字样给真·违规「背书」；拼接串
+        // 仍用于用户可见的诊断文本。
+        let hint = git_transport_hint(&last_attempt);
+        let network_error = network_error_hint(&last_attempt).is_some()
+            || policy_verification_network_failure(&last_attempt)
+            || (exit_code == 3 && last_attempt.trim().is_empty());
+        let store_hint = store_mismatch_hint(&last_attempt);
         let message = if network_error {
             "NETWORK_ERROR: plugin registry request failed; check network or proxy settings and retry."
                 .to_string()
         } else if let Some(store_hint) = store_hint.as_deref() {
             store_hint.to_string()
         } else {
-            pick_error_message(&output, git_transport_hint(&output))
+            pick_error_message(&output, hint)
         };
         if let Err(e) = errors::record(app_handle, id, action, &message) {
             log::warn!("failed to record plugin error for {id}: {e}");
