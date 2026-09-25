@@ -86,6 +86,8 @@ brew install dsh-tauri/desktop/deepseek-harness
 
 **系统要求：** Windows 10+ · macOS 10.15+ · Linux（AppImage / .deb）· 首次运行需要网络 · Harness 内核 **0.1.5-rc.1** 或更高
 
+**离线安装包（Windows / macOS）：** Releases 里另有 `Deepseek.Harness.Desktop_Bundle_<版本>.<扩展名>`：Node 运行时与 Harness 内核随包分发，**安装后首次启动无需联网**，适合内网 / 白名单环境（预设与社区插件仍需联网；git 相关能力如工作树需系统已装 Git）。Linux 的随包资源在 `.deb` 的 `/usr/lib` 下，root 安装后需补齐该目录权限。
+
 > **Linux Wayland 注意（PikaOS / GNOME Wayland / Ubuntu 22.04+）：** AppImage 在 Wayland 下可能因 WebKitGTK 黑屏/崩溃，应用已自动处理常见情形。 <details><summary>若仍黑屏/崩溃：</summary><br>**改用 `.deb`**（已验证 PikaOS 4 Wayland），或手动 `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`。图标不显示时，将应用内 `hicolor` 图标复制到 `~/.local/share/icons` 并运行 `update-desktop-database`。<br></details>
 >
 > **Linux 滚动发行版启动即崩（Arch / CachyOS / Fedora 等）：** 旧版 AppImage 会随包携带构建镜像（Ubuntu 22.04）的 `libwayland-client` 等显示栈库，较新的宿主 Mesa 与之 ABI 不匹配会导致 `WebKitWebProcess` 直接 `abort()`——表现为**双击后没有任何界面、也没有任何日志**。构建阶段已剔除这些库（见 `.github/workflows/build-linux.yml` 与 `scripts/fix-appimage-host-libs.sh`），请使用修复后发布的版本；仍受影响时可用 `.deb`，或 `LD_PRELOAD=/usr/lib/libwayland-client.so.0 ./AppImage`（路径按发行版调整）。

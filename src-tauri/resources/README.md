@@ -106,6 +106,70 @@ This is what makes a future "bundled core" build a manifest-only change:
 point `managedRoot` (or the recorded root) at `$Resources/dsh` and no path logic
 in `src-tauri` has to move.
 
+### Offline bundle
+
+`Build & Release (Offline Bundle)` (`.github/workflows/release-bundle.yml`) produces a
+second set of installers that need no network on first launch. Its
+`.github/actions/prepare-bundle-resources` step unpacks the runtime into `resources/`:
+
+| Directory | Bundled contents |
+| --------- | ---------------- |
+| `resources/node` | Node.js runtime (`node.exe` / `bin/node`) |
+| `resources/pnpm` | pnpm distribution (`bin/pnpm.cjs`) |
+| `resources/dsh` | packaged DeepSeek Harness core (`node_modules/@deepseek-ai/dsh/lib/bin.js`) |
+| `resources/git` | MinGit — **not** bundled by default (`bundle_git` opt-in) |
+
+Only what running `dsh` itself needs is bundled. Git is deliberately left out: it is not
+required to start the harness, only git-backed features (worktree, `github:` plugins) are,
+and an air-gapped machine can never provision it later. A bundled build therefore stops
+treating Git as a startup prerequisite (see `config::dependencies::bundled_core_dir`),
+so the install screen is never entered for a download that cannot succeed.
+
+Every asset is SHA-256 verified before unpacking (Node against the official
+`SHASUMS256.txt`, the core against its GitHub release digest, pnpm/MinGit against the
+pins in `src-tauri/src/config/constants.rs`). Versions and download prefixes are read from
+that same file, and the core version from this manifest's `engines.dsh.recommend`, so the
+bundle never drifts from what the app would otherwise download.
+
+The step then rewrites **this file** so every bundled dependency resolves through the
+installer's own resources:
+
+```jsonc
+{
+  "dependencies": {
+    "node": { "entry": { "windows": "node.exe", "default": "bin/node" }, "managedRoot": "$Resources/node", "overridable": false },
+    "dsh": { "entry": "node_modules/@deepseek-ai/dsh/lib/bin.js", "managedRoot": "$Resources/dsh", "overridable": true }
+  }
+}
+```
+
+The rewrite only ever touches the build output — the committed manifest keeps its
+`$AppData/...` defaults. `overridable` is per dependency:
+
+* `node` / `pnpm` (and MinGit, when bundled) are pinned (`false`): they ship with the
+  installer, and a stale `<app-data>/dependencies.json` (written by an earlier,
+  non-bundled install and possibly pointing at deleted directories) must not win over
+  them. `config::dependencies::active_root` additionally ignores a recorded root whose
+  path no longer exists.
+* `dsh` stays overridable (`true`): the bundled core is the core panel's pinned **本地**
+  entry, and switching cores works by pointing the `dsh` dependency root elsewhere —
+  either at a downloaded slot in `<app-data>/dependencies/<tag>` or back at
+  `$Resources/dsh`. Downloaded cores therefore keep landing in app data; the install
+  directory is never written to and never loses its bundled core (unlike a directory
+  swap, which would move `resources/dsh` into app data on every switch).
+
+`resource_root()` strips the Windows `\\?\` verbatim prefix that Tauri's
+`resource_dir()` carries (it canonicalizes the exe path). Without that, `$Resources/dsh`
+resolves to a verbatim path, which is handed to node as its main module — and node's
+`resolveMainPath` fails on it with `EISDIR: illegal operation on a directory, lstat 'C:'`,
+so the bundled core could never start.
+
+The bundled core is used in place, so the install directory must stay writable for the
+desktop's startup patches and plugin entry links — true for the per-user NSIS install, not
+for `/usr/lib/**` in the Linux deb (documented limitation). Community/preset plugins are
+still installed from the network; the offline bundle only removes the *first-launch*
+dependency downloads.
+
 ### Preset plugins — `plugins.preset`
 
 To propose a new preset plugin, open a PR that adds one entry:

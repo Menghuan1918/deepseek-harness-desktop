@@ -93,10 +93,12 @@ export function ConfigCore() {
 
   // 本地核心未检测到时不渲染 local 行（保留 local_missing_hint 提示）
   // 后端列表在部分缓存/旧版本返回路径中可能仍保持远程顺序，前端统一按版本从高到低排序。
-  // 本地核心固定放在版本列表前，预打包核心按 SemVer 排序。
+  // 随包内核（离线包）固定置顶并标记「本地」，其后是本地核心与预打包核心。
   const rows = cores
     .filter(core => !(core.source === 'local' && !core.present))
     .sort((a, b) => {
+      if (a.bundled !== b.bundled)
+        return a.bundled ? -1 : 1
       if (a.source !== b.source)
         return a.source === 'local' ? -1 : 1
       if (a.source === 'local')
@@ -370,7 +372,8 @@ export function ConfigCore() {
                     <Label className="min-w-0 truncate font-mono text-sm font-medium text-ink">
                       {displayVersion(core)}
                     </Label>
-                    <If cond={core.source === 'local'}>
+                    {/* 随包内核（离线包）与用户 CLI 安装的本地核心都标记「本地」 */}
+                    <If cond={core.source === 'local' || core.bundled}>
                       <Chip size="sm" variant="soft" color="accent" className="shrink-0 font-medium">
                         {t('core.local')}
                       </Chip>
@@ -449,8 +452,8 @@ export function ConfigCore() {
                         {t('core.download')}
                       </Button>
                     </If>
-                    {/* 已下载且非激活（app 版本）：卸载入口 */}
-                    <If cond={core.present && !core.active && core.source === 'app'}>
+                    {/* 已下载且非激活（app 版本）：卸载入口。随包内核不可卸载（随应用分发） */}
+                    <If cond={core.present && !core.active && core.source === 'app' && !core.bundled}>
                       <Button
                         size="sm"
                         variant="tertiary"
