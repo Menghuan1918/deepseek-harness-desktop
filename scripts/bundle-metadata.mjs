@@ -239,7 +239,7 @@ export function bundleAssets({ platform, arch, constants, dshTag, withGit = fals
       sha256Url: '',
     },
   }
-  if (platform === 'windows' && withGit) {
+  if (bundleTargets(platform, { withGit }).includes('git')) {
     const name = mingitAssetName(arch, constants.mingitVersion)
     assets.git = {
       name,
