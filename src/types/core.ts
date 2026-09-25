@@ -24,7 +24,7 @@ export interface HarnessCore {
   aboveRecommended: boolean
   /** 本地存在但 pkg 仓库已不再提供的历史槽位 */
   orphaned: boolean
-  /** 随安装包分发的内核（离线包 `$Resources/dsh`）：面板置顶并标记「本地」，不可卸载 */
+  /** 随安装包分发的内核（离线包随包压缩包解压到 AppData 托管根）：面板置顶并标记「本地」，不可卸载 */
   bundled: boolean
   recommendedVersion: string | null
   error?: string | null

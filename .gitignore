@@ -3,10 +3,11 @@ dist
 .build-plugins-tmp
 src-tauri/target
 src-tauri/gen
-src-tauri/resources/node
-src-tauri/resources/dsh
-src-tauri/resources/pnpm
-src-tauri/resources/git
+# 离线包随包的运行时压缩包（构建产物，按上游资产名落盘）
+src-tauri/resources/node-v*
+src-tauri/resources/pnpm-*.tgz
+src-tauri/resources/deepseek-harness-pkg-*.zip
+src-tauri/resources/MinGit-*.zip
 src-tauri/resources/preset-plugins/
 src-tauri/resources/internal-plugins/
 *.log

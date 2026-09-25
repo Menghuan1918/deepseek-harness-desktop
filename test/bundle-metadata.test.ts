@@ -1,6 +1,3 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import * as bundleMetadata from '../scripts/bundle-metadata.mjs'
 
@@ -164,106 +161,17 @@ describe('jsonc stripping', () => {
   })
 })
 
-describe('bundle manifest rewrite', () => {
-  const SHIPPED = `{
-  // 依赖映射规范
-  "engines": { "dsh": { "recommend": "0.1.5-rc.3", "minimum": "0.1.5-rc.1" } },
-  "dependencies": {
-    "node": { "entry": "node.exe", "managedRoot": "$AppData/runtime", "overridable": true },
-    "pnpm": { "entry": "bin/pnpm.cjs", "managedRoot": "$AppData/dependencies/pnpm", "overridable": true },
-    "dsh": { "entry": "node_modules/@deepseek-ai/dsh/lib/bin.js", "managedRoot": "$AppData/dependencies/dsh", "overridable": true },
-    "git": { "entry": { "windows": "cmd/git.exe", "default": "bin/git" }, "managedRoot": "$AppData/dependencies/git", "overridable": true }
-  }
-}`
-
-  function tempRepo() {
-    const repo = mkdtempSync(path.join(tmpdir(), 'dsh-bundle-manifest-'))
-    mkdirSync(path.join(repo, 'src-tauri', 'resources'), { recursive: true })
-    writeFileSync(path.join(repo, 'src-tauri', 'resources', 'manifest.jsonc'), SHIPPED, 'utf8')
-    return repo
-  }
-
-  it('points every bundled dependency at $Resources and disables overrides', () => {
-    const repo = tempRepo()
-    try {
-      const result = bundleMetadata.applyBundleManifest({ repo, platform: 'windows' })
-      expect(result.applied).toEqual([
-        'node -> $Resources/node (overridable: false)',
-        'pnpm -> $Resources/pnpm (overridable: false)',
-        'dsh -> $Resources/dsh (overridable: true)',
-      ])
-
-      const manifest = JSON.parse(readFileSync(result.file, 'utf8'))
-      const shipped = JSON.parse(bundleMetadata.stripJsonc(SHIPPED))
-      for (const [key, dir] of [['node', 'node'], ['pnpm', 'pnpm'], ['dsh', 'dsh']]) {
-        expect(manifest.dependencies[key].managedRoot).toBe(`$Resources/${dir}`)
-        // 内核保持可覆盖：核心面板要能把 dsh 根切到 AppData 里的其它版本再切回来。
-        expect(manifest.dependencies[key].overridable).toBe(key === 'dsh')
-        // 入口形状由清单声明，改写托管根不得动它。
-        expect(manifest.dependencies[key].entry).toEqual(shipped.dependencies[key].entry)
-      }
-      expect(manifest.engines.dsh.recommend).toBe('0.1.5-rc.3')
-      // 未随包的 git 保持清单原值：不能指向并不存在的 `$Resources/git`。
-      expect(manifest.dependencies.git.managedRoot).toBe('$AppData/dependencies/git')
-      expect(manifest.dependencies.git.overridable).toBe(true)
-    }
-    finally {
-      rmSync(repo, { recursive: true, force: true })
-    }
-  })
-
-  it('moves git to $Resources only when MinGit is bundled', () => {
-    const repo = tempRepo()
-    try {
-      const { file, applied } = bundleMetadata.applyBundleManifest({ repo, platform: 'windows', withGit: true })
-      expect(applied).toEqual([
-        'node -> $Resources/node (overridable: false)',
-        'pnpm -> $Resources/pnpm (overridable: false)',
-        'dsh -> $Resources/dsh (overridable: true)',
-        'git -> $Resources/git (overridable: false)',
-      ])
-      const manifest = JSON.parse(readFileSync(file, 'utf8'))
-      expect(manifest.dependencies.git.managedRoot).toBe('$Resources/git')
-      expect(manifest.dependencies.git.overridable).toBe(false)
-    }
-    finally {
-      rmSync(repo, { recursive: true, force: true })
-    }
-  })
-
-  it('leaves the non-Windows git mapping on app data', () => {
-    const repo = tempRepo()
-    try {
-      const { file, applied } = bundleMetadata.applyBundleManifest({ repo, platform: 'macos' })
-      expect(applied).toEqual([
-        'node -> $Resources/node (overridable: false)',
-        'pnpm -> $Resources/pnpm (overridable: false)',
-        'dsh -> $Resources/dsh (overridable: true)',
-      ])
-      const manifest = JSON.parse(readFileSync(file, 'utf8'))
-      expect(manifest.dependencies.git.managedRoot).toBe('$AppData/dependencies/git')
-      expect(manifest.dependencies.git.overridable).toBe(true)
-    }
-    finally {
-      rmSync(repo, { recursive: true, force: true })
-    }
-  })
-
-  it('is idempotent and fails loudly on unknown platforms', () => {
-    const repo = tempRepo()
-    try {
-      bundleMetadata.applyBundleManifest({ repo, platform: 'linux' })
-      const second = bundleMetadata.applyBundleManifest({ repo, platform: 'linux' })
-      expect(second.applied).toEqual([
-        'node -> $Resources/node (overridable: false)',
-        'pnpm -> $Resources/pnpm (overridable: false)',
-        'dsh -> $Resources/dsh (overridable: true)',
-      ])
-      expect(() => bundleMetadata.applyBundleManifest({ repo, platform: 'freebsd' as BundlePlatform }))
-        .toThrow(/^BUNDLE_METADATA:/)
-    }
-    finally {
-      rmSync(repo, { recursive: true, force: true })
+describe('bundle archive staging', () => {
+  it('names the staged archives exactly like the downloaded assets', () => {
+    // 离线包把压缩包按资产名原样放进 `src-tauri/resources/`，
+    // 运行期由 `config::runtime::bundled_archive_filename` 按同一套常量重新推导。
+    const assets = assetsFor('windows', 'x64', { withGit: true })
+    expect(assets.node.name).toBe('node-v22.22.0-win-x64.zip')
+    expect(assets.pnpm.name).toBe('pnpm-11.7.0.tgz')
+    expect(assets.dsh.name).toBe('deepseek-harness-pkg-windows.zip')
+    expect(assets.git?.name).toBe('MinGit-2.53.0.2-64-bit.zip')
+    for (const name of Object.values(assets).map(asset => asset.name)) {
+      expect(name).not.toContain('/')
     }
   })
 })

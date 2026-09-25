@@ -4,9 +4,10 @@
 //! 历史版本存放在 `dependencies/<tag>` 槽位，切换/卸载依赖既有版本行。本地
 //! 核心的探测见 [`super::local`]，来源判定与活动入口见 [`super::source`]。
 //!
-//! 随包资源构建（离线包）不适用上面的目录互换：随包内核必须留在安装目录里
-//! （`$Resources/dsh`，见 [`config::dependencies::bundled_core_dir`]），它在面板里
-//! 作为固定置顶的「本地」行存在，切换只是把 `dsh` 依赖根指向目标槽位或指回随包内核。
+//! 随包资源构建（离线包）不适用上面的目录互换：随包内核由安装目录里的压缩包解压而来，
+//! 落在 `dependencies/dsh` 托管根上，在面板里作为固定置顶的「本地」行存在（见
+//! [`config::dependencies::bundled_core_dir`]），切换只是把 `dsh` 依赖根指向目标槽位
+//! 或指回随包内核。
 
 use crate::config;
 use crate::service::{download, fs_guard, workflow};
@@ -24,9 +25,9 @@ const BUNDLED_CORE_ID: &str = "app-bundled";
 
 /// `dependencies` 目录（下载的核心槽位与普通安装的 `dsh` 激活目录的共同父级）。
 ///
-/// 恒落在应用数据目录之下：槽位是桌面端自己下载的产物，即使清单把激活核心托管到安装
-/// 包资源（离线包 `$Resources/dsh`）也不能让下载产物写进安装目录——那里在 macOS `.app`
-/// 上是签名的只读内容、在 Linux deb 里属于 root，且会随应用升级被覆盖。
+/// 恒落在应用数据目录之下：槽位是桌面端自己下载的产物，绝不能让下载产物写进安装目录
+/// ——那里在 macOS `.app` 上是签名的只读内容、在 Linux deb 里属于 root，且会随应用
+/// 升级被覆盖。
 fn dependencies_dir(app_handle: &AppHandle) -> PathBuf {
     config::get_base_dir(app_handle).join("dependencies")
 }
@@ -432,7 +433,7 @@ pub async fn set_active(app_handle: &AppHandle, id: &str) -> Result<HarnessCore,
         // 映射表记录「该依赖由系统环境满足」（`null`），与清单的 `Path | null` 语义一致。
         config::dependencies::record(app_handle, config::dependencies::DEP_DSH, None);
     } else if id == BUNDLED_CORE_ID {
-        // 切回随包内核：它始终在安装目录里，只需把 dsh 依赖根指回去。
+        // 切回随包内核：它就是托管根上那份解压产物，只需把 dsh 依赖根指回去。
         let Some(bundled) = config::dependencies::bundled_core_dir(app_handle) else {
             return Err("CORE_BUNDLED_NOT_FOUND: this install ships no bundled core".to_string());
         };
@@ -506,10 +507,10 @@ async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), Str
     let target_dir = existing_slot_dir(app_handle, tag)
         .ok_or_else(|| format!("CORE_VERSION_NOT_DOWNLOADED: {tag}"))?;
 
-    // 随包资源构建：随包内核必须留在安装目录（`$Resources/dsh`），不能像普通安装那样
-    // 把「激活目录 ↔ 槽位目录」互换——那会把安装包资源搬进 AppData，也会让应用升级
-    // 覆盖掉用户选中的版本。改为把 `dsh` 依赖根指向槽位本身：槽位本就在 AppData 里，
-    // 切回随包内核只是把根指回去（见 `set_active` 的 `app-bundled` 分支）。
+    // 随包资源构建：随包内核解压在 AppData 托管根上，不能像普通安装那样把「激活目录 ↔
+    // 槽位目录」互换——那会把随包内核搬进槽位、也让应用升级后的新压缩包无处解压。
+    // 改为把 `dsh` 依赖根指向槽位本身：槽位本就在 AppData 里，切回随包内核只是把根指回
+    // 托管根（见 `set_active` 的 `app-bundled` 分支）。
     if config::dependencies::bundled_core_dir(app_handle).is_some() {
         stop_harness_for_core_switch(app_handle).await?;
         let commit = match download::fetch_dsh_pkg_tags().await {
