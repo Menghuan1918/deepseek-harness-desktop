@@ -285,7 +285,7 @@ async fn install_with_cancel(
     // 失败时解析输出里印出的 `allowBuilds` 键写回 profile 的 pnpm-workspace.yaml
     // 后重试，直至成功或再无键可加（升级路径同样依赖该重试，见
     // [`run_plugin_with_allow_build_retry`]）。
-    let (exit_code, last_output) = run_plugin_install_with_transient_retry(
+    let (exit_code, last_output, last_attempt) = run_plugin_install_with_transient_retry(
         app_handle,
         &node,
         &args,
@@ -310,7 +310,9 @@ async fn install_with_cancel(
         // （用户环境无 SSH 配置），后者才是补充白名单可自愈的。传输层错误给出
         // 可读指引，避免用户被 dsh 那条 allowBuilds 提示误导。
         let network_error = network_error_hint(&last_output).is_some()
-            || policy_verification_network_failure(&last_output)
+            // 供应链校验的误判只在最后一次尝试的输出里判：拼接串会让早先一次的网络字样
+            // 给真·违规「背书」，把本该如实上报的供应链信号降级成网络问题。
+            || policy_verification_network_failure(&last_attempt)
             || (exit_code == 3 && last_output.trim().is_empty());
         let hint = git_transport_hint(&last_output);
         let store_hint = store_mismatch_hint(&last_output);
@@ -420,6 +422,12 @@ async fn install_with_cancel(
     Ok(())
 }
 
+/// 返回 `(exit_code, 历次尝试的输出拼接, 最后一次尝试的输出)`。
+///
+/// 两个字符串用途不同：诊断与用户文案要拼接（早期的 allowBuilds 提示也是线索），而
+/// **失败分类只能看最后一次尝试**——拼接串里早先一次的网络字样会与最终一次的真实原因
+/// 互相「佐证」，把失败归类错（如把真·供应链违规判成网络抖动，见
+/// [`policy_verification_network_failure`]）。
 #[allow(clippy::too_many_arguments)]
 async fn run_plugin_with_allow_build_retry(
     app_handle: &AppHandle,
@@ -431,13 +439,14 @@ async fn run_plugin_with_allow_build_retry(
     action: &str,
     cancel: Option<&tokio::sync::watch::Receiver<bool>>,
     owner: ProcessOwner,
-) -> Result<(i32, String), String> {
+) -> Result<(i32, String, String), String> {
     let _operation_guard = acquire_operation_lock().await;
     // 上一次被强杀的安装（取消 / 刷新 / 退出）会在 profile 里留下 dsh 的孤儿写锁，
     // 之后每次安装都要静默等到 deadline。dsh 侧不做恢复，这里按 PID 存活代劳。
     super::process::clear_orphan_plugin_writer_lock(&super::installed::profile_dir(app_handle));
     let mut retries = 0usize;
     let mut all_output = String::new();
+    let mut last_attempt = String::new();
     let exit_code = loop {
         if cancel.is_some_and(|signal| *signal.borrow()) {
             return Err("PLUGIN_OPERATION_CANCELLED: plugin operation was cancelled".to_string());
@@ -448,6 +457,9 @@ async fn run_plugin_with_allow_build_retry(
         }
         append_command_output(&mut all_output, &captured);
         let new_keys = parse_allowlist_keys(&captured);
+        // 本次尝试要么即将 continue 重试、要么即将 break 收尾；两种情况都以后者为准，
+        // 所以每次都记下它，最终留在 `last_attempt` 的就是决定退出码的那一次。
+        last_attempt = captured;
         // 有可补充的 allowBuilds 键且未达上限 → 写入并重试（无论本次退出码是否为 0，
         // 见上方注释：pnpm 可能在阻断时仍以 0 退出）。
         if !new_keys.is_empty() && retries < MAX_ALLOW_LIST_RETRIES {
@@ -477,7 +489,7 @@ async fn run_plugin_with_allow_build_retry(
         }
         break code;
     };
-    Ok((exit_code, all_output))
+    Ok((exit_code, all_output, last_attempt))
 }
 
 /// 以带瞬时文件系统错误重试的方式运行 `dsh plugin <action>`（`add` 专用路径）。
@@ -501,18 +513,19 @@ async fn run_plugin_install_with_transient_retry(
     action: &str,
     cancel: Option<&tokio::sync::watch::Receiver<bool>>,
     owner: ProcessOwner,
-) -> Result<(i32, String), String> {
+) -> Result<(i32, String, String), String> {
     let mut attempt = 0usize;
     let mut policy_attempt = 0usize;
     loop {
-        let (exit_code, output) = run_plugin_with_allow_build_retry(
+        let (exit_code, output, last_attempt) = run_plugin_with_allow_build_retry(
             app_handle, node, args, cwd, envs, window, action, cancel, owner,
         )
         .await?;
         // 先判网络类：pnpm 把「元数据拉不到」渲染成供应链违规，重跑整条命令最有效。
+        // 判定只看最后一次尝试的输出（原因见 run_plugin_with_allow_build_retry 的返回值说明）。
         if exit_code != 0
             && policy_attempt < POLICY_VERIFICATION_RETRIES
-            && policy_verification_network_failure(&output)
+            && policy_verification_network_failure(&last_attempt)
         {
             policy_attempt += 1;
             let delay = policy_verification_retry_delay(policy_attempt);
@@ -529,12 +542,16 @@ async fn run_plugin_install_with_transient_retry(
                     ),
                 },
             );
-            tokio::time::sleep(delay).await;
+            if sleep_or_cancelled(delay, cancel).await {
+                return Err(
+                    "PLUGIN_OPERATION_CANCELLED: plugin operation was cancelled".to_string()
+                );
+            }
             continue;
         }
         if exit_code != 0
             && attempt < TRANSIENT_FS_RETRIES
-            && is_transient_fs_install_failure(exit_code, &output)
+            && is_transient_fs_install_failure(exit_code, &last_attempt)
         {
             attempt += 1;
             let delay = transient_fs_retry_delay(attempt);
@@ -550,10 +567,36 @@ async fn run_plugin_install_with_transient_retry(
                     ),
                 },
             );
-            tokio::time::sleep(delay).await;
+            if sleep_or_cancelled(delay, cancel).await {
+                return Err(
+                    "PLUGIN_OPERATION_CANCELLED: plugin operation was cancelled".to_string()
+                );
+            }
             continue;
         }
-        return Ok((exit_code, output));
+        return Ok((exit_code, output, last_attempt));
+    }
+}
+
+/// 退避等待，且能被 `cancel` 立即打断（返回 true 表示等待期间被取消）。
+///
+/// 直接 `tokio::time::sleep` 会让取消最多等到退避结束（供应链校验 30s、瞬时文件系统
+/// 64s）：用户点了取消，安装却还在转圈。每轮尝试前另有取消检查兜底，这里只负责不让
+/// 退避本身成为最长的一段等待。
+async fn sleep_or_cancelled(
+    delay: std::time::Duration,
+    cancel: Option<&tokio::sync::watch::Receiver<bool>>,
+) -> bool {
+    let Some(signal) = cancel else {
+        tokio::time::sleep(delay).await;
+        return false;
+    };
+    // `watch::Receiver` 的 `changed` 需要 &mut，克隆一个专用于等待（发送端只 drop
+    // 一次就会让 `changed` 返回 Err，那时按「未取消」处理——退避结束照常继续）。
+    let mut signal = signal.clone();
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => false,
+        changed = signal.changed() => changed.is_ok() && *signal.borrow(),
     }
 }
 
@@ -669,5 +712,30 @@ mod tests {
         // 检测函数只看输出特征；是否为「失败」由调用方用 exit_code != 0 判定。
         // 假成功（exit 0）场景交由产物核验分支处理，不会因这里返回真而误重试。
         assert!(is_transient_fs_install_failure(0, "unknown error, open"));
+    }
+
+    #[tokio::test]
+    async fn sleep_or_cancelled_returns_immediately_when_cancelled() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let wait = sleep_or_cancelled(std::time::Duration::from_secs(30), Some(&rx));
+        // 退避远长于测试：只有被取消打断才来得及在这里断言（否则本测试会挂 30 秒）。
+        let cancel = async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let _ = tx.send(true);
+        };
+
+        let (cancelled, ()) = tokio::join!(wait, cancel);
+
+        assert!(cancelled);
+    }
+
+    #[tokio::test]
+    async fn sleep_or_cancelled_waits_out_the_delay_without_a_cancel_signal() {
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+
+        // 值一直是 false（未取消）→ 等满退避后返回 false
+        assert!(!sleep_or_cancelled(std::time::Duration::from_millis(10), Some(&rx)).await);
+        // 没有取消通道（单插件路径传 None）→ 等价于普通 sleep
+        assert!(!sleep_or_cancelled(std::time::Duration::from_millis(10), None).await);
     }
 }

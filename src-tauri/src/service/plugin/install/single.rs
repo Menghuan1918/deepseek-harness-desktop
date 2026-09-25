@@ -334,7 +334,7 @@ async fn run_single_plugin_command(
 
     let cwd = config::get_dsh_install_path(app_handle);
     log::info!("Running dsh plugin {action} for {id}");
-    let (exit_code, output) = run_plugin_with_allow_build_retry(
+    let (exit_code, output, last_attempt) = run_plugin_with_allow_build_retry(
         app_handle, &node, &args, &cwd, &envs, &window, action, None, owner,
     )
     .await?;
@@ -342,9 +342,10 @@ async fn run_single_plugin_command(
     if exit_code != 0 {
         log::error!("dsh plugin {action} failed for {id} with exit code {exit_code}");
         // lockfile 供应链校验因 registry 元数据拉取失败而误判违规时，对用户而言就是
-        // 网络问题：给「检查网络后重试」而不是一条看不懂的供应链违规。
+        // 网络问题：给「检查网络后重试」而不是一条看不懂的供应链违规。判定只看最后
+        // 一次尝试的输出——历次拼接会让早先一次的网络字样给真·违规「背书」。
         let network_error = network_error_hint(&output).is_some()
-            || policy_verification_network_failure(&output)
+            || policy_verification_network_failure(&last_attempt)
             || (exit_code == 3 && output.trim().is_empty());
         let store_hint = store_mismatch_hint(&output);
         let message = if network_error {

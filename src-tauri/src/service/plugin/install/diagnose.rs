@@ -120,6 +120,10 @@ pub(super) fn network_error_hint(output: &str) -> Option<&'static str> {
 ///
 /// 真·发布时间违规（版本确实太新）不带任何拉取失败信号，绝不命中：那种失败重试无用，
 /// 也不该把供应链信号降级成网络问题。
+///
+/// 传入的必须是**单次尝试**的输出（`run_plugin_with_allow_build_retry` 为此额外返回
+/// 最后一次尝试的输出）：把历次重试拼接起来判断时，早先一次的网络字样会给最终一次的真·
+/// 违规「背书」，正好破坏上面这条边界。
 pub(super) fn policy_verification_network_failure(output: &str) -> bool {
     let lower = output.to_ascii_lowercase();
     if !lower.contains("err_pnpm_minimum_release_age_violation") {
