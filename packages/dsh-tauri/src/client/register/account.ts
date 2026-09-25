@@ -8,10 +8,10 @@ interface AccountAttemptView {
 }
 
 interface AccountViewLike {
+  status?: string
   attempt?: AccountAttemptView | null
 }
 
-/** `$stream` 的帧：官方 `RemoteStream.read()` 把 open() 的每个原始值包成 `{ value, accept }`。 */
 interface AccountStreamFrame {
   value?: AccountViewLike
   accept?: () => void
@@ -21,10 +21,16 @@ interface AccountStreamLike extends AsyncIterable<AccountStreamFrame> {
   dispose?: () => Promise<void> | void
 }
 
+/** 登录成功后把默认模型落到账号路由所需的宿主方法（`session/initializeDefaultModel`）。 */
+interface AccountSessionLike {
+  initializeDefaultModel?: () => Promise<unknown>
+}
+
 interface AccountRemoteLike {
   account?: {
     watch?: (signal: AbortSignal) => AsyncIterable<AccountViewLike>
   }
+  session?: AccountSessionLike
   $stream?: (options: {
     name: string
     open: (signal: AbortSignal) => AsyncIterable<AccountViewLike>
@@ -50,14 +56,22 @@ interface InjectedScope {
  *   `ui-settings-account` 的消费方式逐字一致。
  *
  * 只在桌面载体生效：浏览器直开没有 `dshDesktop` 标记，也不该替用户开浏览器。
+ *
+ * 同一处订阅还承担官方账号 UI 的第二个职责：登录成功的那一帧把默认模型落到账号路由
+ * （`session/initializeDefaultModel` —— 官方在 `ui-settings-account` 里做同一件事）。
+ * 桌面载体比官方多一道风险：签名可能在客户端挂载前就完成（欢迎/账号页先登录），
+ * 此时官方那侧的「状态迁移」判定不会触发，默认模型会停在需要 API Key 的
+ * `deepseek-official` 路由上，第一条消息即以 MISSING_CREDENTIAL 失败；
+ * 这里按官方同一条件补一次（宿主方法自身在「已有任一 provider 密钥」时不改默认，幂等）。
  */
 export const accountSignInFeature = defineRegister((controller, ctx) => {
   if (!('dshDesktop' in globalThis))
     return
 
   let opened: string | undefined
+  let wasSignedIn = false
 
-  ctx.inject(['remote', 'remote.account'], (scoped) => {
+  ctx.inject(['remote', 'remote.account', 'remote.session'], (scoped) => {
     const remote = (scoped as unknown as InjectedScope).remote
     const account = remote?.account
     const watch = account?.watch
@@ -80,18 +94,42 @@ export const accountSignInFeature = defineRegister((controller, ctx) => {
         const attempt = frame.value?.attempt
         frame.accept?.()
         const url = attempt?.authorizeUrl
-        if (attempt?.phase !== 'waiting-browser' || !isBrowserUrl(url) || url === opened)
-          continue
-        opened = url
-        await invoke('open_external_url', { url }).catch((error: unknown) => {
-          console.warn('[dsh-tauri] opening the account authorize url failed:', error)
-        })
+        if (attempt?.phase === 'waiting-browser' && isBrowserUrl(url) && url !== opened) {
+          opened = url
+          await invoke('open_external_url', { url }).catch((error: unknown) => {
+            console.warn('[dsh-tauri] opening the account authorize url failed:', error)
+          })
+        }
+        const signedIn = frame.value?.status === 'credential-stored' && attempt?.phase === 'succeeded'
+        if (signedIn && !wasSignedIn)
+          void initializeDefaultModel(remote)
+        wasSignedIn = signedIn
       }
     })().catch(() => undefined)
   })
 })
 
 // --- internal ---
+
+/** 登录成功后按官方条件请求一次默认模型初始化；能力缺席或失败只告警。 */
+async function initializeDefaultModel(remote: AccountRemoteLike | undefined): Promise<void> {
+  let call: AccountSessionLike['initializeDefaultModel']
+  try {
+    call = remote?.session?.initializeDefaultModel
+  }
+  catch (error) {
+    console.warn('[dsh-tauri] reading the session remote failed:', error)
+    return
+  }
+  if (typeof call !== 'function')
+    return
+  try {
+    await call.call(remote?.session)
+  }
+  catch (error) {
+    console.warn('[dsh-tauri] initializing the account default model failed:', error)
+  }
+}
 
 /** 只放行宿主 `open_external_url` 能处理的 http(s) 浏览器地址。 */
 function isBrowserUrl(value: unknown): value is string {

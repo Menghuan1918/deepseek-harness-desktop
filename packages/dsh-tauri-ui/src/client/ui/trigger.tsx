@@ -28,7 +28,7 @@ function isMainViewRetained(session: RetainedSessionLike): boolean {
 }
 
 export function SettingsTrigger({ wide, useSessions }: SettingsTriggerProps): ReactElement {
-  const { open, launcherAvailable } = useStore(store.settings)
+  const { open, launcherAvailable, launcherShortcut } = useStore(store.settings)
   const { onboarding } = useStore(store.sections)
   useMountStyle(settingsTriggerStyle, SETTINGS_TRIGGER_STYLE_ID)
   const [completed, setCompleted] = useState<string[]>([])
@@ -93,6 +93,10 @@ export function SettingsTrigger({ wide, useSessions }: SettingsTriggerProps): Re
               slotKey={SETTINGS_LAUNCHER_SLOT}
               ownerProps={{
                 wide,
+                // 0.1.7-rc.2 起官方账号菜单把「设置面板刚打开」当作一次刷新时机。
+                settingsOpen: open,
+                // 同一代官方座位用 `settingsShortcut` 渲染「Ctrl+,」提示（老核心不传）。
+                ...launcherShortcut === undefined ? {} : { settingsShortcut: launcherShortcut },
                 openSettings: () => store.settings.openAt(),
                 openOnboarding: (id: string) => store.settings.openAt(id),
               }}
