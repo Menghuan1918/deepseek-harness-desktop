@@ -248,6 +248,14 @@ mod tests {
             preset_spec_for_install(&p, None, None).unwrap(),
             "dsh-better-sidebar"
         );
+
+        // issue #715：清单区间本身就带 `^`，拼接只能再加一个 `@`——出现 `^^` 会让 pnpm
+        // 报 ERR_PNPM_SPEC_NOT_SUPPORTED_BY_ANY_RESOLVER，而预设插件共用同一条 `add`
+        // 调用，一个坏 spec 就让整批预设都装不上（应用卡在加载中，见 issue #716）。
+        for core in ["0.1.5-rc.3", "0.1.7-rc.1", "0.1.7-rc.2", "0.2.0"] {
+            let spec = preset_spec_for_install(&p, None, Some(core)).unwrap();
+            assert!(!spec.contains("^^"), "core={core}: {spec}");
+        }
     }
 
     #[test]
