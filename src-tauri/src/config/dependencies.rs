@@ -218,12 +218,20 @@ pub fn bundled_archive<R: Runtime>(app: &AppHandle<R>, key: &str) -> Option<Path
 /// 托管根里记录「这份产物解压自哪个随包压缩包」的指纹文件。
 const BUNDLED_STAMP_FILE: &str = ".bundled-archive";
 
-/// 随包压缩包指纹：文件名 + 字节数。dsh 资产名不含版本（`deepseek-harness-pkg-*.zip`），
-/// 换版本只能靠体积区分；升级安装会把新压缩包同名覆盖，字节数随之改变。
+/// 随包压缩包指纹：文件名 + 字节数 + 修改时间。dsh 资产名不含版本
+/// （`deepseek-harness-pkg-*.zip`），换版本只能靠体积与时间戳区分；升级安装必然重写该
+/// 文件，三者合起来足以判定新旧。内容摘要要在每次就绪判定时整读压缩包（内核包 60MB+），
+/// 代价远高于收益。
 fn archive_fingerprint(archive: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(archive).ok()?;
     let name = archive.file_name()?.to_string_lossy();
-    let size = std::fs::metadata(archive).ok()?.len();
-    Some(format!("{name}:{size}"))
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    Some(format!("{name}:{}:{modified}", metadata.len()))
 }
 
 /// 托管根与随包压缩包是否不同源（无记录、记录不匹配都算）。
@@ -471,6 +479,11 @@ mod tests {
 
         // 没有指纹（首次安装）与换个压缩包都算「需要解压」
         assert!(archive_stamp_differs(&root, &archive));
+        let fingerprint = archive_fingerprint(&archive).expect("fingerprint");
+        assert!(
+            fingerprint.starts_with("pnpm-11.7.0.tgz:5:"),
+            "{fingerprint}"
+        );
         write_archive_stamp(&root, &archive);
         assert!(!archive_stamp_differs(&root, &archive));
 
