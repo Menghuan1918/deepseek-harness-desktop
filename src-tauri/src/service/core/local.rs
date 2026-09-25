@@ -104,7 +104,9 @@ fn scan_dirs_for_user_dsh(dirs: &[PathBuf], candidates: &[&str]) -> Option<PathB
 /// - nvm：`~/.nvm/versions/node/<version>/bin`；
 /// - volta：`~/.volta/bin`；
 /// - asdf：`~/.asdf/shims`；
-/// - fnm：`~/.local/share/fnm/node-versions/<version>/installation/bin`。
+/// - fnm：`$XDG_DATA_HOME/fnm/node-versions/<version>/installation/bin`，
+///   XDG 未设置时按平台回退 Linux `~/.local/share/fnm`、macOS
+///   `~/Library/Application Support/fnm`（见 fnm README 的 `FNM_DIR` 默认值）。
 ///
 /// 只补充能确定存在的绝对目录，且按顺序去重。继承 PATH 仍优先。
 #[cfg(unix)]
@@ -122,14 +124,37 @@ fn append_unix_dsh_dirs(dirs: &mut Vec<PathBuf>, home: &Path) {
         &mut append,
         &home.join(".nvm").join("versions").join("node"),
     );
-    append_version_dirs(
-        &mut append,
-        &home
-            .join(".local")
+
+    let xdg = std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    for root in fnm_version_roots(home, xdg.as_deref()) {
+        append_version_dirs(&mut append, &root);
+    }
+}
+
+/// fnm 的 `node-versions` 根目录候选（按优先级）：`$XDG_DATA_HOME/fnm`，以及
+/// 平台默认目录。多列一个不存在的根无害（`append_version_dirs` 会静默跳过），
+/// 因此不做平台条件编译，避免漏掉 XDG 已设置但位于非默认位置的情况。
+#[cfg(unix)]
+fn fnm_version_roots(home: &Path, xdg_data_home: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(xdg) = xdg_data_home {
+        roots.push(xdg.join("fnm").join("node-versions"));
+    }
+    roots.push(
+        home.join(".local")
             .join("share")
             .join("fnm")
             .join("node-versions"),
     );
+    roots.push(
+        home.join("Library")
+            .join("Application Support")
+            .join("fnm")
+            .join("node-versions"),
+    );
+    roots
 }
 
 /// 遍历 `<root>/<version>/` 形态的版本目录，把各版本下的 `bin` 目录追加进去。
@@ -674,6 +699,41 @@ mod tests {
             "fnm installation bin 未纳入: {dirs:?}"
         );
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// fnm 在 macOS 的默认根是 `~/Library/Application Support/fnm`（而非 Linux 的
+    /// `~/.local/share/fnm`），必须一并覆盖，否则 macOS 上 fnm 装的 dsh 仍漏检。
+    #[cfg(unix)]
+    #[test]
+    fn append_unix_dirs_finds_fnm_macos_installation_bin() {
+        let home = temp_dir("unix-fnm-macos");
+        let installation =
+            home.join("Library/Application Support/fnm/node-versions/v24.19.0/installation/bin");
+        std::fs::create_dir_all(&installation).unwrap();
+
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        append_unix_dsh_dirs(&mut dirs, &home);
+
+        assert!(
+            dirs.contains(&installation),
+            "macOS fnm installation bin 未纳入: {dirs:?}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// fnm 尊重 `$XDG_DATA_HOME`；该变量指向自定义根时也要能定位到。
+    #[cfg(unix)]
+    #[test]
+    fn fnm_version_roots_includes_xdg_data_home() {
+        let home = temp_dir("unix-fnm-xdg");
+        let xdg = temp_dir("unix-fnm-xdg-root");
+        let roots = fnm_version_roots(&home, Some(&xdg));
+        assert!(
+            roots.contains(&xdg.join("fnm").join("node-versions")),
+            "XDG 根未纳入候选: {roots:?}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&xdg);
     }
 
     /// 版本排序必须按语义而非字符串：`v9.0.0` 字符串序在 `v24.0.0` 之前，但语义上
