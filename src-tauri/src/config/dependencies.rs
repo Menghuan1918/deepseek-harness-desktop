@@ -188,25 +188,21 @@ pub fn managed_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
 /// 删除下载的核心目录都会留下悬空记录，继续采信会让就绪判定把可用资源判成缺失，
 /// 进而转去联网下载。此时回落到清单托管根——普通安装的托管根与记录值本就同路，
 /// 悬空回落不影响既有行为。
-///
-/// 落在**安装目录**里的记录同样不采信：随包资源版本（旧离线包）曾把依赖根写在
-/// `resources/` 下，而现在解压产物一律落在 AppData，老记录只会把应用钉在旧树上。
 pub fn active_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
     let overridable = manifest::dependency_spec(app, key).is_none_or(|spec| spec.overridable);
     if overridable {
         if let Some(Some(recorded)) = mapped(app, key) {
             let resolved = manifest::resolve_location(app, &recorded.to_string_lossy());
-            if resolved.exists() && !is_inside_resource_root(app, &resolved) {
+            // 安装目录里的记录同样不采信：旧离线包把依赖根写在那里，而现在解压产物
+            // 一律落在 AppData，老记录只会把应用钉在旧树上。
+            let inside_install_dir = manifest::resource_root(app)
+                .is_some_and(|root| resolved.starts_with(root));
+            if resolved.exists() && !inside_install_dir {
                 return resolved;
             }
         }
     }
     managed_root(app, key)
-}
-
-/// 路径是否落在安装包资源根之下（旧离线包把解压产物放在那里的历史遗留）
-fn is_inside_resource_root<R: Runtime>(app: &AppHandle<R>, path: &Path) -> bool {
-    manifest::resource_root(app).is_some_and(|root| path.starts_with(root))
 }
 
 /// 随包资源压缩包（离线包在安装目录 `resources/` 下随包分发的原始资产名）；不随包时为 None。
