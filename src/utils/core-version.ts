@@ -6,6 +6,14 @@ import semver from 'semver'
  */
 export const CORE_BREAKING_BASELINE = '0.1.2-rc.1'
 
+/** 剥掉 release tag 的 `dsh-`/`src-` 前缀（含重复的 `dsh-src-` 链）后再交给 semver */
+function stripVersionPrefix(version: string): string {
+  let value = version
+  while (value.startsWith('dsh-') || value.startsWith('src-'))
+    value = value.replace(/^(?:src|dsh)-/, '')
+  return value
+}
+
 /**
  * Semver comparison using the `semver` package.
  * Handles `dsh-`/`src-` prefixes (including repeated `dsh-src-` chains) by
@@ -13,17 +21,35 @@ export const CORE_BREAKING_BASELINE = '0.1.2-rc.1'
  * Returns: negative if a < b, 0 if equal, positive if a > b.
  */
 export function compareVersions(a: string, b: string): number {
-  const clean = (v: string) => {
-    let s = v
-    while (s.startsWith('dsh-') || s.startsWith('src-'))
-      s = s.replace(/^(?:src|dsh)-/, '')
-    return s
-  }
-  const pa = semver.parse(clean(a))
-  const pb = semver.parse(clean(b))
+  const pa = semver.parse(stripVersionPrefix(a))
+  const pb = semver.parse(stripVersionPrefix(b))
   if (!pa || !pb)
     return 0
   return semver.compare(pa, pb)
+}
+
+/** 主/次版本号（`x.x`，不含 patch 与预发布标识）；缺失或不可解析时为空串 */
+export function coreMajorMinor(version: string): string {
+  const parsed = semver.parse(stripVersionPrefix(version))
+  return parsed ? `${parsed.major}.${parsed.minor}` : ''
+}
+
+/**
+ * 目标核心是否相对在用核心做了升级（任意新版：大版本/小版本/补丁都算）。
+ *
+ * 核心与档案是配套的：换到任何更新的 dsh 版本都可能破坏当前档案里的插件与设置，切换前
+ * 先提示用户换配套档案。判据取「目标 > 在用」而非「跨主/次版本」——dsh 在 0.1.x 上持续推进
+ * 破坏性更改（0.1.5 → 0.1.7 就是一次），只跨主/次版本会漏掉这些升级提示。
+ *
+ * 不可解析（本地核心版本号缺失、首次切换没有在用核心）一律返回 false——漏提示只是少了
+ * 一次提醒，误判会把正常切换挡在弹窗后面。
+ */
+export function isCoreUpgrade(from: string, to: string): boolean {
+  const current = semver.parse(stripVersionPrefix(from))
+  const target = semver.parse(stripVersionPrefix(to))
+  if (!current || !target)
+    return false
+  return semver.gt(target, current)
 }
 
 /** 判断核心版本（版本串或 release tag）是否高于 rc.2 基准（引入破坏性更改） */
