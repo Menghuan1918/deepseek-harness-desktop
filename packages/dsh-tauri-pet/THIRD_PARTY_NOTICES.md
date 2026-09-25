@@ -1,5 +1,37 @@
 # Third-party asset notices
 
+## deepseek-ai/deepseek-harness
+
+The pet plugin carries no official source; it mounts an official provider and
+consumes official client contracts. Upstream sources are MIT-licensed:
+
+- Repository: <https://github.com/deepseek-ai/deepseek-harness>
+- Cross-checked revision: `c36a83ff6bb95e3f82cf79f9be7c724270a8aa61`
+  (`dsh-v0.1.7-alpha.1` — the `source/deepseek-harness` gitlink and the `dsh:`
+  catalog pin in `pnpm-workspace.yaml`)
+- Bundled runtime cross-check: `477b4f420553e8a52c2fbccc464d7561b239c443`
+  (`dsh-v0.1.7-rc.2`)
+- License: MIT — Copyright (c) 2026 DeepSeek
+
+Integration points:
+
+- **Skill provider instance** — `cordis.patch.yml` inserts an official
+  `@deepseek-ai/dsh-skill-filesystem` instance as row `dsh-tauri-pet-skills`
+  with `providerName: dsh-tauri-pet`, `includeDefaultRoots: false` and
+  `customSkillDirs` pointing at this package's bundled `skills/` directory, so
+  the pet's shipped skill reaches the official skill registry through the
+  official provider.
+- **Settings entry** — the pet action item is a clone of the official account
+  menu entry inside the official primitives `Menu`
+  (`src/client/constants/index.ts:37-39`, `src/client/register/settings-menu.utils.ts:24-33`,
+  `src/client/register/settings-menu.ts:16-19`); styling is inherited from the
+  cloned entry and no generated CSS-module hash is hard-coded.
+- **Client services** — the pet reads official projections instead of forking
+  them: `workspaces.list` and the official new-session target order
+  (`src/client/service/pet.utils.ts:3,21`), with `@deepseek-ai/dsh-client-store`,
+  `@deepseek-ai/dsh-client-ui-layout`, `@deepseek-ai/dsh-client-ui-renderer` and
+  `@deepseek-ai/dsh-client-ui-slots` as the declared client contracts.
+
 ## dsh-pet
 
 The pet media assets (WebM animations, preview GIFs and `config.jsonc`) are **no
