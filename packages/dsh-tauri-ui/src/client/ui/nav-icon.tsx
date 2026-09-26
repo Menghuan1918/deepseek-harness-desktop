@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import type { IconComponent } from '../components/icon'
 import { get } from 'dsh-tauri/client'
 import { Icon } from '../components/icon'
-import { Database, Gear, Cubes3Overlap, Puzzle, Tray, PersonPencil, Ghost } from '../components/icons'
+import { Cubes3Overlap, Database, Gear, Ghost, PersonPencil, Puzzle, Tray } from '../components/icons'
 import { useMountStyle } from '../hooks/use-mount-style'
 import settingsNavIconStyle from './nav-icon.cssr'
 
@@ -19,7 +19,6 @@ const NAV_ICONS: Record<string, IconComponent> = {
 
 export function SettingsNavIcon({ id }: { id: string }): ReactElement {
   useMountStyle(settingsNavIconStyle, SETTINGS_NAV_ICON_STYLE_ID)
-  console.log(id)
   const NavIcon = get(NAV_ICONS, id, Gear)
   return <Icon as={NavIcon} size={16} className="dshp-settings-nav-icon" />
 }
