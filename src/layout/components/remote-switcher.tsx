@@ -80,7 +80,7 @@ export function RemoteSwitcher({ onManage, onSync }: { onManage?: () => void, on
   return (
     <Dropdown>
       <Button
-        className="rounded-lg h-6 text-xs px-1.5 ml-1 gap-1.5"
+        className="rounded-lg h-7 text-[12.5px] px-1.5 ml-1 gap-1.5"
         size="sm"
         variant="ghost"
         aria-label={t('remote.switcher')}
