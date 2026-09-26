@@ -390,7 +390,7 @@
   "remote.auth.agent": "agent",
   "remote.auth.key": "密钥",
   "remote.auth.password": "密码",
-  "remote.empty": "还没有机器——在「设置 → 远程」面板添加。",
+  "remote.empty": "还没有机器——在「设置 → 服务器」面板添加。",
   "remote.degraded": "本地实例不可达，正在重试",
   "remote.state.disconnected": "未连接",
   "remote.state.testing": "测试中",

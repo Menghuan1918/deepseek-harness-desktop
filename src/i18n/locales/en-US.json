@@ -390,7 +390,7 @@
   "remote.auth.agent": "agent",
   "remote.auth.key": "key",
   "remote.auth.password": "password",
-  "remote.empty": "No machines yet — add one from Settings → Remote.",
+  "remote.empty": "No machines yet — add one from Settings → Service.",
   "remote.degraded": "Local instance unreachable — retrying",
   "remote.state.disconnected": "Disconnected",
   "remote.state.testing": "Testing",

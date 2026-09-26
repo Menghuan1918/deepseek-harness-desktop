@@ -2,7 +2,7 @@
 
 /** Simplified Chinese dictionary. */
 export const zh = {
-  'nav': '远程',
+  'nav': '服务器',
   'tabs.machines': 'SSH 机器',
   'tabs.sync': '同步到远端',
   'hero.title': '远程机器',
@@ -127,7 +127,7 @@ export type SshKey = keyof typeof zh
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
-  'nav': 'Remote',
+  'nav': 'Service',
   'tabs.machines': 'SSH machines',
   'tabs.sync': 'Sync to remote',
   'hero.title': 'Remote machines',
