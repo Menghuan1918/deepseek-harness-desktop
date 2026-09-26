@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import type { IconComponent } from '../components/icon'
 import { get } from 'dsh-tauri/client'
 import { Icon } from '../components/icon'
-import { Database, Gear, HardDrive, Person, Puzzle } from '../components/icons'
+import { Database, Gear, Server, Person, Puzzle } from '../components/icons'
 import { useMountStyle } from '../hooks/use-mount-style'
 import settingsNavIconStyle from './nav-icon.cssr'
 
@@ -13,7 +13,7 @@ const NAV_ICONS: Record<string, IconComponent> = {
   'agent-presets': Person,
   'plugins': Puzzle,
   // 远程（dsh-tauri-ssh）：网络图标，与壳层切换器的 Globe 同一语义
-  'dsh-tauri-ssh': HardDrive,
+  'dsh-tauri-ssh': Server,
 }
 
 export function SettingsNavIcon({ id }: { id: string }): ReactElement {
