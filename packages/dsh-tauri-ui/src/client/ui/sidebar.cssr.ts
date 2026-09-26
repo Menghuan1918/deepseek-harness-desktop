@@ -12,7 +12,7 @@ export default b('settings-sidebar', {
   'inset': 0,
   'zIndex': 1000,
   'display': 'flex',
-  'background': 'var(--dsw-alias-bg-base)',
+  'background': 'var(--dsw-specific-sidebar-fill)',
   'color': primary,
 }, [
   e('rail', {
@@ -24,7 +24,6 @@ export default b('settings-sidebar', {
     width: 'var(--dsh-settings-rail-width)',
     padding: '6px 12px',
     background: 'var(--dsw-specific-sidebar-fill)',
-    borderRight: '1px solid var(--dsw-alias-border-weak, rgba(127,127,127,0.2))',
     overflow: 'hidden',
   }),
   e('back', {
@@ -127,6 +126,9 @@ export default b('settings-sidebar', {
     boxSizing: 'border-box',
     overflowY: 'auto',
     display: 'flex',
+    background: 'var(--dsw-alias-bg-base)',
+    borderRadius: '16px 0 0 0',
+    cornerShape: 'round',
   }),
   e('content-inner', {
     width: 'min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%)',
