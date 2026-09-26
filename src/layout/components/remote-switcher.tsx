@@ -85,7 +85,7 @@ export function RemoteSwitcher({ onManage, onSync }: { onManage?: () => void, on
         variant="ghost"
         aria-label={t('remote.switcher')}
       >
-        <Server className={cn('size-3.5', !available && 'text-warning')} />
+        <Server className={cn(!available && 'text-warning')} />
         <span className="max-w-28 truncate">{activeMachine ? activeMachine.name : t('remote.local')}</span>
         <If cond={activeColor !== undefined}>
           <span
