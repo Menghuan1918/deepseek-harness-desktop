@@ -1,7 +1,11 @@
 // 引用源 @gravity-ui/icons · 逐名转发 @gravity-ui/icons/<Name> · 版本 未记录（registry.ts 无该条目）· hash 未记录（registry.ts 无该条目）
 export { default as Alarm } from '@gravity-ui/icons/Alarm'
+export { default as Tray } from '@gravity-ui/icons/Tray'
+export { default as PersonPencil } from '@gravity-ui/icons/PersonPencil'
+export { default as Cubes3Overlap } from '@gravity-ui/icons/Cubes3Overlap'
 export { default as ArrowLeft } from '@gravity-ui/icons/ArrowLeft'
 export { default as ArrowRight } from '@gravity-ui/icons/ArrowRight'
+export { default as Ghost } from '@gravity-ui/icons/Ghost'
 export { default as ArrowRightFromSquare } from '@gravity-ui/icons/ArrowRightFromSquare'
 export { default as ArrowRotateRight } from '@gravity-ui/icons/ArrowRotateRight'
 export { default as ArrowUpRight } from '@gravity-ui/icons/ArrowUpRight'
