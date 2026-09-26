@@ -1,5 +1,5 @@
 import type { SshMachineRow } from '@/store/modules/remote'
-import { ArrowUpRightFromSquare, ArrowUpToLine, Gear, Globe, House, Power } from '@gravity-ui/icons'
+import { ArrowUpRightFromSquare, ArrowUpToLine, Gear, HardDrive, House, Power } from '@gravity-ui/icons'
 import { Button, Description, Dropdown, Label } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useTranslation } from 'react-i18next'
@@ -85,7 +85,7 @@ export function RemoteSwitcher({ onManage, onSync }: { onManage?: () => void, on
         variant="ghost"
         aria-label={t('remote.switcher')}
       >
-        <Globe className={cn('size-3.5', !available && 'text-warning')} />
+        <HardDrive className={cn('size-3.5', !available && 'text-warning')} />
         <span className="max-w-28 truncate">{activeMachine ? activeMachine.name : t('remote.local')}</span>
         <If cond={activeColor !== undefined}>
           <span
