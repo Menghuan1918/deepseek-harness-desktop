@@ -6,11 +6,11 @@ import type {
   WorktreeParams,
   WorktreeProcessController,
 } from '../types'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import process from 'node:process'
 import { defineService, DSH_HOME } from 'dsh-tauri'
 import { compact, filter, find, get, isEmpty, map, reject, some } from 'lodash-es'
-import { join, resolve } from 'pathe'
+import { basename, dirname, join, resolve } from 'pathe'
 import { TRASH_DIR, WORKTREES_DIR } from '../config/constants'
 import { getCurrentHostInstance } from '../config/runtime'
 import {
@@ -199,7 +199,7 @@ export const worktree = defineService({
       hash,
       dirname,
       worktreePath: path,
-      projectPath: root,
+      projectPath: resolve(projectPath),
       branchName: activeBranch,
       ownsBranch: Boolean(branchName),
       createdAt: new Date().toISOString(),
@@ -552,9 +552,34 @@ function directoryMtime(path: string): number {
   }
 }
 
+function canonicalPath(p: string): string {
+  try {
+    return realpathSync.native(p)
+  }
+  catch {
+    const resolved = resolve(p)
+    const segments: string[] = []
+    let current = resolved
+    while (true) {
+      const parent = dirname(current)
+      if (parent === current)
+        break
+      segments.unshift(basename(current))
+      try {
+        const canonicalParent = realpathSync.native(parent)
+        return join(canonicalParent, ...segments)
+      }
+      catch {
+        current = parent
+      }
+    }
+    return resolved
+  }
+}
+
 function samePath(a: string, b: string): boolean {
-  const left = resolve(a)
-  const right = resolve(b)
+  const left = canonicalPath(a)
+  const right = canonicalPath(b)
   return process.platform === 'win32'
     ? left.replaceAll('/', '\\').toLowerCase() === right.replaceAll('/', '\\').toLowerCase()
     : left === right

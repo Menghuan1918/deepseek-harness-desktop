@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import type { IconComponent } from '../components/icon'
 import { get } from 'dsh-tauri/client'
 import { Icon } from '../components/icon'
-import { Database, Gear, Cubes3Overlap, Puzzle, Tray, PersonPencil, Ghost, Server } from '../components/icons'
+import { Cubes3Overlap, Database, Gear, Ghost, PersonPencil, Puzzle, Server, Tray } from '../components/icons'
 import { useMountStyle } from '../hooks/use-mount-style'
 import settingsNavIconStyle from './nav-icon.cssr'
 
