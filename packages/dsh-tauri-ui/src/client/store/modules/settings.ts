@@ -8,6 +8,7 @@ export const settings = defineStore({
     query: '',
     railWidth: undefined,
     launcherAvailable: false,
+    launcherShortcut: undefined,
   }),
   actions: {
     openAt(sectionId?: string) {
@@ -32,6 +33,9 @@ export const settings = defineStore({
     },
     setLauncherAvailable(available: boolean) {
       this.launcherAvailable = available
+    },
+    setLauncherShortcut(shortcut: SettingsUiState['launcherShortcut']) {
+      this.launcherShortcut = shortcut
     },
   },
 })

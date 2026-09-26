@@ -188,7 +188,11 @@ exec "$NODE" "$DSH_BIN" "$@"
 ///
 /// 实现要点：
 /// - 不用 `findstr` 匹配路径（`\` 会被当正则转义导致过滤失效）；
-/// - 块内变量判断用 for 变量（`%%~xp`）而非 `%VAR%`（块解析时机陷阱）。
+/// - 块内变量判断用 for 变量（`%%~xp`）而非 `%VAR%`（块解析时机陷阱）；
+/// - 转发用户/选定 pnpm 时直接调用目标、**不得用 `call`**：批处理会把原始 `%*`
+///   再展开一次，`call` 即多出一层解释，把调用方（execa 只按单层批处理转义）
+///   已经转义好的 `^` 翻倍成 `^^`，`pnpm add "x@^0.21.1"` 因此整批失败
+///   （issue #715）。Unix 侧用 `exec` 转发本就没有多余层，此处与之一致。
 #[cfg_attr(all(not(windows), not(test)), allow(dead_code))] // 仅 Windows 的 shim 落盘与单测使用
 pub fn build_pnpm_cmd_shim(paths: &ShimPaths) -> String {
     normalize_cmd_line_endings(format!(
@@ -219,9 +223,7 @@ rem Re-entry guard: DSH_PNPM, or the first pnpm found on PATH, may itself be a s
 rem that resolves back through PATH into this file; forwarding twice would exec the
 rem two shims into each other forever and the installer child would never exit.
 rem Armed once here, before either forward, and checked on entry: a re-entered shim
-rem goes straight to the bundled pnpm. The forwarding blocks below therefore stay
-rem byte-identical to the issue #130 fix, whose exit-code propagation depends on
-rem `exit /b %ERRORLEVEL%` sitting directly after `call` outside any block.
+rem goes straight to the bundled pnpm.
 if "%DSH_PNPM_SHIM_GUARD%"=="1" goto :after_user
 set "DSH_PNPM_SHIM_GUARD=1"
 
@@ -252,12 +254,23 @@ if defined USER_PNPM goto :use_user
 
 goto :after_user
 
+rem Forward by invoking the target directly, never through `call`. `cmd.exe` hands
+rem the raw `%*` to a batch file, which re-expands it once more, so `call` adds a
+rem second interpretation layer on top of the one the caller already accounted for.
+rem `dsh plugin` starts pnpm through execa, which caret-escapes every argument
+rem exactly once for the single batch hop it resolves (this shim); the extra layer
+rem turned `dsh-better-sidebar@^0.21.1` into `^^0.21.1` (issue #715: pnpm failed
+rem with ERR_PNPM_SPEC_NOT_SUPPORTED_BY_ANY_RESOLVER, so no preset plugin installed)
+rem and mangled `%`/`&` in other arguments as well. Handing `%*` straight to the
+rem target keeps arguments byte-identical. A batch target transfers control, so its
+rem exit code is ours; a `.exe`/`.com` target returns, and `exit /b %ERRORLEVEL%`
+rem still forwards its code (issue #130).
 :use_selected
-call "%DSH_PNPM%" %*
+"%DSH_PNPM%" %*
 exit /b %ERRORLEVEL%
 
 :use_user
-call "%USER_PNPM%" %*
+"%USER_PNPM%" %*
 exit /b %ERRORLEVEL%
 
 :after_user
@@ -529,7 +542,7 @@ mod tests {
         assert!(content.contains(&paths.pnpm_bin.to_string_lossy().to_string()));
         assert!(content.contains("where pnpm"));
         assert!(content.contains("SELF_PREFIX"));
-        assert!(content.contains(r#"call "%USER_PNPM%" %*"#));
+        assert!(content.contains(r#""%USER_PNPM%" %*"#));
         assert!(content.contains(":use_bundled"));
         assert!(content.contains(&paths.node_bin.to_string_lossy().to_string()));
         // 应用内部安装可经 DSH_PREFER_BUNDLED_PNPM=1 强制捆绑版（须在用户搜索前生效）
@@ -850,25 +863,113 @@ mod tests {
                 "{name}: missing re-entry guard"
             );
         }
-        // cmd 在入口一次判断 + 一次置位；转发块保持 issue #130 修复时的原样。
+        // cmd 在入口一次判断 + 一次置位。
         let cmd = build_pnpm_cmd_shim(&shim_paths_for(&app_dir));
         assert_eq!(cmd.matches("DSH_PNPM_SHIM_GUARD").count(), 2);
         assert_eq!(cmd.matches("set \"DSH_PNPM_SHIM_GUARD=1\"").count(), 1);
     }
 
-    /// 回归 issue #130：用户 pnpm 的退出码必须原样透出。`exit /b %ERRORLEVEL%`
-    /// 一旦落进括号块，或与 `call` 之间插进别的语句，`%ERRORLEVEL%` 就会在块解析
-    /// 时提前展开，失败码被吞成 0/1。这里锁死「call 之后紧跟 exit /b %ERRORLEVEL%」。
+    /// 回归 issue #130：用户 pnpm 的退出码必须原样透出，因此 `exit /b %ERRORLEVEL%`
+    /// 必须紧跟转发语句、且不得落进括号块（块解析会提前展开 `%ERRORLEVEL%`，把失败码
+    /// 吞成 0/1）。
+    ///
+    /// 同时锁死 issue #715 的修复：转发**不得用 `call`**——批处理会把原始 `%*` 再展开
+    /// 一次，`call` 即多出一层解释，使 execa 已按单层转义好的 `^` 翻倍成 `^^`。
     #[test]
-    fn cmd_shim_exit_code_stays_adjacent_to_call() {
+    fn cmd_shim_forwarding_keeps_exit_code_and_never_uses_call() {
         let content = build_pnpm_cmd_shim(&sample_shim_paths());
-        for call in [r#"call "%DSH_PNPM%" %*"#, r#"call "%USER_PNPM%" %*"#] {
-            let expected = format!("{call}\r\nexit /b %ERRORLEVEL%\r\n");
+        for target in [r#""%DSH_PNPM%""#, r#""%USER_PNPM%""#] {
+            let expected = format!("{target} %*\r\nexit /b %ERRORLEVEL%\r\n");
             assert!(
                 content.contains(&expected),
-                "`{call}` must be followed directly by `exit /b %ERRORLEVEL%`"
+                "`{target} %*` must be followed directly by `exit /b %ERRORLEVEL%`"
+            );
+            assert!(
+                !content.contains(&format!("call {target}")),
+                "`call {target}` re-expands %* and doubles carets (issue #715)"
             );
         }
+    }
+
+    /// execa 的 `cmd.exe` 元字符转义：每个元字符前缀一个 `^`。
+    /// 见 execa `lib/arguments/command-file.js` 的 `escapeMetaChars`。
+    #[cfg(windows)]
+    fn execa_escape_meta_chars(value: &str) -> String {
+        const META_CHARS: &str = "()][%!^\"`<>&|;, *?";
+        let mut escaped = String::with_capacity(value.len());
+        for character in value.chars() {
+            if META_CHARS.contains(character) {
+                escaped.push('^');
+            }
+            escaped.push(character);
+        }
+        escaped
+    }
+
+    /// execa 对单个参数的转义。目标是 `.cmd`/`.bat` 时它会**双重**转义——只为
+    /// 「批处理会用 `%*` 再展开一次参数」这一层做补偿。测试参数不含反斜杠，
+    /// 故略去 execa 的反斜杠加倍步骤。
+    #[cfg(windows)]
+    fn execa_escape_argument(raw: &str) -> String {
+        execa_escape_meta_chars(&execa_escape_meta_chars(&format!("\"{raw}\"")))
+    }
+
+    /// 回归 issue #715 / #716：`dsh plugin add` 由 `@deepseek-ai/dsh-plugin-manager`
+    /// 经 execa 启动 pnpm，execa 解析到的是本 shim（`.cmd`），因此只按**单层**批处理
+    /// 转义参数。shim 若用 `call` 转发就多出一层 `%*` 再展开，`^` 被翻倍成 `^^`，pnpm
+    /// 报 `ERR_PNPM_SPEC_NOT_SUPPORTED_BY_ANY_RESOLVER`，预设插件整批装不上。
+    /// 这里按 execa 的转义规则构造命令行并真实执行 shim，断言目标收到的参数逐字节不变。
+    #[cfg(windows)]
+    #[test]
+    fn pnpm_cmd_shim_forwards_execa_escaped_caret_spec_unchanged() {
+        use std::os::windows::process::CommandExt;
+
+        let dir = temp_dir("pnpm-caret-forward");
+        let target = dir.join("user pnpm.cmd");
+        std::fs::write(
+            &target,
+            "@echo off\r\necho TARGET_ARGS=[%*]\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        let shim = dir.join("pnpm.cmd");
+        std::fs::write(
+            &shim,
+            build_pnpm_cmd_shim(&shim_paths_for(&dir.join("app"))),
+        )
+        .unwrap();
+
+        let spec = "dsh-better-sidebar@^0.21.1";
+        // execa 的命令行形如 `"<转义后的文件> <转义后的参数...>"`（整体再包一层引号）
+        let command_line = format!(
+            "\"{}\"",
+            [
+                execa_escape_meta_chars(&shim.to_string_lossy()),
+                execa_escape_argument("add"),
+                execa_escape_argument(spec),
+            ]
+            .join(" ")
+        );
+
+        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let system32 = PathBuf::from(&system_root).join("System32");
+        let output = std::process::Command::new(system32.join("cmd.exe"))
+            .args(["/d", "/s", "/c"])
+            .raw_arg(&command_line)
+            .env("DSH_PNPM", &target)
+            .env("SystemRoot", &system_root)
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(spec),
+            "forwarded arguments must keep the single caret, got: {stdout:?}"
+        );
+        assert!(
+            !stdout.contains("^^"),
+            "the shim must not re-expand %* into a doubled caret, got: {stdout:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 回归：`DSH_PNPM` 指向的 shim 若按 PATH 解析回本 shim（mise shims 的真实

@@ -1,3 +1,4 @@
+import type { RuntimeInfo } from '@/types'
 import { ArrowRotateRight, ArrowUpRightFromSquare, ChevronRight, Copy, Folder, Power } from '@gravity-ui/icons'
 import { Button, Chip, Description, Input, Link, ListBox, Select, Spinner, Switch } from '@heroui/react'
 import { useMutation, useQuery } from '@tanstack/react-query'
@@ -15,20 +16,10 @@ import { HARNESS_HEAP_MAX_MB, HARNESS_HEAP_MIN_MB } from '@/store/modules/settin
 import { ConfigCloseAction } from '@/ui/config/components/close-action'
 import { ConfigLaunchOnLogin } from '@/ui/config/components/launch-on-login'
 import { useCoreBreakingConfirm } from '@/ui/config/hooks/use-core-breaking-confirm'
+import { useCoreProfileSwitch } from '@/ui/config/hooks/use-core-profile-switch'
 import { toast } from '@/utils/toast'
 
 const ZOOM_OPTIONS = Array.from({ length: 16 }, (_, index) => Number((0.5 + index * 0.1).toFixed(1)))
-
-export interface RuntimeInfo {
-  app_version: string
-  dsh_version: string | null
-  node_version: string
-  service_url: string
-  data_dir: string
-  log_path: string
-  platform: string
-  arch: string
-}
 
 export interface CliLinkStatus {
   enabled: boolean
@@ -44,6 +35,7 @@ export function ConfigDebug() {
   const { serviceRunning, busyAction } = useStore(store.harness)
   const { updateInfo } = useStore(store.harnessUpdater)
   const { holder: coreBreakingHolder, confirmCoreBreaking } = useCoreBreakingConfirm()
+  const { holder: coreProfileSwitchHolder, guardCoreUpgrade } = useCoreProfileSwitch()
 
   // 端口编辑态：用户尚未输入时为 undefined，展示值始终以 store 中已保存的端口为准。
   // 初值不写入 state（避免渲染期副作用），用户一旦输入即以输入值为准。
@@ -76,12 +68,19 @@ export function ConfigDebug() {
     store.harnessUpdater.showToast(() => handleUpdate())
   }
 
-  /** 点击「立即更新」：目标版本高于 rc.2 时先弹破坏性更改确认，取消则中止更新 */
+  /**
+   * 点击「立即更新」：目标版本高于 rc.2 时先弹破坏性更改确认，取消则中止更新；
+   * 目标版本是升级时先落到配套版本档案，更新失败再把档案切回去。
+   */
   async function handleUpdate() {
     const info = store.harnessUpdater.updateInfo
     if (!info || !(await confirmCoreBreaking(info.tag)))
       return
-    await store.harnessUpdater.handleUpdate()
+    const guard = await guardCoreUpgrade(info.tag)
+    if (!guard)
+      return
+    if (!(await store.harnessUpdater.handleUpdate()))
+      await guard.rollback?.()
   }
 
   const { mutate: onToggleCliLink } = useMutation({
@@ -190,6 +189,7 @@ export function ConfigDebug() {
     <div className="space-y-3">
       <Panel.Header title={t('config.application')} testId="dsh-config-panel-title" />
       {coreBreakingHolder}
+      {coreProfileSwitchHolder}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted">

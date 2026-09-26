@@ -2,47 +2,46 @@
 
 ## deepseek-ai/deepseek-harness
 
-This package is a Tauri-flavoured derivation of the upstream Models settings /
-DeepSeek credential-onboarding plugin. Upstream sources are MIT-licensed:
-
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Cross-checked revision: `46a7f68b0922371ce7144b668b90e377d8e799f4`
+- Version: `dsh-v0.1.7-rc.2`
+- Revision: `477b4f420553e8a52c2fbccc464d7561b239c443`
+- Source: `source/deepseek-harness`
 - License: MIT — Copyright (c) 2026 DeepSeek
 
-Derived files (upstream `packages/client/ui-settings-models/` → this package):
+Derived (upstream `packages/client/ui-settings-models/` → this package `src/`):
 
-| Upstream | This package (`src/`) |
-| --- | --- |
-| `src/index.ts` | `host/apply.ts` |
-| `src/onboarding-config.ts`, `src/onboarding-copy.ts` | `shared/onboarding-config.ts`, `shared/onboarding-copy.ts` |
-| `src/client/index.ts` | `client/register/models.ts`, `client/index.ts` |
-| `src/client/ModelsSection.tsx` | `client/models/ModelsSection.tsx` |
-| `src/client/DeepSeekModelsEditor.tsx` | `client/models/DeepSeekModelsEditor.tsx` |
-| `src/client/DeepSeekOnboardingDialog.tsx` | `client/models/DeepSeekOnboardingDialog.tsx` |
-| `src/client/ProviderEditor.tsx` | `client/models/ProviderEditor.tsx` |
-| `src/client/CustomProviderCard.tsx` | `client/models/CustomProviderCard.tsx` |
-| `src/client/ModelListEditor.tsx`, `ModelRow.tsx`, `ModelInputTypes.tsx`, `EditorFooter.tsx` | `client/models/` (same names) |
-| `src/client/OnboardingModal.tsx`, `WelcomeNotice.tsx` | `client/models/` (same names) |
-| `src/client/apiKey.ts`, `protocol-label.ts`, `operations.ts`, `schema-operations.ts`, `slot-contract.ts`, `store.ts`, `welcome-store.ts`, `locales.ts` | `client/models/` (same names) |
+- `src/index.ts` → `host/apply.ts`
+- `src/onboarding-config.ts`, `src/onboarding-copy.ts` → `shared/onboarding-config.ts`, `shared/onboarding-copy.ts`
+- `src/client/index.ts` → `client/register/models.ts`, `client/index.ts`
+- `src/client/ModelsSection.tsx` → `client/models/ModelsSection.tsx`
+- `src/client/DeepSeekModelsEditor.tsx` → `client/models/DeepSeekModelsEditor.tsx`
+- `src/client/DeepSeekOnboardingDialog.tsx` → `client/models/DeepSeekOnboardingDialog.tsx`
+- `src/client/ProviderEditor.tsx` → `client/models/ProviderEditor.tsx`
+- `src/client/CustomProviderCard.tsx` → `client/models/CustomProviderCard.tsx`
+- `src/client/ModelListEditor.tsx`, `ModelRow.tsx`, `ModelInputTypes.tsx`, `EditorFooter.tsx` → `client/models/` (same names)
+- `src/client/OnboardingModal.tsx`, `WelcomeNotice.tsx` → `client/models/` (same names)
+- `src/client/apiKey.ts`, `protocol-label.ts`, `operations.ts`, `schema-operations.ts`, `slot-contract.ts`, `store.ts`, `welcome-store.ts`, `locales.ts` → `client/models/` (same names)
 
-Kept deliberately from upstream:
+Synced `0.1.7-alpha.1` → `0.1.7-rc.2`:
 
-- The slot and remote contracts are unchanged: `settings.section`,
-  `settings.onboarding`, `settings.models.sign-in`, the `llm-deepseek` settings
-  namespace, and the `credentialOnboarding` gate published through the
-  `webserver/index-inject` global (`src/onboarding-config.ts` upstream).
-- The `'dshDesktop' in globalThis` precondition of the official credential
-  onboarding is preserved, so the local API-key flow never competes with the
-  official account flow.
+- `store.ts`: the account route (`deepseek-account`) is joined out of the credential space — no `apiKeyEnv`, no credential read, availability from `session/modelCatalog()`; hidden while signed out; `providerUsable` answers through `accountAvailable`.
+- `store.ts`: account and official routes sort first, in that order.
+- `ModelsSection.tsx`: `needsSetup` never renders the account row as a setup card; the account row shows the localized `deepSeekAccount` name; the delete dialog's initial focus moves to `data-modal-autofocus`.
+- `ProviderEditor.tsx` / `CustomProviderCard.tsx`: the account route edits only its model catalog (no key field, no credential describe); every key input uses `autoComplete="new-password"`.
+- `ModelListEditor.tsx`: candidate ids carry `title={name ?? id}`.
+- `register/models.ts` + `client/index.ts`: `remote.session` joins the inject list; `credentials/record-updated` refreshes the page; the internal-testing notice step is no longer registered on the desktop carrier.
+- `styles.ts`: the upstream CSS token migration (radius scale, settings-card fill and stroke, focus-ring token, business-state ink) plus the candidate-id ellipsis.
+
+Kept from upstream:
+
+- The slot and remote contracts are unchanged: `settings.section`, `settings.onboarding`, `settings.models.sign-in`, the `llm-deepseek` settings namespace, and the `credentialOnboarding` gate published through the `webserver/index-inject` global.
+- The `'dshDesktop' in globalThis` precondition of the official credential onboarding is preserved, so the local API-key flow never competes with the official account flow.
+- The DeepSeek credential-onboarding step stays registered on the desktop carrier (upstream registers it there too); only its automatic posture is gated.
 
 Re-implemented instead of copied:
 
-- Styling runs on this repo's `css-render` stack (`client/models/styles.ts`,
-  `client/models/styles.overrides.ts`); upstream `.module.css` files are not
-  copied.
-- `client/register/styles.ts`, `client/models/remote.ts`,
-  `client/models/settings-forms.ts`, `client/types/remotes.ts` and
-  `client/constants/index.ts` are this repo's own glue.
+- Styling runs on this repo's `css-render` stack (`client/models/styles.ts`, `client/models/styles.overrides.ts`); upstream `.module.css` files are not copied.
+- `client/register/styles.ts`, `client/models/remote.ts`, `client/models/settings-forms.ts`, `client/types/remotes.ts`, `client/constants/index.ts` are this repo's own glue.
 
 ## License
 

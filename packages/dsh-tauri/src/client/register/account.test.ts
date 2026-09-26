@@ -20,11 +20,12 @@ const AUTHORIZE_A = 'https://platform.deepseek.com/dsh/authorize?state=a'
 const AUTHORIZE_B = 'https://platform.deepseek.com/dsh/authorize?state=b'
 
 interface AttemptView {
+  status?: string
   attempt?: { phase?: string, authorizeUrl?: string } | null
 }
 
 /** 账号远程面：`watch()` 给原始值，`$stream()` 与官方一样把值包成 `{ value, accept }` 帧。 */
-function makeRemote(views: AttemptView[]) {
+function makeRemote(views: AttemptView[], session?: { initializeDefaultModel?: () => Promise<unknown> }) {
   const account = {
     watch: () => (async function* () {
       for (const view of views)
@@ -33,6 +34,7 @@ function makeRemote(views: AttemptView[]) {
   }
   return {
     account,
+    ...session === undefined ? {} : { session },
     $stream: (options: { open: (signal: AbortSignal) => AsyncIterable<AttemptView> }) => ({
       async* [Symbol.asyncIterator]() {
         for await (const value of options.open(new AbortController().signal))
@@ -133,6 +135,74 @@ describe('accountSignInFeature', () => {
     await Promise.resolve()
 
     expect(mocks.invoke).not.toHaveBeenCalled()
+    dispose()
+  })
+})
+
+/**
+ * 登录成功 → 默认模型初始化：官方账号 UI 在 `credential-stored` + `succeeded` 的那一帧
+ * 请求 `session/initializeDefaultModel`，把默认模型从需要 API Key 的 `deepseek-official`
+ * 换到账号路由。桌面载体在客户端挂载前就完成签名时官方那侧不会触发，因此这里必须补上。
+ */
+describe('accountSignInFeature — post sign-in default model', () => {
+  const signedIn: AttemptView = { status: 'credential-stored', attempt: { phase: 'succeeded' } }
+
+  it('initializes the default model once on the sign-in edge', async () => {
+    const initializeDefaultModel = vi.fn(async () => undefined)
+    const ctx = ctxWithRemote(() => makeRemote([
+      { status: 'signed-out' },
+      { status: 'waiting', attempt: { phase: 'waiting-browser', authorizeUrl: AUTHORIZE_A } },
+      signedIn,
+      signedIn,
+    ], { initializeDefaultModel }))
+
+    const dispose = accountSignInFeature.call(ctx)
+
+    await vi.waitFor(() => expect(initializeDefaultModel).toHaveBeenCalledTimes(1))
+    dispose()
+  })
+
+  it('re-arms after the account leaves the succeeded state', async () => {
+    const initializeDefaultModel = vi.fn(async () => undefined)
+    const ctx = ctxWithRemote(() => makeRemote([
+      signedIn,
+      { status: 'signed-out' },
+      signedIn,
+    ], { initializeDefaultModel }))
+
+    const dispose = accountSignInFeature.call(ctx)
+
+    await vi.waitFor(() => expect(initializeDefaultModel).toHaveBeenCalledTimes(2))
+    dispose()
+  })
+
+  it('survives a core whose session remote has no initializeDefaultModel', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ctx = ctxWithRemote(() => makeRemote([signedIn], {}))
+
+    const dispose = accountSignInFeature.call(ctx)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+    dispose()
+  })
+
+  /** 初始化失败只告警：登录本身已经成功，不得让账号流崩掉。 */
+  it('reports a failed initialization without throwing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ctx = ctxWithRemote(() => makeRemote([signedIn], {
+      initializeDefaultModel: async () => {
+        throw new Error('session/provider-models-unavailable')
+      },
+    }))
+
+    const dispose = accountSignInFeature.call(ctx)
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled())
+    expect(warn.mock.calls[0]?.[0]).toContain('initializing the account default model failed')
+    warn.mockRestore()
     dispose()
   })
 })

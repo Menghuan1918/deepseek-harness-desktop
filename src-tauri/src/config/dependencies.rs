@@ -183,14 +183,37 @@ pub fn managed_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
 ///
 /// 清单把 `dependencies.<key>.overridable` 声明为 false 时，映射表记录的位置一律
 /// 被忽略（本地捆绑版内核固定随包，不允许被运行时改写）。
+///
+/// 记录的位置**已不存在**时同样按「未记录」处理：离线包（随包资源）升级、用户手工
+/// 删除下载的核心目录都会留下悬空记录，继续采信会让就绪判定把可用资源判成缺失，
+/// 进而转去联网下载。此时回落到清单托管根——普通安装的托管根与记录值本就同路，
+/// 悬空回落不影响既有行为。
 pub fn active_root<R: Runtime>(app: &AppHandle<R>, key: &str) -> PathBuf {
     let overridable = manifest::dependency_spec(app, key).is_none_or(|spec| spec.overridable);
     if overridable {
         if let Some(Some(recorded)) = mapped(app, key) {
-            return manifest::resolve_location(app, &recorded.to_string_lossy());
+            let resolved = manifest::resolve_location(app, &recorded.to_string_lossy());
+            if resolved.exists() {
+                return resolved;
+            }
         }
     }
     managed_root(app, key)
+}
+
+/// 随包资源构建的随包核心根（`$Resources/dsh`）；非随包构建为 None。
+///
+/// 这类安装的运行时全部随安装包分发（见 `.github/actions/prepare-bundle-resources`），
+/// 运行期下载在离线机器上必然失败：启动就绪判定据此放宽「补不上的依赖」，核心面板据此
+/// 把随包内核作为「本地」项置顶。
+///
+/// 判定按**清单托管根**而不是当前生效根：随包核心始终是安装目录里那一份，与该依赖
+/// 当前是否被映射到别处的槽位无关。
+pub fn bundled_core_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    let root = manifest::resource_root(app)?;
+    let managed = managed_root(app, DEP_DSH);
+    // 资源根自身不算：只有把核心托管到 `$Resources/<name>` 才是随包构建。
+    (managed != root && managed.starts_with(&root)).then_some(managed)
 }
 
 /// 入口相对路径（相对依赖根）：清单 `dependencies.<key>.entry`，未声明时用内置默认
