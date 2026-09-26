@@ -1,5 +1,5 @@
 import type { SshMachineRow } from '@/store/modules/remote'
-import { ArrowUpRightFromSquare, ArrowUpToLine, Gear, Server, House, Power } from '@gravity-ui/icons'
+import { ArrowUpRightFromSquare, ArrowUpToLine, Gear, House, Power, Server } from '@gravity-ui/icons'
 import { Button, Description, Dropdown, Label } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useTranslation } from 'react-i18next'
