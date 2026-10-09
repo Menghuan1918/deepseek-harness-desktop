@@ -37,7 +37,7 @@ export default defineConfig({
   ),
   meta: { import: { http: 'dsh-tauri/client' } },
   transform: {
-    operation: name => name.replace(/ApiTauri(?:Extension|Scheduler|Rightclick|Archive|Experimental|Model|Ui|Notification|Worktree|Ssh|Bridge)/, ''),
+    operation: name => name.replace(/ApiTauri(?:Extension|Scheduler|Rightclick|Archive|Experimental|Model|Ui|Notification|Worktree|Bridge|Remote)/, ''),
   },
   patch: { operations: { post: 'postWorktree', delete: 'deleteWorktree' } },
   servers: [
