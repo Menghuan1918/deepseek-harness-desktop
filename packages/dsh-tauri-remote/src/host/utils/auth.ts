@@ -17,6 +17,8 @@ const SALT_BYTES = 16
 
 const SECRET_BYTES = 32
 
+const PASSWORD_LENGTH = 20
+
 const SESSION_VERSION = 'v1'
 
 export function hashPassword(password: string, iterations = PBKDF2_ITERATIONS): RemotePasswordRecord {
@@ -59,6 +61,16 @@ export function verifySession(value: string | undefined, secret: string, now: nu
 
 export function createLinkToken(): string {
   return randomBytes(SECRET_BYTES).toString('base64url')
+}
+
+/** 自动访问密码：无易混淆字符（0/O/1/l/I）的 20 位随机构造，便于口头或手抄转述。 */
+export function generateAccessPassword(): string {
+  const alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+  const bytes = randomBytes(PASSWORD_LENGTH)
+  let password = ''
+  for (const byte of bytes)
+    password += alphabet[byte % alphabet.length]
+  return password
 }
 
 export function createSessionSecret(): string {

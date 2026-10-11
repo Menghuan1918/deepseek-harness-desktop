@@ -247,6 +247,7 @@ export function redactStatus(status: RemoteAccessStatus): RemoteAccessStatus {
     events: status.events,
     ...status.recommended === undefined ? {} : { recommended: status.recommended },
     ...status.maskLink === undefined ? {} : { maskLink: status.maskLink },
+    ...status.linkSource === undefined ? {} : { linkSource: status.linkSource },
     ...status.tunnel === undefined ? {} : { tunnel: redactTunnel(status.tunnel) },
     ...status.error === undefined ? {} : { error: status.error },
     ...status.warnings === undefined ? {} : { warnings: status.warnings },

@@ -106,25 +106,35 @@ export function isNavigationRequest(headers: IncomingHttpHeaders): boolean {
  * 跨站发起方判定：网关会把任何非空 Origin 改写成回环 authority，因此必须在改写前拦下跨站来源，
  * 否则上游仅存的 `sec-fetch-site` 防线（WebSocket 握手不带该头时只剩 Origin）会被抹平。
  * 同源判定以浏览器实际使用的 Host 为准；隧道腿的 Host 由 cloudflared 改写成回环 authority，
- * 该比对无从进行，此时只信浏览器自己算出的同源结论：非导航请求仅接受 `same-origin` / `none`
+ * 该比对无从进行，此时以隧道**公网主机名**为准：Origin / Referer 命中该主机名即同源，跨站页面
+ * 的 Origin 必然不同，仍被拦下。Safari 与旧浏览器不发 Fetch 元数据（`sec-fetch-site`），
+ * 只靠该头会让本机浏览器也进不来，因此主机名命中优先于元数据判定。
+ * 元数据仍用于补强：非导航请求在隧道腿上只接受 `same-origin` / `none`
  * （`same-site` 说明是同一注册域下的兄弟子域，SameSite=Lax 会话 cookie 会被带上，必须拒绝），
- * 无 Fetch 元数据（非浏览器客户端、旧浏览器）一律拒绝——隧道腿上无从区分它与伪装成同源的跨站请求。
+ * 元数据缺失且又无 Origin / Referer 可对时一律拒绝。
  * 跨站的文档导航（壳层 iframe、外站链接）一律放行：落地文档的源随即变成入口自身，后续请求都同源。
  */
-export function isCrossSiteRequest(kind: RemoteGatewayEntryKind, headers: IncomingHttpHeaders): boolean {
+export function isCrossSiteRequest(kind: RemoteGatewayEntryKind, headers: IncomingHttpHeaders, publicHost?: string | undefined): boolean {
   const rewritten = hostRewritten(kind, headers)
   const origin = headerText(headers.origin)
-  if (origin !== undefined && origin !== '' && !rewritten) {
-    const host = headerText(headers.host)
-    if (host === undefined || host === '')
-      return true
-    try {
-      if (new URL(origin).host !== new URL(`http://${host}`).host)
+  if (origin !== undefined && origin !== '') {
+    if (isSamePublicHost(origin, publicHost) && headerText(headers['sec-fetch-site']) !== 'cross-site')
+      return false
+    if (!rewritten) {
+      const host = headerText(headers.host)
+      if (host === undefined || host === '')
         return true
+      try {
+        if (new URL(origin).host !== new URL(`http://${host}`).host)
+          return true
+      }
+      catch {
+        return true
+      }
     }
-    catch {
-      return true
-    }
+  }
+  else if (isSamePublicHost(headerText(headers.referer), publicHost)) {
+    return false
   }
   const site = headerText(headers['sec-fetch-site'])
   const navigate = headerText(headers['sec-fetch-mode']) === 'navigate'
@@ -287,6 +297,17 @@ export function deniedHtml(reason: string): string {
 }
 
 // --- internal ---
+function isSamePublicHost(value: string | undefined, publicHost: string | undefined): boolean {
+  if (value === undefined || value === '' || publicHost === undefined || publicHost === '')
+    return false
+  try {
+    return new URL(value).host === publicHost
+  }
+  catch {
+    return false
+  }
+}
+
 function hostRewritten(kind: RemoteGatewayEntryKind, headers: IncomingHttpHeaders): boolean {
   if (kind !== 'tunnel')
     return false

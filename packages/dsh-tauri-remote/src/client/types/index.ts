@@ -144,7 +144,19 @@ export interface AccessTunnel {
   port?: number
   link?: string
   qr?: string
+  progress?: TunnelProgress
   error?: string
+}
+
+export type AccessLinkSource = 'loopback' | 'lan'
+
+export type TunnelProgressStage = 'check' | 'download' | 'extract' | 'verify' | 'spawn' | 'domain' | 'ready'
+
+export interface TunnelProgress {
+  stage: TunnelProgressStage
+  url?: string
+  received?: number
+  total?: number
 }
 
 export interface AccessStatus {
@@ -160,6 +172,8 @@ export interface AccessStatus {
   link?: string
   maskLink?: string
   qr?: string
+  linkSource?: AccessLinkSource
+  generatedPassword?: string
   tunnel: AccessTunnel
   localPort?: number
   error?: string

@@ -30,6 +30,8 @@ export interface RemoteAccessBody {
   password?: string | null
 }
 
+export type RemoteLinkSource = 'loopback' | 'lan'
+
 export type RemoteAccessState = 'stopped' | 'listening' | 'error'
 
 export type RemoteAddressFamily = 'ipv4' | 'ipv6'
@@ -70,8 +72,12 @@ export interface RemoteAccessStatus {
   link?: string
   /** 掩码链接：主机与端口可见、Token 隐藏；非回环来源仅此一项。 */
   maskLink?: string
-  /** 链接的二维码 dataURL；回环监听时不生成。 */
+  /** 链接的二维码 dataURL（回环监听也生成：面板用于本地核对与演示）。 */
   qr?: string
+  /** 链接归属：回环监听 = 仅本机可用，网卡监听 = 局域网可用。 */
+  linkSource?: RemoteLinkSource
+  /** 本次请求刚自动生成的访问密码明文：只在响应里出现一次，不落盘、不进事件环。 */
+  generatedPassword?: string
   /** 公网隧道读面：配置 + 运行期状态（完整分支才带 Token 与链接二维码）。 */
   tunnel?: RemoteTunnelStatus
   localPort?: number

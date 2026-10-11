@@ -39,7 +39,7 @@ const DENIED_REASON = '尚未配置访问认证（密码或链接 Token），公
 
 const BROKEN_AUTH_REASON = '认证存储损坏，已视为未配置访问认证：公网与隧道来源一律拒绝。请在本机回环来源的「远程 → 访问入口」中重新设置访问密码。'
 
-const CROSS_SITE_REASON = '跨站来源的请求被拒绝：网关会把 Origin 改写为回环 authority，因此必须在此拦下跨站发起方。'
+const CROSS_SITE_REASON = '跨站来源的请求被拒绝：请用访问链接里的同一域名打开页面后重试；若你是在别的站点里嵌入访问地址，改成本机回环来源或带 ?auth= 的链接。'
 
 const BANNED_REASON = '认证失败次数过多，请稍后重试。'
 
@@ -60,6 +60,7 @@ interface GatewayEntry {
   requests: Set<ClientRequest>
   tokenProvider: RemoteGatewayTokenProvider | undefined
   auth: (() => RemoteAuthPolicy) | undefined
+  publicHost: (() => string | undefined) | undefined
 }
 
 interface ForwardAttempt {
@@ -141,6 +142,7 @@ async function startEntry(options: RemoteGatewayStartOptions): Promise<RemoteGat
     requests: new Set(),
     tokenProvider: options.tokenProvider,
     auth: options.auth,
+    publicHost: options.publicHost,
   }
   entries.set(entry.id, entry)
   try {
@@ -273,8 +275,9 @@ function handleRequest(entry: GatewayEntry, request: IncomingMessage, response: 
 }
 
 async function dispatchRequest(entry: GatewayEntry, request: IncomingMessage, response: ServerResponse): Promise<void> {
-  if (isCrossSiteRequest(entry.kind, request.headers)) {
+  if (isCrossSiteRequest(entry.kind, request.headers, entry.publicHost?.())) {
     writeDenied(request, response, CROSS_SITE_REASON)
+    emit(entry, 'source', `已拦下跨站来源请求：${request.method ?? 'GET'} ${request.url ?? '/'}`)
     return
   }
   const session = ensureSourceSession()
@@ -607,6 +610,7 @@ function handleUpgrade(entry: GatewayEntry, request: IncomingMessage, socket: Du
 }
 async function dispatchUpgrade(entry: GatewayEntry, request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
   if (isCrossSiteRequest(entry.kind, request.headers)) {
+    emit(entry, 'source', '已拦下跨站来源的 WebSocket 握手')
     rejectUpgrade(socket, 403, CROSS_SITE_REASON)
     return
   }

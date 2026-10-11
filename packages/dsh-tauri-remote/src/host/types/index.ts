@@ -254,11 +254,19 @@ export interface RemoteTunnelConfig {
 export interface RemoteTunnelEvent {
   seq: number
   ts: string
-  kind: 'state' | 'process'
+  kind: 'state' | 'process' | 'progress'
   line: string
 }
 
 /** 隧道读面：配置（完整分支保留 `token`）+ 运行期状态；`link`/`qr` 只出现在完整分支。 */
+/** 隧道启动期进度：阶段 + 下载字节数；下载阶段带 url 便于显示正在尝试的镜像。 */
+export interface RemoteTunnelProgress {
+  stage: 'check' | 'download' | 'extract' | 'verify' | 'spawn' | 'domain' | 'ready'
+  url?: string
+  received?: number
+  total?: number
+}
+
 export interface RemoteTunnelStatus extends Omit<RemoteTunnelConfig, 'token'> {
   state: RemoteTunnelState
   events: RemoteTunnelEvent[]
@@ -267,6 +275,7 @@ export interface RemoteTunnelStatus extends Omit<RemoteTunnelConfig, 'token'> {
   port?: number
   link?: string
   qr?: string
+  progress?: RemoteTunnelProgress
   error?: string
 }
 
@@ -286,7 +295,7 @@ export interface RemoteGatewayEntryStatus {
   connections: number
 }
 
-export type RemoteGatewayEventKind = 'listening' | 'stopped' | 'port' | 'upstream' | 'cookie' | 'compression' | 'auth'
+export type RemoteGatewayEventKind = 'listening' | 'stopped' | 'port' | 'upstream' | 'cookie' | 'compression' | 'auth' | 'source'
 
 export interface RemoteGatewayEvent {
   seq: number
@@ -313,6 +322,8 @@ export interface RemoteGatewayStartOptions {
   host?: string
   tokenProvider?: RemoteGatewayTokenProvider
   auth?: () => RemoteAuthPolicy
+  /** 隧道腿的对外主机名（`host[:port]`）：同源判定在 cloudflared 改写 Host 后只能靠它对 Origin / Referer。 */
+  publicHost?: () => string | undefined
 }
 
 export interface RemoteExecOptions {

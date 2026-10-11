@@ -4,7 +4,7 @@ import { defineService } from 'dsh-tauri'
 import { toDataURL } from 'qrcode'
 import { messageOf } from '../../shared/error'
 import { hostServicePort, localUpstream, mintAuthenticatedUrl } from '../config/runtime'
-import { createLinkToken, createSessionSecret } from '../utils/auth'
+import { createLinkToken, createSessionSecret, generateAccessPassword, hashPassword } from '../utils/auth'
 import { isAuthConfigured } from '../utils/source'
 import { addressProblemOf, buildLink, buildTunnelLink, enumerateAddresses, isLoopbackListen, linkHostOf, maskLinkOf, patchAccessDocument, policyOf, readAccessDocument, writeAccessDocument } from './access.utils'
 import { gateway } from './gateway'
@@ -68,9 +68,10 @@ export const access = defineService({
       ...problem === undefined ? {} : { error: problem },
       ...parsed.warnings.length === 0 ? {} : { warnings: parsed.warnings },
     }
-    // 回环监听时链接仅本机可用，扫码无意义：不返回二维码，也不属于错误状态（S4 §7/§8）。
-    if (link !== undefined && !isLoopbackListen(document.listen.address))
+    if (link !== undefined) {
       status.qr = await toDataURL(link)
+      status.linkSource = isLoopbackListen(document.listen.address) ? 'loopback' : 'lan'
+    }
     return status
   },
 
@@ -78,10 +79,24 @@ export const access = defineService({
     const parsed = readAccessDocument()
     for (const warning of parsed.warnings)
       note('state', warning)
-    const next = patchAccessDocument(parsed.document, body, enumerateAddresses())
+    const patched = patchAccessDocument(parsed.document, body, enumerateAddresses())
+    const generatedPassword = patched.enabled ? autoPasswordOf(patched) : undefined
+    const next = generatedPassword === undefined ? patched : withGeneratedPassword(patched, generatedPassword)
     writeAccessDocument(next)
     await activate(next)
-    return await access.status()
+    return { ...await access.status(), ...generatedPassword === undefined ? {} : { generatedPassword } }
+  },
+
+  /** 公网隧道前置：认证未开则开；没有可用凭据则自动生成密码（返回明文供面板一次性展示）。 */
+  async ensureAuth(): Promise<RemoteAccessStatus> {
+    const parsed = readAccessDocument()
+    const generatedPassword = autoPasswordOf(parsed.document)
+    const next = generatedPassword === undefined
+      ? { ...parsed.document, auth: { ...parsed.document.auth, enabled: true } }
+      : withGeneratedPassword(parsed.document, generatedPassword)
+    writeAccessDocument(next)
+    await activate(next)
+    return { ...await access.status(), ...generatedPassword === undefined ? {} : { generatedPassword } }
   },
 
   async rotate(): Promise<RemoteAccessStatus> {
@@ -122,6 +137,17 @@ export const access = defineService({
 })
 
 // --- internal ---
+/** 只在完全没有凭据时生成：已有密码或链接 Token 说明用户已做过选择，认证开关本身不再被改写。 */
+function autoPasswordOf(document: RemoteAccessDocument): string | undefined {
+  const auth = document.auth
+  return auth.password === null && auth.token === null ? generateAccessPassword() : undefined
+}
+
+function withGeneratedPassword(document: RemoteAccessDocument, password: string): RemoteAccessDocument {
+  note('auth', '未设置访问密码：已自动生成随机强密码并开启访问认证（明文仅在面板显示一次）')
+  return { ...document, auth: { ...document.auth, enabled: true, password: hashPassword(password) } }
+}
+
 async function activate(document: RemoteAccessDocument): Promise<void> {
   if (!document.enabled) {
     await gateway.stop(ENTRY_ID)

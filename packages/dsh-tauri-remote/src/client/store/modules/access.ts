@@ -9,6 +9,7 @@ function initialState(): AccessViewState {
     busy: false,
     notice: null,
     snapshot: null,
+    generatedPassword: null,
   }
 }
 
@@ -26,6 +27,11 @@ export const access = defineStore({
       this.snapshot = snapshot
       this.status = 'ready'
       this.error = null
+      if (snapshot.generatedPassword !== undefined)
+        this.generatedPassword = snapshot.generatedPassword
+    },
+    dismissGeneratedPassword(): void {
+      this.generatedPassword = null
     },
     fail(message: string): void {
       this.status = 'error'

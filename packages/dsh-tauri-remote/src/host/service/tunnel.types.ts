@@ -1,4 +1,4 @@
-import type { RemoteAuthPolicy } from '../types/index'
+import type { RemoteAuthPolicy, RemoteTunnelProgress } from '../types/index'
 
 export interface TunnelHandlers {
   onLine: (line: string) => void
@@ -11,8 +11,10 @@ export interface TunnelProcess {
   kill: (signal: NodeJS.Signals) => void
 }
 
+export type TunnelProgressSink = (progress: RemoteTunnelProgress) => void
+
 export interface TunnelDeps {
   policy: () => RemoteAuthPolicy
-  resolveBinary: () => Promise<string>
+  resolveBinary: (onProgress?: TunnelProgressSink) => Promise<string>
   spawn: (binary: string, args: string[], handlers: TunnelHandlers) => TunnelProcess
 }

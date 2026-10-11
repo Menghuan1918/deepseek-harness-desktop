@@ -1098,6 +1098,30 @@ describe('gateway 跨站来源拦截', () => {
     expect(upstream.calls.at(-1)?.url).toBe('/')
   })
 
+  it('隧道腿按公网主机名判同源：Safari 这类不发 Sec-Fetch 的浏览器也能写操作', async () => {
+    const tunnel = await gateway.start({
+      id: 'tunnel',
+      kind: 'tunnel',
+      upstream: upstream.origin,
+      port: 0,
+      tokenProvider: upstream.mintUrlFor,
+      auth: () => policyOf({ linkToken: 'link-token' }),
+      publicHost: () => 's2-probe.trycloudflare.com',
+    })
+    const session = signSession('session-secret', Date.now()).value
+    const safari = await call(tunnel.port, '/api/ping', {
+      headers: { host: `127.0.0.1:${tunnel.port}`, origin: 'https://s2-probe.trycloudflare.com', cookie: `dsh_remote_session=${session}` },
+    })
+    expect(safari.status).toBe(200)
+    expect(upstream.calls.at(-1)?.headers.origin).toBe(upstream.origin)
+
+    const crossSite = await call(tunnel.port, '/api/ping', {
+      headers: { host: `127.0.0.1:${tunnel.port}`, origin: 'https://evil.example', cookie: `dsh_remote_session=${session}` },
+    })
+    expect(crossSite.status).toBe(403)
+    expect(crossSite.body.toString()).toContain('跨站来源')
+  })
+
   it('同源 Origin 与隧道域名形式的 Host 都照旧放行并改写为回环 authority', async () => {
     const status = await startEntry('inbound', upstream, { tokenProvider: upstream.mintUrlFor })
     const same = await call(status.port, '/api/ping', { headers: { host: `127.0.0.1:${status.port}`, origin: `http://127.0.0.1:${status.port}` } })

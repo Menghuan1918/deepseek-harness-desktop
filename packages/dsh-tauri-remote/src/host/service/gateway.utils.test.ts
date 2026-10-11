@@ -201,6 +201,18 @@ describe('request shape predicates', () => {
     expect(isCrossSiteRequest('tunnel', { 'host': 's2-probe.trycloudflare.com', 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'no-cors' })).toBe(true)
     expect(isCrossSiteRequest('tunnel', { 'host': 's2-probe.trycloudflare.com', 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' })).toBe(false)
   })
+
+  it('accepts same-origin initiators on the tunnel leg by the tunnel public hostname', () => {
+    const rewritten = { 'host': '127.0.0.1:38999', 'origin': 'https://s2-probe.trycloudflare.com', 'sec-fetch-mode': 'cors' }
+    expect(isCrossSiteRequest('tunnel', rewritten, 's2-probe.trycloudflare.com')).toBe(false)
+    expect(isCrossSiteRequest('tunnel', { host: '127.0.0.1:38999', referer: 'https://s2-probe.trycloudflare.com/settings' }, 's2-probe.trycloudflare.com')).toBe(false)
+    expect(isCrossSiteRequest('tunnel', { ...rewritten, origin: 'https://evil.example' }, 's2-probe.trycloudflare.com')).toBe(true)
+    expect(isCrossSiteRequest('tunnel', rewritten, undefined)).toBe(true)
+    expect(isCrossSiteRequest('tunnel', { host: '127.0.0.1:38999', origin: 'https://s2-probe.trycloudflare.com:8443' }, 's2-probe.trycloudflare.com')).toBe(true)
+    expect(isCrossSiteRequest('tunnel', { ...rewritten, 'sec-fetch-site': 'cross-site' }, 's2-probe.trycloudflare.com')).toBe(true)
+    expect(isCrossSiteRequest('tunnel', { host: '127.0.0.1:38999', referer: 'https://evil.example/' }, 's2-probe.trycloudflare.com')).toBe(true)
+    expect(isCrossSiteRequest('inbound', { host: '127.0.0.1:3088', origin: 'https://s2-probe.trycloudflare.com' }, 's2-probe.trycloudflare.com')).toBe(false)
+  })
 })
 
 describe('negotiateEncoding', () => {

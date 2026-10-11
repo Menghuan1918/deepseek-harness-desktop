@@ -25,6 +25,16 @@ const EXTRACT_TIMEOUT_MS = 60_000
 const RE_VERSION = /^cloudflared version \d+\.\d+\.\d+/m
 const RE_QUICK_URL = /https:\/\/[a-z0-9][a-z0-9-]*\.trycloudflare\.com/
 
+/** 二进制准备阶段的进度：面板据此显示「下载中 x%」而不是静默等待。 */
+export interface CloudflaredProgress {
+  stage: 'check' | 'download' | 'extract' | 'verify'
+  url?: string
+  received?: number
+  total?: number
+}
+
+export type CloudflaredProgressSink = (progress: CloudflaredProgress) => void
+
 export interface CloudflaredAsset {
   asset: string
   executable: string
@@ -65,7 +75,8 @@ export function isCloudflaredVersion(output: string): boolean {
 }
 
 /** PATH 优先、数据目录次之、最后按平台下载；失败原因一律可读（含尝试过的地址）。 */
-export async function resolveCloudflared(): Promise<string> {
+export async function resolveCloudflared(onProgress?: CloudflaredProgressSink): Promise<string> {
+  onProgress?.({ stage: 'check' })
   const override = process.env.CLOUDFLARED_PATH
   if (override !== undefined && override.trim() !== '') {
     if (await runsCloudflared(override.trim()))
@@ -77,7 +88,7 @@ export async function resolveCloudflared(): Promise<string> {
   const target = installedBinaryPath()
   if (existsSync(target) && await runsCloudflared(target))
     return target
-  return await downloadCloudflared(target)
+  return await downloadCloudflared(target, onProgress)
 }
 
 export function spawnCloudflared(binary: string, args: string[], handlers: TunnelHandlers): TunnelProcess {
@@ -121,14 +132,16 @@ async function runsCloudflared(binary: string): Promise<boolean> {
   }
 }
 
-async function downloadCloudflared(target: string): Promise<string> {
+async function downloadCloudflared(target: string, onProgress?: CloudflaredProgressSink): Promise<string> {
   const asset = cloudflaredAsset()
   if (asset === undefined)
     throw new Error(`不支持的平台：${process.platform}-${process.arch}；请自行安装 cloudflared 并设置 CLOUDFLARED_PATH`)
   const failures: string[] = []
   for (const url of cloudflaredDownloadUrls(asset.asset)) {
     try {
-      await downloadInto(url, asset, target)
+      onProgress?.({ stage: 'download', url, received: 0 })
+      await downloadInto(url, asset, target, onProgress)
+      onProgress?.({ stage: 'verify' })
       if (!await runsCloudflared(target))
         throw new Error('下载完成但 --version 自检失败')
       return target
@@ -140,11 +153,32 @@ async function downloadCloudflared(target: string): Promise<string> {
   throw new Error(`cloudflared 下载失败（已尝试：${failures.join('；')}）；可手工安装后放到 ${target} 或设置 CLOUDFLARED_PATH`)
 }
 
-async function downloadInto(url: string, asset: CloudflaredAsset, target: string): Promise<void> {
+async function downloadInto(url: string, asset: CloudflaredAsset, target: string, onProgress?: CloudflaredProgressSink): Promise<void> {
   const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS), redirect: 'follow' })
   if (!response.ok)
     throw new Error(`HTTP ${response.status}`)
-  const body = Buffer.from(await response.arrayBuffer())
+  const declared = Number(response.headers.get('content-length') ?? '')
+  const total = Number.isFinite(declared) && declared > 0 ? declared : undefined
+  const chunks: Buffer[] = []
+  let received = 0
+  if (response.body === null) {
+    const body = Buffer.from(await response.arrayBuffer())
+    chunks.push(body)
+    received = body.length
+  }
+  else {
+    const reader = response.body.getReader()
+    while (true) {
+      const step = await reader.read()
+      if (step.done)
+        break
+      const chunk = Buffer.from(step.value)
+      chunks.push(chunk)
+      received += chunk.length
+      onProgress?.({ stage: 'download', url, received, ...total === undefined ? {} : { total } })
+    }
+  }
+  const body = Buffer.concat(chunks)
   if (body.length === 0)
     throw new Error('响应为空')
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
@@ -153,6 +187,7 @@ async function downloadInto(url: string, asset: CloudflaredAsset, target: string
     chmodSync(target, 0o755)
     return
   }
+  onProgress?.({ stage: 'extract', url })
   const staging = mkdtempSync(join(tmpdir(), 'dsh-cloudflared-'))
   try {
     const archive = join(staging, asset.asset)

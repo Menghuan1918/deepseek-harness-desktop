@@ -1,4 +1,4 @@
-import type { RemoteTunnelConfig, RemoteTunnelEvent, RemoteTunnelMode, RemoteTunnelState, RemoteTunnelStatus } from '../types/index'
+import type { RemoteTunnelConfig, RemoteTunnelEvent, RemoteTunnelMode, RemoteTunnelProgress, RemoteTunnelState, RemoteTunnelStatus } from '../types/index'
 import type { TunnelProcess } from './tunnel.types'
 import { defineService } from 'dsh-tauri'
 import { messageOf } from '../../shared/error'
@@ -18,6 +18,10 @@ const EVENT_CAPACITY = 50
 const LINE_LIMIT = 500
 
 const STOP_GRACE_MS = 5_000
+
+const PROGRESS_STEP_PERCENT = 5
+
+const PROGRESS_MIN_INTERVAL_MS = 400
 
 const NO_LOCAL_UPSTREAM = '无法确定本机 DSH 端口（宿主 webserver 未暴露端口且进程缺少 DSH_WEB_PORT），未启动隧道'
 
@@ -41,6 +45,12 @@ let sequence = 0
 
 let events: RemoteTunnelEvent[] = []
 
+let progress: RemoteTunnelProgress | undefined
+
+let lastProgressAt = 0
+
+let lastProgressPercent = -1
+
 export const tunnel = defineService({
   async status(): Promise<RemoteTunnelStatus> {
     const config = tunnelConfig()
@@ -53,8 +63,14 @@ export const tunnel = defineService({
       events: [...events],
       ...url === undefined ? {} : { url },
       ...bound === 0 ? {} : { port: bound },
+      ...progress === undefined ? {} : { progress },
       ...failure === undefined ? {} : { error: failure },
     }
+  },
+
+  /** 纯校验：不合法的入参在改动认证状态之前就抛错，避免「启动失败却已经生成密码」。 */
+  assertStartable(mode: RemoteTunnelMode, token?: string, hostname?: string): void {
+    tunnelConfigOf(mode, token, hostname)
   },
 
   async start(mode: RemoteTunnelMode, token?: string, hostname?: string): Promise<void> {
@@ -86,6 +102,64 @@ export const tunnel = defineService({
 })
 
 // --- internal ---
+/** 进度写入：事件环按「每 5% 或 400ms」节流，避免下载把 50 条环形缓冲刷满。 */
+function setProgress(next: RemoteTunnelProgress): void {
+  progress = next
+  if (next.stage !== 'download') {
+    note('progress', progressLine(next))
+    lastProgressAt = Date.now()
+    lastProgressPercent = -1
+    return
+  }
+  const now = Date.now()
+  const percent = next.total === undefined || next.total <= 0 ? -1 : Math.floor((next.received ?? 0) * 100 / next.total)
+  const advanced = percent < 0 ? lastProgressPercent < 0 : percent >= lastProgressPercent + PROGRESS_STEP_PERCENT
+  if (!advanced || now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS)
+    return
+  lastProgressAt = now
+  lastProgressPercent = percent
+  note('progress', progressLine(next))
+}
+
+function progressLine(entry: RemoteTunnelProgress): string {
+  if (entry.stage === 'check')
+    return '检查 cloudflared 可执行文件'
+  if (entry.stage === 'download') {
+    const source = entry.url === undefined ? '' : `（${entry.url}）`
+    const amount = entry.total === undefined || entry.total <= 0
+      ? `${formatBytes(entry.received ?? 0)}`
+      : `${Math.floor((entry.received ?? 0) * 100 / entry.total)}% ${formatBytes(entry.received ?? 0)}/${formatBytes(entry.total)}`
+    return `下载 cloudflared ${amount}${source}`
+  }
+  if (entry.stage === 'extract')
+    return '解压 cloudflared 安装包'
+  if (entry.stage === 'verify')
+    return '校验 cloudflared 可执行文件'
+  if (entry.stage === 'spawn')
+    return '启动 cloudflared 进程'
+  if (entry.stage === 'domain')
+    return '等待分配 trycloudflare 域名'
+  return '隧道已就绪'
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024)
+    return `${value} B`
+  if (value < 1024 * 1024)
+    return `${(value / 1024).toFixed(1)} KiB`
+  return `${(value / 1024 / 1024).toFixed(1)} MiB`
+}
+
+function publicHostOf(value: string | undefined): string | undefined {
+  if (value === undefined || value === '')
+    return undefined
+  try {
+    return new URL(value).host
+  }
+  catch {
+    return undefined
+  }
+}
 function tunnelConfig(): RemoteTunnelConfig {
   return readAccessDocument().document.tunnel
 }
@@ -121,8 +195,9 @@ async function activate(): Promise<void> {
   state = 'starting'
   failure = undefined
   url = undefined
+  setProgress({ stage: 'check' })
   try {
-    const binary = await tunnelRuntimeDeps().resolveBinary()
+    const binary = await tunnelRuntimeDeps().resolveBinary(setProgress)
     const entry = await gateway.start({
       id: ENTRY_ID,
       kind: 'tunnel',
@@ -131,18 +206,23 @@ async function activate(): Promise<void> {
       host: ENTRY_HOST,
       tokenProvider: mintAuthenticatedUrl,
       auth: () => tunnelRuntimeDeps().policy(),
+      publicHost: () => publicHostOf(url),
     })
     bound = entry.port
+    setProgress({ stage: 'spawn' })
     const args = config.mode === 'token' ? tokenTunnelArgs(config.token ?? '') : quickTunnelArgs(`http://${ENTRY_HOST}:${entry.port}`)
     child = tunnelRuntimeDeps().spawn(binary, args, {
       onLine: line => onLine(config.mode, line),
       onExit: (code, signal) => onExit(code, signal),
     })
     note('state', `隧道入口已监听 ${ENTRY_HOST}:${entry.port}`)
-    if (config.mode === 'token')
+    if (config.mode === 'token') {
       await ready(`https://${config.hostname ?? ''}`)
-    else
+    }
+    else {
+      setProgress({ stage: 'domain' })
       note('process', 'cloudflared 已启动，等待分配 trycloudflare 域名')
+    }
   }
   catch (error) {
     await fail(messageOf(error))
@@ -150,6 +230,8 @@ async function activate(): Promise<void> {
 }
 
 async function deactivate(reason: string | undefined): Promise<void> {
+  progress = undefined
+  lastProgressPercent = -1
   const running = child
   child = undefined
   if (running !== undefined) {

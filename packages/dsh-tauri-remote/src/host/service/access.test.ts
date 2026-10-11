@@ -236,11 +236,36 @@ describe('access 监听生命周期', () => {
     expect(forwarded?.cookie).toContain('dsh-auth-probe=granted')
   })
 
-  it('回环监听不生成二维码也不属于错误状态', async () => {
+  it('回环监听也生成二维码并标注链接来源', async () => {
     const status = await enable()
-    expect(status.qr).toBeUndefined()
+    expect(status.qr).toMatch(/^data:image\/png;base64,/u)
+    expect(status.linkSource).toBe('loopback')
     expect(status.error).toBeUndefined()
     expect(status.maskLink).toBe(`http://127.0.0.1:${status.port}/`)
+  })
+
+  it('开启暴露时没有凭据就自动生成随机强密码并自动开认证', async () => {
+    const status = await enable()
+    expect(status.generatedPassword).toMatch(/^[2-9A-HJ-NP-Za-km-z]{20}$/u)
+    expect(status.auth.enabled).toBe(true)
+    expect(status.auth.hasPassword).toBe(true)
+    expect(JSON.stringify(storedDocument())).not.toContain(status.generatedPassword ?? '')
+    expect((await access.status()).generatedPassword).toBeUndefined()
+  })
+
+  it('已有凭据时不覆盖，且不把明文写进事件环', async () => {
+    await access.apply({ password: 'keep-me-please' })
+    const status = await enable()
+    expect(status.generatedPassword).toBeUndefined()
+    expect(status.auth.hasPassword).toBe(true)
+    expect(status.events.map(event => event.line).join('\n')).not.toContain('keep-me-please')
+  })
+
+  it('ensureAuth 为隧道补齐认证：无凭据时生成、已有密码时只开开关', async () => {
+    const generated = await access.ensureAuth()
+    expect(generated.generatedPassword).toMatch(/^[2-9A-HJ-NP-Za-km-z]{20}$/u)
+    expect((await access.ensureAuth()).generatedPassword).toBeUndefined()
+    expect((await access.status()).auth.enabled).toBe(true)
   })
 
   it('关闭暴露后立即停止监听，且再次启动不自动开启', async () => {
@@ -301,11 +326,23 @@ describe('access 监听生命周期', () => {
     expect(status.qr).toBe(await toDataURL(status.link ?? ''))
   })
 
-  it('暴露到非回环地址且未配置任何凭据时产生显式提示事件', async () => {
+  it('暴露到非回环地址且没有凭据时自动生成密码，并在事件里写明', async () => {
     const address = requireReachable()
     const port = await freePort()
     const status = await enable(address, port)
     expect(status.state).toBe('listening')
+    expect(status.auth.hasPassword).toBe(true)
+    const notice = status.events.find(event => event.kind === 'auth')
+    expect(notice?.line).toContain('已自动生成随机强密码')
+  })
+
+  it('显式关掉认证再暴露时，仍对公网与隧道来源给出未配置引导', async () => {
+    const address = requireReachable()
+    const port = await freePort()
+    await access.apply({ password: 'explicit-close-pass', authEnabled: false, enabled: true, address, port })
+    const status = await access.status()
+    expect(status.state).toBe('listening')
+    expect(status.auth.enabled).toBe(false)
     const warning = status.events.find(event => event.kind === 'auth')
     expect(warning?.line).toContain('未配置访问密码或链接 Token')
   })
@@ -319,7 +356,10 @@ describe('access 监听生命周期', () => {
     expect(restored.listening).toBe(true)
     expect(restored.port).toBe(applied.port)
     expect(restored.link).toBe(applied.link)
-    expect(storedDocument()).toEqual({ ...defaultAccessDocument(), enabled: true, listen: { address: '127.0.0.1', port } })
+    const stored = storedDocument()
+    expect({ ...stored, auth: { ...stored.auth, enabled: false, password: null } })
+      .toEqual({ ...defaultAccessDocument(), enabled: true, listen: { address: '127.0.0.1', port } })
+    expect(stored.auth.password).not.toBeNull()
   })
 
   it('恢复失败时保持关闭并给出可读原因，且不静默改写配置', async () => {
@@ -373,9 +413,21 @@ describe('access 监听生命周期', () => {
 })
 
 describe('access 认证与来源判定（经真实网关）', () => {
-  it('未配置认证时私网来源放行、公网与隧道来源 403 并给出引导', async () => {
+  it('开启暴露即自动带凭据：私网免密放行，公网与隧道来源进入登录而非未配置引导', async () => {
     const status = await enable()
+    expect(status.auth.hasPassword).toBe(true)
     expect((await call(status.port, '/api/probe', { source: 'private' })).status).toBe(200)
+    const publicReply = await call(status.port, '/api/probe', { source: 'public' })
+    expect(publicReply.status).toBe(401)
+    expect(publicReply.body).toContain('需要认证')
+    const loginPage = await call(status.port, '/', { source: 'public', form: undefined })
+    expect(loginPage.status).toBe(401)
+    expect((await call(status.port, '/api/probe', { source: 'tunnel' })).status).toBe(401)
+  })
+
+  it('用户显式关掉认证后，公网与隧道来源回到未配置引导并拒绝', async () => {
+    const status = await enable()
+    await access.apply({ authEnabled: false })
     const publicReply = await call(status.port, '/api/probe', { source: 'public' })
     expect(publicReply.status).toBe(403)
     expect(publicReply.body).toContain('尚未配置访问认证')

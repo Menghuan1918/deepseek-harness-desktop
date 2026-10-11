@@ -1,4 +1,4 @@
-import type { AccessAddress, AccessBody, AccessEvent, AccessScope, AccessState, AccessStatus, AccessTunnel, ServiceResult, TunnelBody, TunnelMode, TunnelState } from '../types/index'
+import type { AccessAddress, AccessBody, AccessEvent, AccessLinkSource, AccessScope, AccessState, AccessStatus, AccessTunnel, ServiceResult, TunnelBody, TunnelMode, TunnelProgress, TunnelProgressStage, TunnelState } from '../types/index'
 import { ofetch as request } from 'dsh-tauri/client'
 import { messageOf } from '../../shared/error'
 import { store } from '../store/index'
@@ -6,9 +6,11 @@ import { store } from '../store/index'
 const BASE = '/api/tauri/remote/access'
 
 const SCOPES: readonly AccessScope[] = ['public_only', 'all']
+const LINK_SOURCES: readonly AccessLinkSource[] = ['loopback', 'lan']
 const ACCESS_STATES: readonly AccessState[] = ['stopped', 'listening', 'error']
 const TUNNEL_MODES: readonly TunnelMode[] = ['quick', 'token']
 const TUNNEL_STATES: readonly TunnelState[] = ['stopped', 'starting', 'running', 'error']
+const TUNNEL_PROGRESS_STAGES: readonly TunnelProgressStage[] = ['check', 'download', 'extract', 'verify', 'spawn', 'domain', 'ready']
 
 const EMPTY_TUNNEL: AccessTunnel = { enabled: false, mode: 'quick', hostname: null, state: 'stopped', events: [] }
 
@@ -80,6 +82,8 @@ function accessStatusOf(value: unknown): AccessStatus {
     tunnel,
     events: listOf(raw.events).map(eventOf).filter(entry => entry !== undefined),
     ...textField('recommended', raw.recommended),
+    ...linkSourceField(raw.linkSource),
+    ...textField('generatedPassword', raw.generatedPassword),
     ...textField('link', raw.link),
     ...textField('maskLink', raw.maskLink),
     ...textField('qr', raw.qr),
@@ -132,6 +136,7 @@ function tunnelOf(value: unknown): AccessTunnel {
     ...textField('token', raw.token),
     ...textField('url', raw.url),
     ...textField('link', raw.link),
+    ...progressField(raw.progress),
     ...textField('qr', raw.qr),
     ...textField('error', raw.error),
     ...numberField('port', raw.port),
@@ -180,6 +185,26 @@ function modeOf(value: unknown): TunnelMode | undefined {
 
 function tunnelStateOf(value: unknown): TunnelState | undefined {
   return TUNNEL_STATES.find(candidate => candidate === value)
+}
+
+function progressField(value: unknown): { progress: TunnelProgress } | Record<string, never> {
+  const raw = recordOf(value)
+  const stage = TUNNEL_PROGRESS_STAGES.find(candidate => candidate === raw.stage)
+  if (stage === undefined)
+    return {}
+  return {
+    progress: {
+      stage,
+      ...textField('url', raw.url),
+      ...numberField('received', raw.received),
+      ...numberField('total', raw.total),
+    },
+  }
+}
+
+function linkSourceField(value: unknown): { linkSource: AccessLinkSource } | Record<string, never> {
+  const source = LINK_SOURCES.find(candidate => candidate === value)
+  return source === undefined ? {} : { linkSource: source }
 }
 
 function textField<K extends string>(key: K, value: unknown): Record<K, string> | Record<string, never> {
