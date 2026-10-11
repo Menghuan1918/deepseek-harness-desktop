@@ -16,6 +16,8 @@ const EVENT_CAPACITY = 50
 
 const NO_LOCAL_PORT = '无法确定本机 DSH 端口（宿主 webserver 未暴露端口且进程缺少 DSH_WEB_PORT），未开启入站暴露'
 
+const CORRUPT_DOCUMENT = 'access.json 解析失败：已按未配置处理，写操作被拒绝以免覆盖原文件（请先修复或移走该文件）'
+
 const SESSION_SECRET = createSessionSecret()
 
 let failure: string | undefined
@@ -77,6 +79,8 @@ export const access = defineService({
 
   async apply(body: RemoteAccessBody): Promise<RemoteAccessStatus> {
     const parsed = readAccessDocument()
+    if (parsed.corrupt)
+      throw new Error(CORRUPT_DOCUMENT)
     for (const warning of parsed.warnings)
       note('state', warning)
     const patched = patchAccessDocument(parsed.document, body, enumerateAddresses())
@@ -90,6 +94,8 @@ export const access = defineService({
   /** 公网隧道前置：认证未开则开；没有可用凭据则自动生成密码（返回明文供面板一次性展示）。 */
   async ensureAuth(): Promise<RemoteAccessStatus> {
     const parsed = readAccessDocument()
+    if (parsed.corrupt)
+      throw new Error(CORRUPT_DOCUMENT)
     const generatedPassword = autoPasswordOf(parsed.document)
     const next = generatedPassword === undefined
       ? { ...parsed.document, auth: { ...parsed.document.auth, enabled: true } }
@@ -101,6 +107,8 @@ export const access = defineService({
 
   async rotate(): Promise<RemoteAccessStatus> {
     const parsed = readAccessDocument()
+    if (parsed.corrupt)
+      throw new Error(CORRUPT_DOCUMENT)
     writeAccessDocument({ ...parsed.document, auth: { ...parsed.document.auth, token: createLinkToken() } })
     note('token', '链接 Token 已轮换，旧链接立即失效（已签发的会话不受影响）')
     return await access.status()
@@ -108,6 +116,8 @@ export const access = defineService({
 
   async revoke(): Promise<RemoteAccessStatus> {
     const parsed = readAccessDocument()
+    if (parsed.corrupt)
+      throw new Error(CORRUPT_DOCUMENT)
     writeAccessDocument({ ...parsed.document, auth: { ...parsed.document.auth, token: null } })
     note('token', '链接 Token 已作废，已签发的会话不受影响')
     return await access.status()

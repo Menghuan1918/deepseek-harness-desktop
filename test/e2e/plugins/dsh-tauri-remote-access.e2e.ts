@@ -12,7 +12,7 @@
  */
 
 import type { Server } from 'node:http'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { afterEach, describe, expect, inject, it } from 'vitest'
@@ -74,9 +74,9 @@ async function disable(): Promise<AccessStatus> {
   return response.body
 }
 
-/** 每个用例收尾：关暴露、关认证并清掉本用例设下的密码，共享宿主不把凭据留给后续文件。 */
+/** 每个用例收尾：关暴露、关认证、清密码并把监听地址复位，乱序执行时不把状态留给下一个用例。 */
 afterEach(async () => {
-  await writeAccess({ enabled: false, authEnabled: false, password: null })
+  await writeAccess({ enabled: false, authEnabled: false, password: null, address: '127.0.0.1' })
 })
 
 describe('入站暴露路由（真实 dsh 宿主）', () => {
@@ -148,8 +148,9 @@ describe('入站暴露路由（真实 dsh 宿主）', () => {
     expect(missingHostname.status).toBe(400)
     expect(JSON.stringify(await missingHostname.json())).toContain('公开主机名')
 
-    const document = JSON.parse(readFileSync(join(inject('dshHome'), 'remote', 'access.json'), 'utf8')) as { tunnel: { enabled: boolean } }
-    expect(document.tunnel.enabled).toBe(false)
+    const documentPath = join(inject('dshHome'), 'remote', 'access.json')
+    const document = JSON.parse(existsSync(documentPath) ? readFileSync(documentPath, 'utf8') : '{}') as { tunnel?: { enabled?: boolean } }
+    expect(document.tunnel?.enabled ?? false).toBe(false)
     expect((await readAccess()).tunnel.state).toBe('stopped')
   }, 60_000)
 

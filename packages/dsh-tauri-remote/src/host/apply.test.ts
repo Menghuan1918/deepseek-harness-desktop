@@ -503,6 +503,29 @@ describe('remote plugin', () => {
     }
   })
 
+  it('清理串行：dispose 期间运行时依赖仍可用，全部落定后才清空', async () => {
+    const { service, disposers } = construct()
+    const { machineRuntimeDeps } = await import('./config/runtime')
+    let during = ''
+    vi.spyOn(service, 'dispose').mockImplementation(async () => {
+      try {
+        machineRuntimeDeps()
+        during = 'available'
+      }
+      catch {
+        during = 'cleared'
+      }
+    })
+    for (const disposeAll of disposers) disposeAll()
+    await vi.waitFor(() => {
+      expect(during).not.toBe('')
+    })
+    expect(during, 'dispose 期间不得提前清空依赖').toBe('available')
+    await vi.waitFor(() => {
+      expect(() => machineRuntimeDeps()).toThrow()
+    })
+  })
+
   it('disposes the manager when the context tears down', () => {
     const { service, disposers } = construct()
     const dispose = vi.spyOn(service, 'dispose').mockResolvedValue(undefined)

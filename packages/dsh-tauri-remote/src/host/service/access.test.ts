@@ -268,6 +268,17 @@ describe('access 监听生命周期', () => {
     expect((await access.status()).auth.enabled).toBe(true)
   })
 
+  it('access.json 损坏时所有写操作拒绝，且不覆盖原文件', async () => {
+    mkdirSync(dirname(documentFile()), { recursive: true })
+    writeFileSync(documentFile(), '{ not json')
+    const before = readFileSync(documentFile(), 'utf8')
+    await expect(access.apply({ enabled: true })).rejects.toThrowError('解析失败')
+    await expect(access.rotate()).rejects.toThrowError('解析失败')
+    await expect(access.revoke()).rejects.toThrowError('解析失败')
+    await expect(access.ensureAuth()).rejects.toThrowError('解析失败')
+    expect(readFileSync(documentFile(), 'utf8')).toBe(before)
+  })
+
   it('关闭暴露后立即停止监听，且再次启动不自动开启', async () => {
     const status = await enable()
     const stopped = await access.apply({ enabled: false })

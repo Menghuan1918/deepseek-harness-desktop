@@ -14,6 +14,7 @@ const HOST_PORT = 45_678
 const POLICY: RemoteAuthPolicy = { enabled: true, scope: 'public_only', password: null, linkToken: 'link-token', sessionSecret: 'session-secret' }
 
 interface Spawned {
+  env?: NodeJS.ProcessEnv
   binary: string
   args: string[]
   handlers: TunnelHandlers
@@ -35,11 +36,12 @@ function hostContext(): RemoteHostContext {
   } as unknown as RemoteHostContext
 }
 
-function stubSpawn(binary: string, args: string[], handlers: TunnelHandlers): TunnelProcess {
+function stubSpawn(binary: string, args: string[], handlers: TunnelHandlers, env?: NodeJS.ProcessEnv): TunnelProcess {
   let settle: () => void = () => {}
   const record: Spawned = {
     binary,
     args,
+    env,
     handlers,
     kills: [],
     crash: (code) => {
@@ -114,12 +116,39 @@ describe('tunnel 生命周期', () => {
 
   it('token 模式：用具名凭据启动并以配置的公开主机名作为链接', async () => {
     await tunnel.start('token', 'cf-token', 'dsh.example.com')
-    expect(spawned[0]?.args).toEqual(['tunnel', '--no-autoupdate', 'run', '--token', 'cf-token'])
+    expect(spawned[0]?.args).toEqual(['tunnel', '--no-autoupdate', 'run'])
+    expect(spawned[0]?.args.join(' '), '凭据不得出现在进程参数里').not.toContain('cf-token')
+    expect(spawned[0]?.env).toEqual({ TUNNEL_TOKEN: 'cf-token' })
     const status = await tunnel.status()
     expect(status.state).toBe('running')
     expect(status.url).toBe('https://dsh.example.com')
     expect(status.token).toBe('cf-token')
     expect(readAccessDocument().document.tunnel).toEqual({ enabled: true, mode: 'token', token: 'cf-token', hostname: 'dsh.example.com' })
+  })
+
+  it('并发 start/stop 串行化：最终只留一次启动，进程被回收', async () => {
+    const starting = tunnel.start('quick')
+    const stopping = tunnel.stop()
+    await Promise.all([starting, stopping])
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0]?.kills).toContain('SIGTERM')
+    const status = await tunnel.status()
+    expect(status.state).toBe('stopped')
+    expect(status.enabled).toBe(false)
+  })
+
+  it('access.json 损坏时拿到域名不抛错：落为可读失败而不是未捕获异常', async () => {
+    await tunnel.start('quick')
+    writeAccessDocument({ ...defaultAccessDocument(), tunnel: { enabled: true, mode: 'quick', token: null, hostname: null } })
+    // 直接把档案写坏，模拟 cloudflared 输出域名时磁盘上的配置已不可解析
+    writeFileSync(join(process.env.DSH_HOME ?? '', 'remote', 'access.json'), '{ not json')
+    expect(() => {
+      spawned[0]?.handlers.onLine('INF Your quick Tunnel has been created! Visit it at https://bold-fox-abc.trycloudflare.com')
+    }).not.toThrow()
+    await vi.waitFor(async () => {
+      expect((await tunnel.status()).state).toBe('error')
+    })
+    expect((await tunnel.status()).error).toContain('落盘')
   })
 
   it('token 模式缺凭据或主机名时拒绝启动，且不落盘、不装入口、不起进程', async () => {

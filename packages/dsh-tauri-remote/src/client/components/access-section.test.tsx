@@ -158,6 +158,22 @@ describe('接入面板', () => {
     })
   })
 
+  it('写操作失败时保留用户草稿（密码不被清空）', async () => {
+    once(
+      replies.ok(statusPayload({ auth: { enabled: true, scope: 'public_only', hasPassword: false, hasToken: false } })),
+      replies.http(400),
+    )
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-password-save')
+    const input = screen.getByPlaceholderText(en['access.auth.noPassword']) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'short' } })
+    fireEvent.click(screen.getByTestId('access-password-save'))
+    await waitFor(() => {
+      expect(screen.getByTestId('access-error').textContent).toContain('请求失败')
+    })
+    expect((screen.getByPlaceholderText(en['access.auth.noPassword']) as HTMLInputElement).value, '失败后密码草稿必须还在').toBe('short')
+  })
+
   it('访问入口置顶：本机与公网两行分别给出地址、复制与二维码，未运行时给占位与启动入口', async () => {
     route = () => replies.ok(statusPayload({
       qr: 'data:image/png;base64,QUJD',

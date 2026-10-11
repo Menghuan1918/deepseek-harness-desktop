@@ -3,7 +3,7 @@ import type { TunnelProcess } from './tunnel.types'
 import { defineService } from 'dsh-tauri'
 import { messageOf } from '../../shared/error'
 import { localUpstream, mintAuthenticatedUrl, tunnelRuntimeDeps } from '../config/runtime'
-import { parseQuickTunnelUrl, quickTunnelArgs, tokenTunnelArgs } from '../utils/cloudflared'
+import { parseQuickTunnelUrl, quickTunnelArgs, tokenTunnelArgs, tokenTunnelEnv } from '../utils/cloudflared'
 import { readAccessDocument, writeAccessDocument } from './access.utils'
 import { gateway } from './gateway'
 
@@ -41,6 +41,10 @@ let bound = 0
 
 let stopping = false
 
+let activation = 0
+
+let queue: Promise<unknown> = Promise.resolve()
+
 let sequence = 0
 
 let events: RemoteTunnelEvent[] = []
@@ -74,34 +78,49 @@ export const tunnel = defineService({
   },
 
   async start(mode: RemoteTunnelMode, token?: string, hostname?: string): Promise<void> {
-    persist(tunnelConfigOf(mode, token, hostname))
-    await activate()
+    await enqueue(async () => {
+      persist(tunnelConfigOf(mode, token, hostname))
+      await activate()
+    })
   },
 
   async stop(): Promise<void> {
-    persist({ ...tunnelConfig(), enabled: false })
-    await deactivate('公网隧道已停止')
+    await enqueue(async () => {
+      persist({ ...tunnelConfig(), enabled: false })
+      await deactivate('公网隧道已停止')
+    })
   },
 
   async restore(): Promise<void> {
-    const parsed = readAccessDocument()
-    for (const warning of parsed.warnings)
-      note('state', warning)
-    if (!parsed.document.tunnel.enabled)
-      return
-    await activate()
+    await enqueue(async () => {
+      const parsed = readAccessDocument()
+      for (const warning of parsed.warnings)
+        note('state', warning)
+      if (!parsed.document.tunnel.enabled)
+        return
+      await activate()
+    })
   },
 
   async dispose(): Promise<void> {
-    await deactivate(undefined)
-    state = 'stopped'
-    failure = undefined
-    url = undefined
-    events = []
+    await enqueue(async () => {
+      await deactivate(undefined)
+      state = 'stopped'
+      failure = undefined
+      url = undefined
+      events = []
+    })
   },
 })
 
 // --- internal ---
+/** 启停串行化：并发 start/stop 会各起一个 cloudflared，这里保证同一时刻只有一次状态迁移。 */
+function enqueue<T>(run: () => Promise<T>): Promise<T> {
+  const next = queue.then(run, run)
+  queue = next.then(() => undefined, () => undefined)
+  return next
+}
+
 /** 进度写入：事件环按「每 5% 或 400ms」节流，避免下载把 50 条环形缓冲刷满。 */
 function setProgress(next: RemoteTunnelProgress): void {
   progress = next
@@ -210,11 +229,19 @@ async function activate(): Promise<void> {
     })
     bound = entry.port
     setProgress({ stage: 'spawn' })
-    const args = config.mode === 'token' ? tokenTunnelArgs(config.token ?? '') : quickTunnelArgs(`http://${ENTRY_HOST}:${entry.port}`)
+    const args = config.mode === 'token' ? tokenTunnelArgs() : quickTunnelArgs(`http://${ENTRY_HOST}:${entry.port}`)
+    const env = config.mode === 'token' ? tokenTunnelEnv(config.token ?? '') : undefined
+    const generation = ++activation
     child = tunnelRuntimeDeps().spawn(binary, args, {
-      onLine: line => onLine(config.mode, line),
-      onExit: (code, signal) => onExit(code, signal),
-    })
+      onLine: line => onLine(config.mode, line, generation),
+      onExit: (code, signal) => onExit(code, signal, generation),
+    }, env)
+    if (generation !== activation) {
+      // 本次激活已被并发 stop 取代：立刻回收刚起的进程，避免留下孤儿 cloudflared
+      child.kill('SIGTERM')
+      child = undefined
+      return
+    }
     note('state', `隧道入口已监听 ${ENTRY_HOST}:${entry.port}`)
     if (config.mode === 'token') {
       await ready(`https://${config.hostname ?? ''}`)
@@ -230,6 +257,7 @@ async function activate(): Promise<void> {
 }
 
 async function deactivate(reason: string | undefined): Promise<void> {
+  activation += 1
   progress = undefined
   lastProgressPercent = -1
   const running = child
@@ -265,12 +293,15 @@ async function fail(reason: string): Promise<void> {
 }
 
 async function ready(next: string): Promise<void> {
+  setProgress({ stage: 'ready' })
   state = 'running'
   url = next
   note('state', `公网隧道已就绪：${next}`)
 }
 
-function onLine(mode: RemoteTunnelMode, line: string): void {
+function onLine(mode: RemoteTunnelMode, line: string, generation: number): void {
+  if (generation !== activation)
+    return
   const trimmed = line.trim()
   if (trimmed === '')
     return
@@ -280,11 +311,20 @@ function onLine(mode: RemoteTunnelMode, line: string): void {
   const found = parseQuickTunnelUrl(trimmed)
   if (found === undefined)
     return
-  persist({ ...tunnelConfig(), hostname: hostOf(found) })
+  try {
+    persist({ ...tunnelConfig(), hostname: hostOf(found) })
+  }
+  catch (error) {
+    // access.json 损坏时写入会抛错：这里必须自己兜住，否则异常从子进程日志回调里冒出去。
+    void fail(`已拿到隧道域名但无法落盘：${messageOf(error)}`)
+    return
+  }
   void ready(found)
 }
 
-function onExit(code: number | null, signal: NodeJS.Signals | null): void {
+function onExit(code: number | null, signal: NodeJS.Signals | null, generation: number): void {
+  if (generation !== activation)
+    return
   child = undefined
   bound = 0
   if (stopping)

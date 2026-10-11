@@ -1,6 +1,7 @@
 import type { TunnelHandlers, TunnelProcess } from '../service/tunnel.types'
 import { Buffer } from 'node:buffer'
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import process from 'node:process'
@@ -11,7 +12,11 @@ import { harnessHome } from '../config/runtime'
 
 const execFileAsync = promisify(execFile)
 
-const RELEASE_BASE = 'https://github.com/cloudflare/cloudflared/releases/latest/download/'
+const RELEASE_BASE = 'https://github.com/cloudflare/cloudflared/releases/download/'
+
+const RELEASE_API = 'https://api.github.com/repos/cloudflare/cloudflared/releases/latest'
+
+const RELEASE_TIMEOUT_MS = 20_000
 
 const MIRROR_PREFIX = 'https://ghfast.top/'
 
@@ -53,17 +58,46 @@ export function cloudflaredAsset(platform: string = process.platform, arch: stri
   return ASSETS[`${platform}-${arch}`]
 }
 
-export function cloudflaredDownloadUrls(asset: string): string[] {
-  const primary = `${RELEASE_BASE}${asset}`
+/** 候选下载地址：官方 tag 直链优先，镜像只做传输兜底；两者都用同一份官方摘要校验。 */
+export function cloudflaredDownloadUrls(asset: string, tag: string, version?: string): string[] {
+  const resolved = version === undefined || version === '' ? tag : version
+  const primary = `${RELEASE_BASE}${resolved}/${asset}`
   return [primary, `${MIRROR_PREFIX}${primary}`]
+}
+
+/** 官方发布的资产摘要：`sha256:` 前缀来自 GitHub Release API，与资产一一对应。 */
+export interface CloudflaredRelease {
+  tag: string
+  digest: string
+  size?: number
+}
+
+export async function fetchCloudflaredRelease(asset: string, version?: string): Promise<CloudflaredRelease> {
+  const url = version === undefined || version === '' ? RELEASE_API : `https://api.github.com/repos/cloudflare/cloudflared/releases/tags/${version}`
+  const response = await fetch(url, { signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS), headers: { accept: 'application/vnd.github+json' } })
+  if (!response.ok)
+    throw new Error(`发布元数据不可用（HTTP ${response.status}）`)
+  const body = await response.json() as { tag_name?: unknown, assets?: unknown }
+  const tag = typeof body.tag_name === 'string' ? body.tag_name : ''
+  const entries = Array.isArray(body.assets) ? body.assets : []
+  const found = entries.find((entry): entry is { digest?: unknown, size?: unknown } => typeof entry === 'object' && entry !== null && (entry as { name?: unknown }).name === asset)
+  const digest = typeof found?.digest === 'string' ? found.digest : ''
+  if (tag === '' || !/^sha256:[0-9a-f]{64}$/.test(digest))
+    throw new Error(`官方未提供 ${asset} 的 sha256 摘要，拒绝执行未校验的二进制`)
+  return { tag, digest, ...typeof found?.size === 'number' ? { size: found.size } : {} }
 }
 
 export function quickTunnelArgs(entryUrl: string): string[] {
   return ['tunnel', '--no-autoupdate', '--url', entryUrl]
 }
 
-export function tokenTunnelArgs(token: string): string[] {
-  return ['tunnel', '--no-autoupdate', 'run', '--token', token]
+/** 具名隧道：凭据经 `TUNNEL_TOKEN` 环境变量传入，避免出现在进程参数（`ps` 可见）里。 */
+export function tokenTunnelArgs(): string[] {
+  return ['tunnel', '--no-autoupdate', 'run']
+}
+
+export function tokenTunnelEnv(token: string): NodeJS.ProcessEnv {
+  return { TUNNEL_TOKEN: token }
 }
 
 export function parseQuickTunnelUrl(line: string): string | undefined {
@@ -91,8 +125,8 @@ export async function resolveCloudflared(onProgress?: CloudflaredProgressSink): 
   return await downloadCloudflared(target, onProgress)
 }
 
-export function spawnCloudflared(binary: string, args: string[], handlers: TunnelHandlers): TunnelProcess {
-  const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+export function spawnCloudflared(binary: string, args: string[], handlers: TunnelHandlers, env?: NodeJS.ProcessEnv): TunnelProcess {
+  const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...env === undefined ? {} : { env: { ...process.env, ...env } } })
   const exited = new Promise<void>((resolve) => {
     child.once('exit', (code, signal) => {
       handlers.onExit(code, signal)
@@ -136,11 +170,13 @@ async function downloadCloudflared(target: string, onProgress?: CloudflaredProgr
   const asset = cloudflaredAsset()
   if (asset === undefined)
     throw new Error(`不支持的平台：${process.platform}-${process.arch}；请自行安装 cloudflared 并设置 CLOUDFLARED_PATH`)
+  const release = await fetchCloudflaredRelease(asset.asset, process.env.CLOUDFLARED_VERSION)
+  const expected = release.digest.slice('sha256:'.length)
   const failures: string[] = []
-  for (const url of cloudflaredDownloadUrls(asset.asset)) {
+  for (const url of cloudflaredDownloadUrls(asset.asset, release.tag, process.env.CLOUDFLARED_VERSION)) {
     try {
-      onProgress?.({ stage: 'download', url, received: 0 })
-      await downloadInto(url, asset, target, onProgress)
+      onProgress?.({ stage: 'download', url, received: 0, ...release.size === undefined ? {} : { total: release.size } })
+      await downloadInto(url, asset, target, expected, onProgress)
       onProgress?.({ stage: 'verify' })
       if (!await runsCloudflared(target))
         throw new Error('下载完成但 --version 自检失败')
@@ -150,10 +186,10 @@ async function downloadCloudflared(target: string, onProgress?: CloudflaredProgr
       failures.push(`${url} → ${messageOf(error)}`)
     }
   }
-  throw new Error(`cloudflared 下载失败（已尝试：${failures.join('；')}）；可手工安装后放到 ${target} 或设置 CLOUDFLARED_PATH`)
+  throw new Error(`cloudflared 下载失败（已尝试：${failures.join('；')}；官方摘要 ${release.digest}）；可手工安装后放到 ${target} 或设置 CLOUDFLARED_PATH`)
 }
 
-async function downloadInto(url: string, asset: CloudflaredAsset, target: string, onProgress?: CloudflaredProgressSink): Promise<void> {
+async function downloadInto(url: string, asset: CloudflaredAsset, target: string, expectedSha256: string, onProgress?: CloudflaredProgressSink): Promise<void> {
   const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS), redirect: 'follow' })
   if (!response.ok)
     throw new Error(`HTTP ${response.status}`)
@@ -181,6 +217,9 @@ async function downloadInto(url: string, asset: CloudflaredAsset, target: string
   const body = Buffer.concat(chunks)
   if (body.length === 0)
     throw new Error('响应为空')
+  const actual = createHash('sha256').update(body).digest('hex')
+  if (actual !== expectedSha256)
+    throw new Error(`SHA-256 校验失败（期望 ${expectedSha256}，实际 ${actual}），已丢弃该文件`)
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
   if (!asset.archive) {
     writeFileSync(target, body)

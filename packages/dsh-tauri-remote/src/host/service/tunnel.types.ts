@@ -16,5 +16,5 @@ export type TunnelProgressSink = (progress: RemoteTunnelProgress) => void
 export interface TunnelDeps {
   policy: () => RemoteAuthPolicy
   resolveBinary: (onProgress?: TunnelProgressSink) => Promise<string>
-  spawn: (binary: string, args: string[], handlers: TunnelHandlers) => TunnelProcess
+  spawn: (binary: string, args: string[], handlers: TunnelHandlers, env?: NodeJS.ProcessEnv) => TunnelProcess
 }
