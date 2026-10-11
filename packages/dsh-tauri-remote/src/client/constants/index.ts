@@ -4,7 +4,7 @@ export { REMOTE_PLUGIN_NAME as PLUGIN_ID } from '../../shared/constants'
 
 export const SETTINGS_SECTION_SLOT = 'settings.section'
 export const SETTINGS_SECTION_ID = PLUGIN_ID
-export const SETTINGS_SECTION_ORDER = 50
+export const SETTINGS_SECTION_ORDER = -1
 
 export const REMOTE_TAB_MACHINES = 'machines'
 export const REMOTE_TAB_SYNC = 'sync'

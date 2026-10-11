@@ -34,8 +34,8 @@ function MigrationWarning({ warning, t }: { warning: string, t: (key: RemoteKey)
 
 export function RemoteSection({ t }: RemoteSectionProps): ReactNode {
   const state = useStore(store.machines)
-  const [tab, setTab] = useState<RemoteTab>(REMOTE_TAB_MACHINES)
-  const [visited, setVisited] = useState<ReadonlySet<RemoteTab>>(() => new Set<RemoteTab>([REMOTE_TAB_MACHINES]))
+  const [tab, setTab] = useState<RemoteTab>(REMOTE_TAB_ACCESS)
+  const [visited, setVisited] = useState<ReadonlySet<RemoteTab>>(() => new Set<RemoteTab>([REMOTE_TAB_ACCESS]))
 
   function openTab(next: RemoteTab): void {
     setTab(next)
@@ -89,7 +89,7 @@ export function RemoteSection({ t }: RemoteSectionProps): ReactNode {
     )
   }
 
-  const tabs: RemoteTab[] = [REMOTE_TAB_MACHINES, REMOTE_TAB_SYNC, REMOTE_TAB_ACCESS]
+  const tabs: RemoteTab[] = [REMOTE_TAB_ACCESS, REMOTE_TAB_MACHINES, REMOTE_TAB_SYNC]
 
   return (
     <div className="flex flex-col gap-[12px] max-w-[960px] text-primary" data-testid="remote-section">

@@ -118,7 +118,7 @@ describe('接入面板', () => {
       expect(sent.at(-1)?.body).toEqual({ mode: 'quick' })
     })
     await screen.findByTestId('access-tunnel-url')
-    expect(screen.getByTestId('access-tunnel-url').textContent).toBe('https://bold-fox-abc.trycloudflare.com')
+    expect(screen.getByTestId('access-tunnel-url').textContent).toBe('https://bold-fox-abc.trycloudflare.com/?auth=tok')
     expect(screen.getByTestId('access-tunnel-state').textContent).toBe(en['access.tunnel.state.running'])
     expect(screen.getByTestId('access-tunnel-ready').textContent).toContain('公网隧道已就绪')
   })
@@ -156,6 +156,60 @@ describe('接入面板', () => {
     await waitFor(() => {
       expect(sent.at(-1)?.body).toEqual({ password: null })
     })
+  })
+
+  it('访问入口置顶：本机与公网两行分别给出地址、复制与二维码，未运行时给占位与启动入口', async () => {
+    route = () => replies.ok(statusPayload({
+      qr: 'data:image/png;base64,QUJD',
+      linkSource: 'lan',
+      tunnel: tunnelPayload({ enabled: true, state: 'running', url: 'https://bold-fox.trycloudflare.com', link: 'https://bold-fox.trycloudflare.com/?auth=tok', qr: 'data:image/png;base64,QUJD' }),
+    }))
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-entry-local')
+    const sections = screen.getAllByTestId('access-section')[0] as HTMLElement
+    const entry = sections.querySelector('[data-testid="access-entry-local"]')
+    const tunnelEntry = sections.querySelector('[data-testid="access-entry-tunnel"]')
+    expect(entry?.textContent).toContain('LAN')
+    expect(entry?.querySelector('[data-testid="access-link"]')?.textContent).toBe('http://192.168.1.5:3088/?auth=tok')
+    expect(entry?.querySelector('[data-testid="access-link-qr"]')).toBeTruthy()
+    expect(tunnelEntry?.textContent).toContain('Public')
+    expect(tunnelEntry?.querySelector('[data-testid="access-tunnel-url"]')?.textContent).toBe('https://bold-fox.trycloudflare.com/?auth=tok')
+    expect(tunnelEntry?.querySelector('[data-testid="access-tunnel-qr"]')).toBeTruthy()
+  })
+
+  it('公网隧道未运行：入口行给占位与「启动隧道」，点击即按当前模式发起', async () => {
+    route = () => replies.ok(statusPayload({ tunnel: tunnelPayload() }))
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-entry-tunnel')
+    expect(screen.getByTestId('access-entry-tunnel-placeholder')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('access-entry-tunnel-action'))
+    await waitFor(() => {
+      expect(sent.some(call => call.url === `${BASE}/tunnel` && call.http === 'POST')).toBe(true)
+    })
+  })
+
+  it('自动生成的访问密码来自响应且只在会话内保留到用户关闭', async () => {
+    once(
+      replies.ok(statusPayload({ auth: { enabled: true, scope: 'public_only', hasPassword: true, hasToken: false }, generatedPassword: 'Kf7Qm2Xr9Tb4Nw8Zs6Ld' })),
+      replies.ok(statusPayload({ auth: { enabled: true, scope: 'public_only', hasPassword: true, hasToken: false } })),
+    )
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-generated-password')
+    expect(screen.getByTestId('access-generated-password-value').textContent).toBe('Kf7Qm2Xr9Tb4Nw8Zs6Ld')
+    fireEvent.click(screen.getByTestId('access-generated-password-dismiss'))
+    await waitFor(() => expect(screen.queryByTestId('access-generated-password')).toBeNull())
+    fireEvent.click(screen.getByTestId('access-toggle'))
+    await waitFor(() => expect(screen.queryByTestId('access-generated-password')).toBeNull())
+  })
+
+  it('隧道启动期按阶段显示进度：下载阶段带百分比', async () => {
+    route = () => replies.ok(statusPayload({
+      tunnel: tunnelPayload({ enabled: true, state: 'starting', progress: { stage: 'download', url: 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz', received: 3_200_000, total: 6_400_000 } }),
+    }))
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-tunnel-progress')
+    expect(screen.getByTestId('access-tunnel-progress-line').textContent).toBe('Downloading cloudflared 50%')
+    expect(screen.getByTestId('access-tunnel-progress-bar').getAttribute('style')).toContain('width: 50%')
   })
 
   it('隧道启动失败时错误与停止按钮状态可见', async () => {

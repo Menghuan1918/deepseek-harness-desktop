@@ -32,7 +32,9 @@ interface AccessStatus {
   link?: string
   maskLink?: string
   qr?: string
-  tunnel: { enabled: boolean, mode: string, state: string, url?: string }
+  linkSource?: string
+  generatedPassword?: string
+  tunnel: { enabled: boolean, mode: string, state: string, url?: string, qr?: string, progress?: { stage: string, received?: number, total?: number } }
   localPort?: number
   error?: string
   events: Array<{ seq: number, line: string }>
@@ -99,7 +101,10 @@ describe('入站暴露路由（真实 dsh 宿主）', () => {
     expect(started.body.port).toBe(port)
     expect(started.body.localPort, '非桌面载体没有 DSH_WEB_PORT，端口必须来自宿主 webserver').toBeGreaterThan(0)
     expect(started.body.link).toBe(`http://127.0.0.1:${port}/`)
-    expect(started.body.qr, '回环监听不生成二维码').toBeUndefined()
+    expect(started.body.linkSource).toBe('loopback')
+    expect(started.body.qr, '面板需要本地核对用二维码，回环监听也生成').toMatch(/^data:image\/png;base64,/u)
+    expect(started.body.auth.enabled, '开启暴露即自动带认证').toBe(true)
+    expect(started.body.auth.hasPassword, '没有凭据时自动生成密码').toBe(true)
 
     const proxied = await fetch(`http://127.0.0.1:${port}/`)
     expect(proxied.status).toBe(200)

@@ -1,7 +1,7 @@
 /**
  * 批次 · `dsh-tauri-remote` 入站访问面板（S6）在真实浏览器里的走查。
  *
- * 断言的是**用户可见行为**：设置侧栏「服务器 → 本机访问」页的渲染与操作回执、
+ * 断言的是**用户可见行为**：设置侧栏「远程访问」页（默认落在该标签页）的渲染与操作回执、
  * 链接与二维码、以及（`DSH_E2E_TUNNEL=1` 时）真实 cloudflared quick 隧道的启停。
  * 截图落在 `test/e2e/.artifacts/`，作为人工复核证据。
  *
@@ -30,6 +30,10 @@ const TUNNEL_READY = '[data-testid="access-tunnel-ready"]'
 const TUNNEL_STATE = '[data-testid="access-tunnel-state"]'
 const LINK = '[data-testid="access-link"]'
 const QR = '[data-testid="access-link-qr"]'
+const TUNNEL_QR = '[data-testid="access-tunnel-qr"]'
+const GENERATED = '[data-testid="access-generated-password-value"]'
+const GENERATED_DISMISS = '[data-testid="access-generated-password-dismiss"]'
+const PROGRESS = '[data-testid="access-tunnel-progress"]'
 const PASSWORD_INPUT = 'input[type="password"]'
 const PASSWORD_CLEAR = '[data-testid="access-password-clear"]'
 const ENABLE = '[data-testid="remote-enable"]'
@@ -71,14 +75,14 @@ function authSwitch(app: DshPage) {
 
 async function openAccessPanel(app: DshPage): Promise<void> {
   await openSettings(app.page, app.frame, app.syntheticFallbacks)
-  await selectSettingsSection(app.page, app.frame, '服务器', app.syntheticFallbacks)
-  // 插件默认关闭：Hero 状态先「启用 SSH」，启用后分区才切成 Tabs。
+  await selectSettingsSection(app.page, app.frame, '远程访问', app.syntheticFallbacks)
+  // 插件默认关闭：Hero 先「启用远程访问」，启用后分区才切成 Tabs（默认停在「远程访问」标签页）。
   if (await app.frame.locator(ENABLE).count() > 0) {
     await app.frame.locator(ENABLE).first().click()
     await app.frame.locator(TABS).waitFor({ state: 'attached', timeout: 30_000 })
   }
   // iframe 内的指针命中偶发丢失（与监听地址下拉同一现象），因此按 aria-selected 重试点击。
-  const tab = app.frame.locator(TABS).getByRole('tab', { name: '本机访问' })
+  const tab = app.frame.locator(TABS).getByRole('tab', { name: '远程访问' })
   await tab.waitFor({ state: 'visible', timeout: 30_000 })
   await expect.poll(async () => {
     if (await tab.getAttribute('aria-selected') === 'true')
@@ -103,7 +107,7 @@ async function disableExposure(app: DshPage): Promise<void> {
 }
 
 describe('入站访问面板（真实浏览器）', () => {
-  it('渲染「本机访问」页、开启回环监听并给出访问链接', async () => {
+  it('渲染「远程访问」页、开启回环监听并给出访问链接', async () => {
     const app = await newDshPage(browser, { ready: '[data-slot="sidebar"]' })
     try {
       await openAccessPanel(app)
@@ -114,9 +118,13 @@ describe('入站访问面板（真实浏览器）', () => {
       await app.frame.locator(TOGGLE).click()
       await expect.poll(() => app.frame.locator(LINK).count(), { timeout: 20_000 }).toBe(1)
       expect(await readText(app, LINK)).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/u)
-      expect(await app.frame.locator(QR).count(), '回环监听不生成二维码').toBe(0)
-      expect(await authSwitch(app).getAttribute('aria-checked')).toBe('false')
+      expect(await app.frame.locator(QR).count(), '回环也生成二维码（面板本地核对用）').toBe(1)
+      expect(await authSwitch(app).getAttribute('aria-checked'), '开启暴露即自动带认证').toBe('true')
+      expect(await readText(app, GENERATED), '没有凭据时面板展示一次性密码').toMatch(/^[2-9A-HJ-NP-Za-km-z]{20}$/u)
       await shoot(app, 'access-2-loopback')
+
+      await app.frame.locator(GENERATED_DISMISS).click()
+      await expect.poll(() => app.frame.locator(GENERATED).count(), { timeout: 20_000 }).toBe(0)
 
       await app.frame.locator(TOGGLE).click()
       await expect.poll(() => app.frame.locator(LINK).count(), { timeout: 20_000 }).toBe(0)
@@ -127,7 +135,7 @@ describe('入站访问面板（真实浏览器）', () => {
     }
   }, 120_000)
 
-  it('开放到全部网卡并配置认证后，面板渲染带 Token 的链接与二维码，凭据开关回写生效', async () => {
+  it('开放到全部网卡并配置认证后，入口行渲染带 Token 的链接与二维码，凭据开关回写生效', async () => {
     await apiPost(ACCESS_API, { enabled: true, address: '0.0.0.0', authEnabled: true, password: 'e2e-panel-pass', scope: 'public_only' })
     await apiPost(`${ACCESS_API}/token`, {})
     const app = await newDshPage(browser, { ready: '[data-slot="sidebar"]' })
@@ -159,9 +167,18 @@ describe('入站访问面板（真实浏览器）', () => {
     try {
       await openAccessPanel(app)
       await app.frame.locator(TUNNEL_START).click()
-      await expect.poll(() => app.frame.locator(TUNNEL_URL).count(), { timeout: 180_000, interval: 1_000 }).toBe(1)
+      // 启动期边轮询边采样：进度必须在拿到公网地址之前至少出现过一次（不能静默）
+      let sawProgress = false
+      await expect.poll(async () => {
+        if (await app.frame.locator(PROGRESS).count() > 0)
+          sawProgress = true
+        return await app.frame.locator(TUNNEL_URL).count()
+      }, { timeout: 180_000, interval: 500 }).toBe(1)
+      expect(sawProgress, '启动期必须能看到阶段进度').toBe(true)
       const url = await readText(app, TUNNEL_URL)
-      expect(url).toMatch(/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/u)
+      expect(url).toMatch(/^https:\/\/[a-z0-9-]+\.trycloudflare\.com/u)
+      expect(await app.frame.locator(TUNNEL_QR).count(), '隧道入口行给出二维码').toBe(1)
+      expect(await authSwitch(app).getAttribute('aria-checked'), '启动隧道强制开认证').toBe('true')
       expect(await readText(app, TUNNEL_STATE)).toBe('隧道运行中')
       expect(await readText(app, TUNNEL_READY)).toContain('公网隧道已就绪')
       await shoot(app, 'access-4-tunnel')

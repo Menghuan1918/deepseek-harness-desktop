@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { store } from '../store/index'
@@ -52,10 +52,10 @@ describe('remoteSection', () => {
     expect(screen.getByText('t:hero.desc')).toBeTruthy()
     expect(screen.getByTestId('remote-enable').textContent).toBe('t:hero.enable')
     expect(screen.queryByTestId('remote-tabs')).toBeNull()
-    expect(screen.queryByText('t:tabs.machines')).toBeNull()
+    expect(screen.queryByText('t:tabs.access')).toBeNull()
   })
 
-  it('点击开启：settings.set 落定后原位切换到 Tabs（远端机器 / 同步到远端 / 本机访问）', async () => {
+  it('点击开启：settings.set 落定后原位切换到 Tabs（远程访问 / 连接到 SSH 服务器 / 同步到远端）', async () => {
     bootWire()
     render(<RemoteSection t={t as never} />)
     await waitFor(() => expect(screen.getByTestId('remote-enable')).toBeTruthy())
@@ -63,10 +63,10 @@ describe('remoteSection', () => {
     fireEvent.click(screen.getByTestId('remote-enable'))
     await waitFor(() => expect(screen.getByTestId('remote-tabs')).toBeTruthy())
     expect(sent.some(call => call.url === `${baseURL}/settings` && call.http === 'POST')).toBe(true)
-    const tabs = screen.getAllByRole('tab')
-    expect(tabs.map(tab => tab.textContent)).toEqual(['t:tabs.machines', 't:tabs.sync', 't:tabs.access'])
+    const tabs = within(screen.getByTestId('remote-tabs')).getAllByRole('tab')
+    expect(tabs.map(tab => tab.textContent)).toEqual(['t:tabs.access', 't:tabs.machines', 't:tabs.sync'])
     expect(screen.queryByTestId('remote-hero')).toBeNull()
-    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('t:tabs.machines')
+    expect(within(screen.getByTestId('remote-tabs')).getByRole('tab', { selected: true }).textContent).toBe('t:tabs.access')
   })
 
   it('点击禁用：保存关闭开关后回到 Hero 并卸载已访问的面板', async () => {
@@ -86,19 +86,19 @@ describe('remoteSection', () => {
     expect(screen.queryAllByRole('tabpanel', { hidden: true })).toEqual([])
   })
 
-  it('已启用：Tabs 默认停在「SSH 机器」，切换后渲染同步面板且已访问面板保持挂载', async () => {
+  it('已启用：Tabs 默认停在「远程访问」，切换后渲染同步面板且已访问面板保持挂载', async () => {
     bootWire({ enabled: true })
     render(<RemoteSection t={t as never} />)
     await waitFor(() => expect(screen.getByTestId('remote-tabs')).toBeTruthy())
 
-    const machinesPanel = document.getElementById('dsh-tauri-remote-tabs-machines-panel')
-    expect(machinesPanel?.hasAttribute('hidden')).toBe(false)
+    const accessPanel = document.getElementById('dsh-tauri-remote-tabs-access-panel')
+    expect(accessPanel?.hasAttribute('hidden')).toBe(false)
 
-    fireEvent.click(screen.getByRole('tab', { name: 't:tabs.sync' }))
+    fireEvent.click(within(screen.getByTestId('remote-tabs')).getByRole('tab', { name: 't:tabs.sync' }))
     await waitFor(() => {
       expect(document.getElementById('dsh-tauri-remote-tabs-sync-panel')?.hasAttribute('hidden')).toBe(false)
     })
-    expect(document.getElementById('dsh-tauri-remote-tabs-machines-panel')?.hasAttribute('hidden')).toBe(true)
+    expect(document.getElementById('dsh-tauri-remote-tabs-access-panel')?.hasAttribute('hidden')).toBe(true)
   })
 
   it('壳层 deep link：分区匹配时落到指定标签页，别的分区不动', async () => {
@@ -110,14 +110,14 @@ describe('remoteSection', () => {
       data: { type: 'dsh://settings:open', section: 'dsh-tauri-remote-sync', tab: 'sync' },
       source: window,
     }))
-    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('t:tabs.machines')
+    expect(within(screen.getByTestId('remote-tabs')).getByRole('tab', { selected: true }).textContent).toBe('t:tabs.access')
 
     window.dispatchEvent(new MessageEvent('message', {
       data: { type: 'dsh://settings:open', section: 'dsh-tauri-remote', tab: 'sync' },
       source: window,
     }))
     await waitFor(() => {
-      expect(screen.getByRole('tab', { selected: true }).textContent).toBe('t:tabs.sync')
+      expect(within(screen.getByTestId('remote-tabs')).getByRole('tab', { selected: true }).textContent).toBe('t:tabs.sync')
     })
   })
 

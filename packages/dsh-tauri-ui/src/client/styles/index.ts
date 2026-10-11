@@ -297,6 +297,9 @@ const TAILWINDCSS_GENERATED = `
   .h-\\[4px\\] {
     height: 4px;
   }
+  .h-\\[6px\\] {
+    height: 6px;
+  }
   .h-\\[8px\\] {
     height: 8px;
   }
@@ -359,6 +362,9 @@ const TAILWINDCSS_GENERATED = `
   }
   .h-\\[60px\\] {
     height: 60px;
+  }
+  .h-\\[132px\\] {
+    height: 132px;
   }
   .h-\\[calc\\(28px\\+var\\(--dsh-content-font-delta\\,0px\\)\\)\\] {
     height: calc(28px + var(--dsh-content-font-delta,0px));
@@ -479,6 +485,9 @@ const TAILWINDCSS_GENERATED = `
   }
   .w-\\[56px\\] {
     width: 56px;
+  }
+  .w-\\[132px\\] {
+    width: 132px;
   }
   .w-\\[200px\\] {
     width: 200px;
@@ -660,6 +669,9 @@ const TAILWINDCSS_GENERATED = `
   }
   .items-center {
     align-items: center;
+  }
+  .items-end {
+    align-items: flex-end;
   }
   .items-start {
     align-items: flex-start;
@@ -910,6 +922,9 @@ const TAILWINDCSS_GENERATED = `
       border-color: color-mix(in oklab, var(--dsw-alias-state-error-primary) 35%, transparent);
     }
   }
+  .border-primary {
+    border-color: var(--dsw-alias-label-primary);
+  }
   .border-success\\/35 {
     border-color: var(--dsw-alias-state-success-primary);
     @supports (color: color-mix(in lab, red, red)) {
@@ -988,6 +1003,9 @@ const TAILWINDCSS_GENERATED = `
   .bg-module-platform {
     background-color: var(--dsw-alias-bg-module-platform);
   }
+  .bg-primary {
+    background-color: var(--dsw-alias-label-primary);
+  }
   .bg-primary-fill {
     background-color: var(--dsw-alias-button-primary-fill);
   }
@@ -999,6 +1017,9 @@ const TAILWINDCSS_GENERATED = `
   }
   .bg-transparent {
     background-color: transparent;
+  }
+  .bg-white {
+    background-color: var(--color-white);
   }
   .bg-\\[image\\:linear-gradient\\(to_top_right\\,transparent_calc\\(50\\%_-_1px\\)\\,var\\(--dsw-alias-label-tertiary\\)\\,transparent_calc\\(50\\%_\\+_1px\\)\\)\\] {
     background-image: linear-gradient(to top right,transparent calc(50% - 1px),var(--dsw-alias-label-tertiary),transparent calc(50% + 1px));
@@ -1514,6 +1535,11 @@ const TAILWINDCSS_GENERATED = `
     transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
     transition-duration: var(--tw-duration, var(--default-transition-duration));
   }
+  .transition-\\[width\\] {
+    transition-property: width;
+    transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
+    transition-duration: var(--tw-duration, var(--default-transition-duration));
+  }
   .transition-colors {
     transition-property: color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to;
     transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
@@ -1527,6 +1553,10 @@ const TAILWINDCSS_GENERATED = `
   .duration-150 {
     --tw-duration: 150ms;
     transition-duration: 150ms;
+  }
+  .duration-200 {
+    --tw-duration: 200ms;
+    transition-duration: 200ms;
   }
   .duration-\\[120ms\\] {
     --tw-duration: 120ms;
