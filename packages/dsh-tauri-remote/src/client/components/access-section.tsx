@@ -91,7 +91,7 @@ export function AccessSection({ t }: AccessSectionProps): ReactNode {
       {view.generatedPassword === null
         ? null
         : (
-            <section className="flex flex-col gap-[8px] rounded-[12px] border-[0.5px] border-primary bg-layer-2 px-[16px] py-[12px]" data-testid="access-generated-password">
+            <section className="flex flex-col gap-[8px] rounded-[12px] border-[0.5px] border-primary bg-layer-3 px-[16px] py-[12px]" data-testid="access-generated-password">
               <span className="text-[13px] leading-[20px] font-medium">{t('access.generated.title')}</span>
               <div className="flex flex-wrap items-center gap-[8px]">
                 <code className="break-all text-[14px] leading-[22px] text-primary" data-testid="access-generated-password-value">{view.generatedPassword}</code>
@@ -377,7 +377,7 @@ interface EntryProps {
 /** 访问入口一行：来源标签 + 地址 + 复制 + 二维码；没有地址时给占位与直接操作入口。 */
 function Entry({ label, testid, value, testidValue, qr, qrTestid, copyTestid, t, placeholder, action, onCopy }: EntryProps): ReactNode {
   return (
-    <div className="flex flex-col gap-[10px] rounded-[10px] border-[0.5px] border-border-l2 bg-layer-2 px-[12px] py-[10px]" data-testid={testid}>
+    <div className="flex flex-col gap-[10px] rounded-[10px] border-[0.5px] border-border-l2 bg-layer-3 px-[12px] py-[10px]" data-testid={testid}>
       <div className="flex flex-wrap items-center gap-[8px]">
         <span className="rounded-[6px] bg-layer-1 px-[8px] py-[2px] text-[11px] leading-[18px] text-secondary">{label}</span>
         {value === undefined
