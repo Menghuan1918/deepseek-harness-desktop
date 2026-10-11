@@ -72,8 +72,8 @@ describe('dsh-tauri-remote client plugin', () => {
     }
     expect(options.name).toBe('settings.section')
     expect(options.id).toBe(PLUGIN_ID)
-    expect(options.order).toBe(-1)
-    // 分区排在设置侧栏最前：order 取全仓最小，不与核心分区（0/10）撞位
+    expect(options.order).toBe(50)
+    // 排在核心分区之后、其它插件分区之前：移动端设置弹窗以首个分区为首屏详情页，不能让位
     expect(options.label()).toBe('t:nav')
     expect(options.locale).toBe(PLUGIN_ID)
     expect(options.inject).toBeUndefined()

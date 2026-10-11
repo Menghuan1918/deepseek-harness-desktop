@@ -4,7 +4,12 @@ export { REMOTE_PLUGIN_NAME as PLUGIN_ID } from '../../shared/constants'
 
 export const SETTINGS_SECTION_SLOT = 'settings.section'
 export const SETTINGS_SECTION_ID = PLUGIN_ID
-export const SETTINGS_SECTION_ORDER = -1
+/**
+ * 分区顺序 50：排在核心分区（通用设置/模型/内置插件/Agent 预设）之后、其它插件分区之前。
+ * 不能取更小值：移动端设置弹窗以「首个分区」作为首屏详情页，语言切换项在通用设置里，
+ * 我们的分区一旦排最前，移动端首屏就会落到远程访问，`dsh-tauri-mobile-settings` 契约随之失败。
+ */
+export const SETTINGS_SECTION_ORDER = 50
 
 export const REMOTE_TAB_MACHINES = 'machines'
 export const REMOTE_TAB_SYNC = 'sync'

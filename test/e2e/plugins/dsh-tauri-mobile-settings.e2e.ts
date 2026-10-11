@@ -153,6 +153,8 @@ describe('mobile settings official host composition', () => {
     try {
       await current.click()
       await expect.poll(() => dialog.getAttribute('data-dsh-mobile-settings-view')).toBe('detail')
+      // 分类列表会随产品可见分区增减而回流：等详情真的落到「通用设置」再操作语言项
+      await expect.poll(() => dialog.locator('[data-dsh-mobile-settings-section-title]').textContent(), { message: '详情必须落到通用设置' }).toBe('通用设置')
       await language.getByRole('button', { name: '中文', exact: true }).click()
       await menu.getByRole('menuitem', { name: 'English', exact: true }).click()
       await expect.poll(() => dialog.getByRole('button', { name: 'Back to settings categories', exact: true }).count(), { message: '真实 locale 变更必须更新附加返回按钮' }).toBe(1)
