@@ -97,6 +97,12 @@ async function readText(app: DshPage, selector: string): Promise<string> {
   return await app.frame.locator(selector).first().textContent() ?? ''
 }
 
+/** 用例前置：暴露关闭 + 回环监听 + 无凭据，乱序执行时不受上一个用例遗留的地址影响。 */
+async function resetExposure(): Promise<void> {
+  await apiPost(ACCESS_API, { enabled: false, address: '127.0.0.1', authEnabled: false, password: null })
+  await apiDelete(`${ACCESS_API}/token`)
+}
+
 /** 收尾：只要暴露还开着就关掉，避免把 LAN 端口与凭据留给后续用例。 */
 async function disableExposure(app: DshPage): Promise<void> {
   const toggle = app.frame.locator(TOGGLE)
@@ -108,6 +114,7 @@ async function disableExposure(app: DshPage): Promise<void> {
 
 describe('入站访问面板（真实浏览器）', () => {
   it('渲染「远程访问」页、开启回环监听并给出访问链接', async () => {
+    await resetExposure()
     const app = await newDshPage(browser, { ready: '[data-slot="sidebar"]' })
     try {
       await openAccessPanel(app)
@@ -136,6 +143,7 @@ describe('入站访问面板（真实浏览器）', () => {
   }, 120_000)
 
   it('开放到全部网卡并配置认证后，入口行渲染带 Token 的链接与二维码，凭据开关回写生效', async () => {
+    await resetExposure()
     await apiPost(ACCESS_API, { enabled: true, address: '0.0.0.0', authEnabled: true, password: 'e2e-panel-pass', scope: 'public_only' })
     await apiPost(`${ACCESS_API}/token`, {})
     const app = await newDshPage(browser, { ready: '[data-slot="sidebar"]' })
@@ -163,6 +171,7 @@ describe('入站访问面板（真实浏览器）', () => {
   }, 120_000)
 
   it.skipIf(!TUNNEL_E2E)('启动真实 quick 隧道并拿到公网地址，随后停止回收', async () => {
+    await resetExposure()
     const app = await newDshPage(browser, { ready: '[data-slot="sidebar"]' })
     try {
       await openAccessPanel(app)

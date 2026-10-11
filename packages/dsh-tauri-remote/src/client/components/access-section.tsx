@@ -184,8 +184,11 @@ export function AccessSection({ t }: AccessSectionProps): ReactNode {
                 data-testid="access-password-save"
                 onClick={() => {
                   const value = password
-                  setPassword('')
-                  void service.apply({ password: value })
+                  // keep: 失败时保留草稿，用户不必重输（成功才清空）
+                  void service.apply({ password: value }).then((result) => {
+                    if (result.ok)
+                      setPassword('')
+                  })
                 }}
               >
                 {t('access.auth.passwordSave')}
@@ -197,7 +200,10 @@ export function AccessSection({ t }: AccessSectionProps): ReactNode {
                 data-testid="access-password-clear"
                 onClick={() => {
                   setPassword('')
-                  void service.apply({ password: null })
+                  void service.apply({ password: null }).then((result) => {
+                    if (!result.ok)
+                      setPassword(password)
+                  })
                 }}
               >
                 {t('access.auth.passwordClear')}
@@ -237,9 +243,15 @@ export function AccessSection({ t }: AccessSectionProps): ReactNode {
               onChange={event => setPort(event.target.value)}
               onBlur={() => {
                 const next = Number(listenPort)
-                setPort(null)
-                if (Number.isInteger(next) && next > 0 && next <= 65535 && next !== status.listen.port)
-                  void service.apply({ port: next })
+                if (!Number.isInteger(next) || next <= 0 || next > 65535 || next === status.listen.port) {
+                  setPort(null)
+                  return
+                }
+                // keep: 端口改成非法或请求失败时保留用户输入，不静默回退到旧值
+                void service.apply({ port: next }).then((result) => {
+                  if (result.ok)
+                    setPort(null)
+                })
               }}
             />
           </Field>
