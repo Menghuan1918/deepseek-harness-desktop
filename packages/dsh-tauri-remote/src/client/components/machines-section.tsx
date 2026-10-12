@@ -730,6 +730,36 @@ export function MachinesSection({ t, bridge = desktopBridge }: MachinesSectionPr
     )
   }
 
+  const enableRow = (
+    <div className="flex items-center justify-between gap-[24px] rounded-[12px] border-[0.5px] border-border-l2 bg-layer-1 px-[16px] py-[16px]">
+      <div className="flex min-w-0 flex-col">
+        <span className="text-[14px] leading-[20px] text-primary">{t('hero.title')}</span>
+        <span className="mt-[4px] text-[12px] leading-[18px] text-secondary">{t('enable.hint')}</span>
+      </div>
+      <span className="inline-flex" data-testid="machines-enable-toggle">
+        <Switch checked={state.enabled === true} label={t('hero.enable')} disabled={state.enabling} onChange={(next) => { void service.setEnabled(next) }} />
+      </span>
+    </div>
+  )
+
+  if (state.enabled === false) {
+    return (
+      <div className="flex flex-col gap-[12px] max-w-[960px] text-primary" data-testid="machines-section">
+        <h2 className="m-0 text-[18px] leading-[28px] font-semibold text-primary">{t('title')}</h2>
+        {enableRow}
+        {state.error === null
+          ? null
+          : (
+              <p className="m-0 text-[12px] leading-[18px] text-error" role="alert">
+                {t('error.banner')}
+                {errorTextOf(state.error, t)}
+              </p>
+            )}
+        <p className="m-0 rounded-[8px] border border-dashed border-border-l3 p-[12px] text-center text-[12px] leading-[18px] text-tertiary" data-testid="machines-disabled">{t('enable.off')}</p>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-[12px] max-w-[960px] text-primary">
       <div className="flex flex-wrap items-start justify-between gap-[12px]">
@@ -746,6 +776,7 @@ export function MachinesSection({ t, bridge = desktopBridge }: MachinesSectionPr
           </Button>
         </div>
       </div>
+      {enableRow}
       {state.notice !== null ? <p className="m-0 text-[12px] leading-[18px] text-secondary" data-testid="notice">{noticeTextOf(state.notice, t)}</p> : null}
       {state.error !== null
         ? (

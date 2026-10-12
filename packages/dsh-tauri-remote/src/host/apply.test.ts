@@ -195,13 +195,13 @@ describe('remote plugin', () => {
     expect(management.map(route => typeof route.handler)).toEqual(REST_ENDPOINTS.map(() => 'function'))
   })
 
-  it('mounts the panel-only access routes on the same host', async () => {
+  it('mounts the sharing and credential access routes on the same host', async () => {
     const { webServer } = await boot()
     const panelRoutes = webServer.routes.filter(route => route.path.includes('/access'))
     expect(panelRoutes.map(route => `${route.kind} ${route.path}`)).toEqual([
       `exact ${BASE}/access`,
-      `exact ${BASE}/access/token`,
       `exact ${BASE}/access/tunnel`,
+      `exact ${BASE}/access/token`,
     ])
     expect(panelRoutes.map(route => typeof route.handler)).toEqual(['function', 'function', 'function'])
   })

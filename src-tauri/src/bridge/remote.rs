@@ -19,6 +19,10 @@ fn remote_method(method: &str) -> Result<(reqwest::Method, &str), String> {
             | "POST /api/tauri/remote/settings"
             | "POST /api/tauri/remote/sync/apply"
             | "GET /api/tauri/remote/sync/preview"
+            | "GET /api/tauri/remote/access"
+            | "POST /api/tauri/remote/access"
+            | "POST /api/tauri/remote/access/tunnel"
+            | "DELETE /api/tauri/remote/access/tunnel"
     ) {
         return Err(format!("REMOTE_METHOD_INVALID: {method}"));
     }
@@ -251,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_whitelist_accepts_all_thirteen_generated_endpoints() {
+    fn remote_whitelist_accepts_all_seventeen_generated_endpoints() {
         for method in [
             "GET /api/tauri/remote/machines",
             "POST /api/tauri/remote/machines",
@@ -266,6 +270,10 @@ mod tests {
             "POST /api/tauri/remote/settings",
             "POST /api/tauri/remote/sync/apply",
             "GET /api/tauri/remote/sync/preview",
+            "GET /api/tauri/remote/access",
+            "POST /api/tauri/remote/access",
+            "POST /api/tauri/remote/access/tunnel",
+            "DELETE /api/tauri/remote/access/tunnel",
         ] {
             let (verb, path) = remote_method(method).expect("generated endpoint must be allowed");
             assert_eq!(format!("{verb} {path}"), method);
@@ -286,6 +294,9 @@ mod tests {
             "GET /api/tauri/remote/machines/",
             "GET  /api/tauri/remote/machines",
             "GET /api/tauri/remote/machines\n",
+            "PUT /api/tauri/remote/access",
+            "GET /api/tauri/remote/access/tunnel",
+            "POST /api/tauri/remote/access?x=1",
             "GET http://127.0.0.1:3080/api/tauri/remote/machines",
             "GET https://example.com/api/tauri/remote/machines",
             "GET //example.com/api/tauri/remote/machines",

@@ -1,4 +1,4 @@
-import type { AccessAddress, AccessBody, AccessEvent, AccessLinkSource, AccessScope, AccessState, AccessStatus, AccessTunnel, ServiceResult, TunnelBody, TunnelMode, TunnelProgress, TunnelProgressStage, TunnelState } from '../types/index'
+import type { AccessAddress, AccessBody, AccessEvent, AccessLinkSource, AccessPairing, AccessScope, AccessState, AccessStatus, AccessTunnel, ServiceResult, TunnelBody, TunnelMode, TunnelProgress, TunnelProgressStage, TunnelState } from '../types/index'
 import { ofetch as request } from 'dsh-tauri/client'
 import { messageOf } from '../../shared/error'
 import { store } from '../store/index'
@@ -14,6 +14,9 @@ const TUNNEL_PROGRESS_STAGES: readonly TunnelProgressStage[] = ['check', 'downlo
 
 const EMPTY_TUNNEL: AccessTunnel = { enabled: false, mode: 'quick', hostname: null, state: 'stopped', events: [] }
 
+let requests = 0
+let lastSaved = 0
+
 export async function load(): Promise<void> {
   store.access.beginLoad()
   await refresh()
@@ -21,11 +24,15 @@ export async function load(): Promise<void> {
 
 /** 轮询用：不改状态机的 loading 档，避免面板在后台刷新时闪回加载态。 */
 export async function refresh(): Promise<void> {
+  const mine = ++requests
   try {
-    store.access.commit(accessStatusOf(await request<unknown>(BASE, { method: 'get' })))
+    const next = accessStatusOf(await request<unknown>(BASE, { method: 'get' }))
+    if (mine >= lastSaved)
+      store.access.commit(next)
   }
   catch (error) {
-    store.access.fail(messageOf(error))
+    if (mine >= lastSaved)
+      store.access.fail(messageOf(error))
   }
 }
 
@@ -51,9 +58,12 @@ export async function stopTunnel(): Promise<ServiceResult> {
 
 // --- internal ---
 async function mutate(run: () => Promise<unknown>): Promise<ServiceResult> {
+  const mine = ++requests
   store.access.beginBusy()
   try {
-    store.access.commit(accessStatusOf(await run()))
+    const next = accessStatusOf(await run())
+    lastSaved = Math.max(lastSaved, mine)
+    store.access.commit(next)
     return { ok: true }
   }
   catch (error) {
@@ -90,7 +100,21 @@ function accessStatusOf(value: unknown): AccessStatus {
     ...textField('error', raw.error),
     ...numberField('localPort', raw.localPort),
     ...warningsField(raw.warnings),
+    ...pairingField(raw.pairing),
   }
+}
+
+function pairingField(value: unknown): { pairing?: AccessPairing } {
+  const raw = recordOf(value)
+  const code = textOf(raw.code)
+  const link = textOf(raw.link)
+  const qr = textOf(raw.qr)
+  const expiresAt = numberOf(raw.expiresAt)
+  if (code === undefined || link === undefined || qr === undefined || expiresAt === undefined)
+    return {}
+  const tunnelLink = textOf(raw.tunnelLink)
+  const tunnelQr = textOf(raw.tunnelQr)
+  return { pairing: { code, expiresAt, link, qr, ...tunnelLink === undefined ? {} : { tunnelLink }, ...tunnelQr === undefined ? {} : { tunnelQr } } }
 }
 
 function listenOf(value: unknown): { address: string, port: number } {

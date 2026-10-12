@@ -63,10 +63,10 @@ export function createLinkToken(): string {
   return randomBytes(SECRET_BYTES).toString('base64url')
 }
 
-/** 自动访问密码：无易混淆字符（0/O/1/l/I）的 20 位随机构造，便于口头或手抄转述。 */
-export function generateAccessPassword(): string {
+/** 自动访问密码与临时配对码：无易混淆字符（0/O/1/l/I）的随机构造，便于口头或手抄转述。 */
+export function generateAccessPassword(length = PASSWORD_LENGTH): string {
   const alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-  const bytes = randomBytes(PASSWORD_LENGTH)
+  const bytes = randomBytes(length)
   let password = ''
   for (const byte of bytes)
     password += alphabet[byte % alphabet.length]

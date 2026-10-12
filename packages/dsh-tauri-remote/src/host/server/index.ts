@@ -1,5 +1,9 @@
 import { defineWebServer } from 'dsh-h3'
 import { guard } from 'dsh-tauri'
+import accessGet from './routes/access/get'
+import accessPost from './routes/access/post'
+import accessTunnelDelete from './routes/access/tunnel/delete'
+import accessTunnelPost from './routes/access/tunnel/post'
 import machinesConnect from './routes/machines/connect/post'
 import machinesDelete from './routes/machines/delete'
 import machinesDisconnect from './routes/machines/disconnect/post'
@@ -29,4 +33,8 @@ export const server = defineWebServer((app) => {
   app.get('/api/tauri/remote/machines/events', machinesEvents)
   app.get('/api/tauri/remote/sync/preview', syncPreview)
   app.post('/api/tauri/remote/sync/apply', syncApply)
+  app.get('/api/tauri/remote/access', accessGet)
+  app.post('/api/tauri/remote/access', accessPost)
+  app.post('/api/tauri/remote/access/tunnel', accessTunnelPost)
+  app.delete('/api/tauri/remote/access/tunnel', accessTunnelDelete)
 })

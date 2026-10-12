@@ -316,7 +316,8 @@ async function admitAuthenticated(entry: GatewayEntry, request: IncomingMessage,
   }
   const url = new URL(request.url ?? '/', 'http://gateway.invalid')
   if (request.method === 'GET' && url.pathname === '/' && url.searchParams.has(AUTH_QUERY)) {
-    if (tokenMatches(url.searchParams.get(AUTH_QUERY) ?? undefined, policy.linkToken)) {
+    const provided = url.searchParams.get(AUTH_QUERY) ?? undefined
+    if (tokenMatches(provided, policy.linkToken) || tokenMatches(provided, policy.pairingCode ?? null)) {
       authFailures.delete(bucket)
       writeSessionRedirect(response, policy, url.pathname, now)
       return false
@@ -326,7 +327,7 @@ async function admitAuthenticated(entry: GatewayEntry, request: IncomingMessage,
   }
   if (isLoginSubmission(request)) {
     const submitted = parseFormField(await readFormBody(request), LOGIN_FIELD)
-    if (submitted !== undefined && verifyPassword(submitted, policy.password)) {
+    if (submitted !== undefined && (verifyPassword(submitted, policy.password) || tokenMatches(submitted, policy.pairingCode ?? null))) {
       authFailures.delete(bucket)
       writeSessionRedirect(response, policy, `${url.pathname}${url.search}`, now)
       return false
@@ -609,7 +610,7 @@ function handleUpgrade(entry: GatewayEntry, request: IncomingMessage, socket: Du
   })
 }
 async function dispatchUpgrade(entry: GatewayEntry, request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
-  if (isCrossSiteRequest(entry.kind, request.headers)) {
+  if (isCrossSiteRequest(entry.kind, request.headers, entry.publicHost?.())) {
     emit(entry, 'source', '已拦下跨站来源的 WebSocket 握手')
     rejectUpgrade(socket, 403, CROSS_SITE_REASON)
     return

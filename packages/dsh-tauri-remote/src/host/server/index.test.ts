@@ -22,6 +22,8 @@ const PATHS = [
   `${BASE}/machines/events`,
   `${BASE}/sync/preview`,
   `${BASE}/sync/apply`,
+  `${BASE}/access`,
+  `${BASE}/access/tunnel`,
 ]
 
 const ALLOW: Record<string, string> = {
@@ -35,6 +37,8 @@ const ALLOW: Record<string, string> = {
   [`${BASE}/machines/events`]: 'GET, HEAD',
   [`${BASE}/sync/preview`]: 'GET, HEAD',
   [`${BASE}/sync/apply`]: 'POST',
+  [`${BASE}/access`]: 'GET, HEAD, POST',
+  [`${BASE}/access/tunnel`]: 'POST, DELETE',
 }
 
 const view: MachineView = {

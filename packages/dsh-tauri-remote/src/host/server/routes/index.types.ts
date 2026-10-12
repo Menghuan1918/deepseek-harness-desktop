@@ -1,4 +1,4 @@
-import type { RemoteAuthMethod, RemoteConnectionState, RemoteProgress } from '../../types/index'
+import type { RemoteAuthMethod, RemoteConnectionState, RemoteProgress, RemoteTunnelMode } from '../../types/index'
 
 export interface RemoteMachineListItem {
   id?: string
@@ -70,6 +70,12 @@ export interface RemoteMachineSaveBody {
 
 export interface RemoteMachineIdBody {
   machineId?: string
+}
+
+export interface RemoteAccessTunnelBody {
+  mode?: RemoteTunnelMode
+  token?: string
+  hostname?: string
 }
 
 export interface GetMachinesEventsQuery {

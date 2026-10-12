@@ -159,6 +159,16 @@ export interface TunnelProgress {
   total?: number
 }
 
+/** 临时配对码：宿主生成、5 分钟轮换；分享链接与二维码只携带它。 */
+export interface AccessPairing {
+  code: string
+  expiresAt: number
+  link: string
+  qr: string
+  tunnelLink?: string
+  tunnelQr?: string
+}
+
 export interface AccessStatus {
   version: number
   enabled: boolean
@@ -173,6 +183,7 @@ export interface AccessStatus {
   maskLink?: string
   qr?: string
   linkSource?: AccessLinkSource
+  pairing?: AccessPairing
   generatedPassword?: string
   tunnel: AccessTunnel
   localPort?: number

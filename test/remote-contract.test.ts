@@ -60,6 +60,10 @@ const EXPECTED_ENDPOINTS = [
   `POST ${PREFIX}/settings`,
   `POST ${PREFIX}/sync/apply`,
   `GET ${PREFIX}/sync/preview`,
+  `GET ${PREFIX}/access`,
+  `POST ${PREFIX}/access`,
+  `POST ${PREFIX}/access/tunnel`,
+  `DELETE ${PREFIX}/access/tunnel`,
 ]
 
 const HOST_ROUTE_ORDER = [
@@ -76,19 +80,22 @@ const HOST_ROUTE_ORDER = [
   `GET ${PREFIX}/machines/events`,
   `GET ${PREFIX}/sync/preview`,
   `POST ${PREFIX}/sync/apply`,
+  `GET ${PREFIX}/access`,
+  `POST ${PREFIX}/access`,
+  `POST ${PREFIX}/access/tunnel`,
+  `DELETE ${PREFIX}/access/tunnel`,
 ]
 
 /**
- * 面板专用入口（S4/S5）：只在 `server/panel.ts` 登记，由面板 iframe 同源 fetch 消费，
+ * 面板专用入口：只在 `server/panel.ts` 登记，由面板 iframe 同源 fetch 消费，
  * **不进**桌面壳白名单与两份生成客户端；新增这类路由必须在此显式登记。
+ *
+ * 只保留完整凭据管理（生成 / 撤销永久码）——入站分享（`/access`、`/access/tunnel`）
+ * 由桌面壳的分享弹层直接调用，因此登记在管理表与白名单里。
  */
 const ACCESS_ROUTE_ORDER = [
-  `GET ${PREFIX}/access`,
-  `POST ${PREFIX}/access`,
   `POST ${PREFIX}/access/token`,
   `DELETE ${PREFIX}/access/token`,
-  `POST ${PREFIX}/access/tunnel`,
-  `DELETE ${PREFIX}/access/tunnel`,
 ]
 
 describe('shell ↔ plugin identity contract', () => {
@@ -112,8 +119,8 @@ describe('shell ↔ plugin identity contract', () => {
   })
 })
 
-describe('13-endpoint agreement across the four lists', () => {
-  it('the management route table declares exactly the 13 endpoints', () => {
+describe('17-endpoint agreement across the four lists', () => {
+  it('the management route table declares exactly the 17 endpoints', () => {
     expect(hostRoutes(HOST_ROUTES)).toEqual(HOST_ROUTE_ORDER)
   })
 
@@ -158,6 +165,10 @@ describe('13-endpoint agreement across the four lists', () => {
       'postSettings',
       'postSyncApply',
       'getSyncPreview',
+      'getAccess',
+      'postAccess',
+      'postAccessTunnel',
+      'deleteAccessTunnel',
     ]].sort())
     expect(exportedApiNames(PLUGIN_API)).toHaveLength(EXPECTED_ENDPOINTS.length)
     expect(exportedApiNames(SHELL_API)).toEqual(exportedApiNames(PLUGIN_API))

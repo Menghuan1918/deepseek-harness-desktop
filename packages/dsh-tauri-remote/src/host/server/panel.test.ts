@@ -6,6 +6,7 @@ import { join } from 'pathe'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { GATEWAY_SOURCE_HEADER } from '../config/constants'
 import { setHostConfig } from '../config/runtime'
+import { server } from './index'
 import { panel } from './panel'
 import { LOOPBACK_ONLY_ERROR } from './panel.utils'
 
@@ -59,7 +60,7 @@ beforeAll(async () => {
     reconnectMaxAttempts: 2,
     sshDir: join(home, 'ssh'),
   })
-  disposeRoutes = panel({
+  const context = {
     webServer: {
       register: (route: HostWebRoute) => {
         registered.push(route)
@@ -69,7 +70,13 @@ beforeAll(async () => {
       },
     },
     logger: { error: () => {} },
-  } as never)
+  } as never
+  const disposeServer = server(context)
+  const disposePanel = panel(context)
+  disposeRoutes = () => {
+    disposePanel()
+    disposeServer()
+  }
   const listener = await serveRoutes()
   origin = listener.origin
   closeServer = listener.close
@@ -100,12 +107,12 @@ async function call(method: string, path: string, headers: Record<string, string
   }
 }
 
-describe('面板专用路由（真实注册 + HTTP）', () => {
-  it('只在独立 panel 注册表里挂三条面板路径', () => {
-    expect(registered.map(route => `${route.kind} ${route.path}`)).toEqual([
+describe('远端路由（真实注册 + HTTP）', () => {
+  it('只把入站分享与完整凭据管理挂到 /access 下', () => {
+    expect(registered.filter(route => route.path.startsWith(`${BASE}/access`)).map(route => `${route.kind} ${route.path}`)).toEqual([
       `exact ${BASE}/access`,
-      `exact ${BASE}/access/token`,
       `exact ${BASE}/access/tunnel`,
+      `exact ${BASE}/access/token`,
     ])
   })
 

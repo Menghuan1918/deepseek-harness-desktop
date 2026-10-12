@@ -15,6 +15,7 @@ import { useListen } from '@/hooks/use-listen'
 import { store } from '@/store'
 import { Recovery } from '@/ui/plugin/recovery'
 import { Iframe } from './iframe'
+import { REMOTE_SECTION, REMOTE_TAB_ACCESS, REMOTE_TAB_MACHINES } from './nav-bridge'
 import { Navbar } from './navbar'
 import { Setup } from './setup'
 import { PreinstallSetup } from './setup-preinstall'
@@ -28,6 +29,7 @@ interface NavBridgeMessage {
 export function Webview() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const pendingSettingsTabRef = useRef<string | null>(null)
   const appearanceCss = useAppearance(iframeRef)
   const post = useIframePost(iframeRef)
 
@@ -66,12 +68,34 @@ export function Webview() {
     setRemoteView({ url, tint })
   }
 
+  function openSettingsTab(tab: string) {
+    post({ type: 'dsh://settings:open', section: REMOTE_SECTION, tab })
+  }
+
+  // 远端视图下 iframe 里是远端页面，设置分区在它那边不存在：先切回本机，
+  // 等本机插件重新 boot 就绪（`dsh://plugin-boot:ready`）再定位，避免发出无人接收的消息。
+  function openLocalSettingsTab(tab: string) {
+    if (remoteMode) {
+      pendingSettingsTabRef.current = tab
+      handleRemoteChange('', null)
+      return
+    }
+    openSettingsTab(tab)
+  }
+
   useIframeMessage<NavBridgeMessage>(iframeRef, (data) => {
     if (data.type === 'dsh://sidebar:collapsed') {
       setSidebarCollapsed(Boolean(data.collapsed))
     }
     else if (data.type === 'dsh://shortcuts') {
       setDshShortcuts({ rows: parseShortcutRows(data.rows) })
+    }
+    else if (data.type === 'dsh://plugin-boot:ready') {
+      const pending = pendingSettingsTabRef.current
+      if (pending !== null) {
+        pendingSettingsTabRef.current = null
+        openSettingsTab(pending)
+      }
     }
   })
 
@@ -105,6 +129,8 @@ export function Webview() {
         onOpenFolder: () => post({ type: 'dsh://workspace:add' }),
         onOpenShortcuts: () => post({ type: 'dsh://shortcuts:open' }),
         onViewCommand: (command: DshViewCommand) => post({ type: 'dsh://view:command', command }),
+        onOpenMachineManager: () => openLocalSettingsTab(REMOTE_TAB_MACHINES),
+        onOpenRemoteAccess: () => openLocalSettingsTab(REMOTE_TAB_ACCESS),
       }
     : {}
 

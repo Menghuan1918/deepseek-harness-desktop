@@ -56,6 +56,17 @@ export interface RemoteAccessEvent {
   line: string
 }
 
+/** 临时配对码：宿主生成、5 分钟轮换；分享链接与二维码只携带它，永久凭据不出现在分享物里（评审意见 6）。 */
+export interface RemoteAccessPairing {
+  code: string
+  expiresAt: number
+  link: string
+  qr: string
+  /** 隧道就绪时附带的同一临时码公网链接与二维码；隧道未运行则缺省。 */
+  tunnelLink?: string
+  tunnelQr?: string
+}
+
 export interface RemoteAccessStatus {
   version: number
   enabled: boolean
@@ -76,6 +87,8 @@ export interface RemoteAccessStatus {
   qr?: string
   /** 链接归属：回环监听 = 仅本机可用，网卡监听 = 局域网可用。 */
   linkSource?: RemoteLinkSource
+  /** 临时配对码与其分享链接/二维码；仅回环来源可见。 */
+  pairing?: RemoteAccessPairing
   /** 本次请求刚自动生成的访问密码明文：只在响应里出现一次，不落盘、不进事件环。 */
   generatedPassword?: string
   /** 公网隧道读面：配置 + 运行期状态（完整分支才带 Token 与链接二维码）。 */

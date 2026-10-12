@@ -26,6 +26,8 @@ const homes: string[] = []
 
 let previousHome: string | undefined
 
+let previousPort: string | undefined
+
 let spawned: Spawned[] = []
 
 function hostContext(): RemoteHostContext {
@@ -65,6 +67,7 @@ function stubSpawn(binary: string, args: string[], handlers: TunnelHandlers, env
 
 beforeEach(() => {
   previousHome = process.env.DSH_HOME
+  previousPort = process.env.DSH_WEB_PORT
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-remote-tunnel-'))
   homes.push(process.env.DSH_HOME)
   spawned = []
@@ -84,6 +87,10 @@ afterEach(async () => {
     delete process.env.DSH_HOME
   else
     process.env.DSH_HOME = previousHome
+  if (previousPort === undefined)
+    delete process.env.DSH_WEB_PORT
+  else
+    process.env.DSH_WEB_PORT = previousPort
   for (const home of homes.splice(0))
     rmSync(home, { recursive: true, force: true })
 })

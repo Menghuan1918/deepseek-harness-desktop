@@ -1,14 +1,19 @@
 import type { EventHandlerRequest } from 'h3'
 import type { RemoteAccessStatus } from '../../../../service/access.types'
 import type { RemoteTunnelMode } from '../../../../types/index'
+import type { RemoteAccessTunnelBody } from '../../index.types'
 import { defineEventHandler, readBody } from 'h3'
 import { access } from '../../../../service/access'
 import { tunnel } from '../../../../service/tunnel'
+import { mutationDenied } from '../../../panel.utils'
 import { guarded } from '../../index.utils'
 
-export default defineEventHandler<EventHandlerRequest, Promise<RemoteAccessStatus | { error: string }>>(async event =>
-  guarded(event, async () => {
-    const body = (await readBody<{ mode?: unknown, token?: unknown, hostname?: unknown }>(event)) ?? {}
+export default defineEventHandler<EventHandlerRequest, Promise<RemoteAccessStatus | { error: string }>>(async (event) => {
+  const body = (await readBody<RemoteAccessTunnelBody>(event)) ?? {}
+  const denied = mutationDenied(event)
+  if (denied !== undefined)
+    return denied
+  return await guarded(event, async () => {
     const mode = modeOf(body.mode)
     const credential = textOf(body.token, 'token')
     const host = textOf(body.hostname, 'hostname')
@@ -17,7 +22,8 @@ export default defineEventHandler<EventHandlerRequest, Promise<RemoteAccessStatu
     await tunnel.start(mode, credential, host)
     const status = await access.status()
     return ensured.generatedPassword === undefined ? status : { ...status, generatedPassword: ensured.generatedPassword }
-  }))
+  })
+})
 
 // --- internal ---
 function modeOf(value: unknown): RemoteTunnelMode {

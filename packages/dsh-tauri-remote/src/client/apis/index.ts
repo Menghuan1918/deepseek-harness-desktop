@@ -72,3 +72,23 @@ export function getSyncPreview(options?: FetchOptions) {
 export function postSyncApply(body: Types.PostApiTauriRemoteSyncApplyBody, options?: FetchOptions) {
   return ofetch<Types.PostApiTauriRemoteSyncApplyResponse>("/api/tauri/remote/sync/apply", { method: "post", body, ...options });
 }
+
+/** @method get */
+export function getAccess(options?: FetchOptions) {
+  return ofetch<Types.GetApiTauriRemoteAccessResponse>("/api/tauri/remote/access", { method: "get", ...options });
+}
+
+/** @method post */
+export function postAccess(body: Types.PostApiTauriRemoteAccessBody, options?: FetchOptions) {
+  return ofetch<Types.PostApiTauriRemoteAccessResponse>("/api/tauri/remote/access", { method: "post", body, ...options });
+}
+
+/** @method post */
+export function postAccessTunnel(body: Types.PostApiTauriRemoteAccessTunnelBody, options?: FetchOptions) {
+  return ofetch<Types.PostApiTauriRemoteAccessTunnelResponse>("/api/tauri/remote/access/tunnel", { method: "post", body, ...options });
+}
+
+/** @method delete */
+export function deleteAccessTunnel(options?: FetchOptions) {
+  return ofetch<Types.DeleteApiTauriRemoteAccessTunnelResponse>("/api/tauri/remote/access/tunnel", { method: "delete", ...options });
+}

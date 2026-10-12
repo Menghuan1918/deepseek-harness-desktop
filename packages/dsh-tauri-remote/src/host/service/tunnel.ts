@@ -277,7 +277,7 @@ async function deactivate(reason: string | undefined): Promise<void> {
   await gateway.stop(ENTRY_ID)
   bound = 0
   url = undefined
-  if (state !== 'error')
+  if (state !== 'error' || reason !== undefined)
     state = 'stopped'
   if (reason !== undefined) {
     failure = undefined

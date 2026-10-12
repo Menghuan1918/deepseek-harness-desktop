@@ -1,488 +1,510 @@
-import type { ReactNode } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import type { RemoteKey } from '../locales/index'
-import type { AccessAddress, AccessScope, AccessStatus, TunnelMode, TunnelProgress } from '../types/index'
-import { Button, Field, Input, SegmentedControl, Select, StateDot, Switch } from 'dsh-tauri-ui/client'
+import type { AccessScope, AccessStatus, AccessTunnel, TunnelProgress } from '../types/index'
+import type { TunnelDraft } from '../utils/access-form'
+import { Button, Input, SegmentedControl, Select, StateDot, Switch } from 'dsh-tauri-ui/client'
 import { useStore } from 'dsh-tauri/client'
-import { useEffect, useState } from 'react'
-import { messageOf } from '../../shared/error'
+import { useEffect, useRef, useState } from 'react'
 import * as service from '../service/access'
 import { store } from '../store/index'
+import {
+  countdownOf,
+  lanDirtyOf,
+  maskAuthOf,
+  tunnelBodyOf,
+  tunnelDirtyOf,
+  tunnelDraftOf,
+  tunnelMissingOf,
+} from '../utils/access-form'
 
 interface AccessSectionProps {
   t: (key: RemoteKey) => string
 }
 
+const LOOPBACK = '127.0.0.1'
+const WILDCARD = '0.0.0.0'
+const LOOPBACK_ALIASES = [LOOPBACK, '::1', 'localhost']
 const SCOPES: readonly AccessScope[] = ['public_only', 'all']
-
-const MODES: readonly TunnelMode[] = ['quick', 'token']
-
 const EVENT_TAIL = 6
-
-/** 隧道进程日志尾：cloudflared 启动期会刷很多行，面板只保留最近几条。 */
 const PROCESS_TAIL = 4
 
-const WILDCARD = '0.0.0.0'
-
-const LOOPBACK = '127.0.0.1'
-
-export function AccessSection({ t }: AccessSectionProps): ReactNode {
-  const view = useStore(store.access)
-  const status = view.snapshot
-  const [address, setAddress] = useState<string | null>(null)
-  const [port, setPort] = useState<string | null>(null)
-  const [password, setPassword] = useState('')
-  const [token, setToken] = useState('')
-  const [hostname, setHostname] = useState<string | null>(null)
-  const [mode, setMode] = useState<TunnelMode | null>(null)
-
-  useEffect(() => {
-    // keep:effect 首次挂载时拉取面板数据（store 为空才发请求，重挂载不重复打接口）
-    if (store.access.snapshot === null)
-      void service.load()
-  }, [])
-
-  if (status === null) {
-    return (
-      <div className="flex flex-col gap-[12px] max-w-[960px] text-primary" data-testid="access-section">
-        <p className="m-0 text-[12px] leading-[18px] text-tertiary">{view.status === 'error' ? view.error : t('access.loading')}</p>
-      </div>
-    )
-  }
-
-  const listenAddress = address ?? status.listen.address
-  const listenPort = port ?? String(status.listen.port)
-  const tunnelMode = mode ?? status.tunnel.mode
-  const tunnelHost = hostname ?? status.tunnel.hostname ?? ''
-  const busy = view.busy
-  // cloudflared 的进程日志很密：状态行单独常驻，进程尾只留最近几条，关键结论不被刷掉。
-  const tunnelStateLine = status.tunnel.events.filter(event => event.kind === 'state').at(-1)?.line
-  const tunnelTail = status.tunnel.events.filter(event => event.kind === 'process').slice(-PROCESS_TAIL)
-  const localLabel = status.linkSource === 'lan' ? t('access.entry.lan') : t('access.entry.local')
-  const localMasked = status.link === undefined && status.maskLink !== undefined
-
-  return (
-    <div className="flex flex-col gap-[12px] max-w-[960px] text-primary" data-testid="access-section">
-      <div className="flex flex-wrap items-center justify-between gap-[8px]" data-testid="access-header">
-        <div className="flex items-center gap-[8px]">
-          <StateDot state={dotStateOf(status)} size={8} />
-          <span className="text-[13px] leading-[20px]">{t(stateKeyOf(status))}</span>
-          {status.listening ? <span className="text-[12px] leading-[18px] text-tertiary">{`${status.listen.address}:${status.port}`}</span> : null}
-        </div>
-        <Button
-          variant={status.enabled ? 'outline' : 'primary'}
-          size="sm"
-          disabled={busy}
-          data-testid="access-toggle"
-          onClick={() => void service.apply({ enabled: !status.enabled })}
-        >
-          {t(status.enabled ? 'access.disable' : 'access.enable')}
-        </Button>
-      </div>
-
-      <p className="m-0 text-[12px] leading-[18px] text-tertiary" data-testid="access-intro">{t('access.intro')}</p>
-
-      {view.error === null ? null : <p className="m-0 text-[12px] leading-[18px] text-error" role="alert" data-testid="access-error">{view.error}</p>}
-      {view.notice === null ? null : <p className="m-0 text-[12px] leading-[18px] text-tertiary" data-testid="access-notice">{view.notice}</p>}
-      {status.error === undefined ? null : <p className="m-0 text-[12px] leading-[18px] text-error" role="alert" data-testid="access-state-error">{status.error}</p>}
-      {(status.warnings ?? []).map(warning => (
-        <p key={warning} className="m-0 text-[12px] leading-[18px] text-tertiary" data-testid="access-warning">{warning}</p>
-      ))}
-
-      {view.generatedPassword === null
-        ? null
-        : (
-            <section className="flex flex-col gap-[8px] rounded-[12px] border-[0.5px] border-primary bg-layer-3 px-[16px] py-[12px]" data-testid="access-generated-password">
-              <span className="text-[13px] leading-[20px] font-medium">{t('access.generated.title')}</span>
-              <div className="flex flex-wrap items-center gap-[8px]">
-                <code className="break-all text-[14px] leading-[22px] text-primary" data-testid="access-generated-password-value">{view.generatedPassword}</code>
-                <Button variant="outline" size="sm" data-testid="access-generated-password-copy" onClick={() => void copyLink(view.generatedPassword ?? '')}>
-                  {t('access.generated.copy')}
-                </Button>
-                <Button variant="ghost" size="sm" data-testid="access-generated-password-dismiss" onClick={() => store.access.dismissGeneratedPassword()}>
-                  {t('access.generated.dismiss')}
-                </Button>
-              </div>
-              <span className="text-[12px] leading-[18px] text-tertiary">{t('access.generated.hint')}</span>
-            </section>
-          )}
-
-      <Block title={t('access.entry.title')}>
-        <div className="flex flex-col gap-[12px]">
-          <Entry
-            label={localLabel}
-            testid="access-entry-local"
-            value={status.link ?? status.maskLink}
-            testidValue={localMasked ? 'access-mask-link' : 'access-link'}
-            qr={status.qr}
-            qrTestid="access-link-qr"
-            copyTestid="access-link-copy"
-            t={t}
-            placeholder={t('access.entry.none')}
-            action={status.enabled
-              ? undefined
-              : { label: t('access.enable'), testid: 'access-entry-local-action', run: () => void service.apply({ enabled: true }) }}
-            onCopy={text => void copyLink(text)}
-          />
-          <Entry
-            label={t('access.entry.tunnel')}
-            testid="access-entry-tunnel"
-            value={status.tunnel.link ?? status.tunnel.url}
-            testidValue="access-tunnel-url"
-            qr={status.tunnel.qr}
-            qrTestid="access-tunnel-qr"
-            copyTestid="access-tunnel-copy"
-            t={t}
-            placeholder={t('access.entry.tunnelNone')}
-            action={status.tunnel.state === 'stopped' || status.tunnel.state === 'error'
-              ? { label: t('access.entry.startTunnel'), testid: 'access-entry-tunnel-action', run: startTunnel }
-              : undefined}
-            onCopy={text => void copyLink(text)}
-          />
-        </div>
-      </Block>
-
-      <Block title={t('access.auth.title')}>
-        <div className="flex flex-col gap-[12px]">
-          <div className="flex items-center justify-between gap-[12px]">
-            <span className="text-[13px] leading-[20px]">{t('access.auth.enable')}</span>
-            <Switch
-              checked={status.auth.enabled}
-              disabled={busy}
-              label={t('access.auth.enable')}
-              data-testid="access-auth-toggle"
-              onChange={next => void service.apply({ authEnabled: next })}
-            />
-          </div>
-          <Field label={t('access.auth.scope')}>
-            <SegmentedControl
-              id="dsh-tauri-remote-access-scope"
-              label={t('access.auth.scope')}
-              value={status.auth.scope}
-              options={SCOPES.map(value => ({ value, label: t(scopeKeyOf(value)) }))}
-              onChange={(next) => {
-                const scope = SCOPES.find(candidate => candidate === next)
-                if (scope !== undefined)
-                  void service.apply({ scope })
-              }}
-            />
-          </Field>
-          <div className="grid grid-cols-[repeat(12,minmax(0,1fr))] items-end gap-[10px_12px] max-[760px]:grid-cols-[repeat(6,minmax(0,1fr))]">
-            <Field className="col-span-6" label={t('access.auth.password')}>
-              <Input
-                className="box-border w-full"
-                type="password"
-                value={password}
-                placeholder={status.auth.hasPassword === true ? t('access.auth.hasPassword') : t('access.auth.noPassword')}
-                onChange={event => setPassword(event.target.value)}
-              />
-            </Field>
-            <div className="col-span-6 flex gap-[8px]">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy || password === ''}
-                data-testid="access-password-save"
-                onClick={() => {
-                  const value = password
-                  // keep: 失败时保留草稿，用户不必重输（成功才清空）
-                  void service.apply({ password: value }).then((result) => {
-                    if (result.ok)
-                      setPassword('')
-                  })
-                }}
-              >
-                {t('access.auth.passwordSave')}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={busy || status.auth.hasPassword !== true}
-                data-testid="access-password-clear"
-                onClick={() => {
-                  setPassword('')
-                  void service.apply({ password: null }).then((result) => {
-                    if (!result.ok)
-                      setPassword(password)
-                  })
-                }}
-              >
-                {t('access.auth.passwordClear')}
-              </Button>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-[8px]">
-            <Button variant="outline" size="sm" disabled={busy} data-testid="access-token-rotate" onClick={() => void service.rotateToken()}>
-              {t('access.auth.tokenRotate')}
-            </Button>
-            <Button variant="outline" size="sm" disabled={busy || status.auth.hasToken !== true} data-testid="access-token-revoke" onClick={() => void service.revokeToken()}>
-              {t('access.auth.tokenRevoke')}
-            </Button>
-            <span className="text-[12px] leading-[18px] text-tertiary">{t(status.auth.hasToken === true ? 'access.auth.hasToken' : 'access.auth.noToken')}</span>
-          </div>
-        </div>
-      </Block>
-
-      <Block title={t('access.listen.title')}>
-        <div className="grid grid-cols-[repeat(12,minmax(0,1fr))] gap-[10px_12px] max-[760px]:grid-cols-[repeat(6,minmax(0,1fr))]">
-          <Field className="col-span-6" label={t('access.listen.address')}>
-            <Select
-              label={t('access.listen.address')}
-              options={addressOptionsOf(status.addresses, t)}
-              value={listenAddress}
-              onChange={(next) => {
-                setAddress(next)
-                void service.apply({ address: next })
-              }}
-            />
-          </Field>
-          <Field className="col-span-4" label={t('access.listen.port')}>
-            <Input
-              className="box-border w-full"
-              type="number"
-              value={listenPort}
-              onChange={event => setPort(event.target.value)}
-              onBlur={() => {
-                const next = Number(listenPort)
-                if (!Number.isInteger(next) || next <= 0 || next > 65535 || next === status.listen.port) {
-                  setPort(null)
-                  return
-                }
-                // keep: 端口改成非法或请求失败时保留用户输入，不静默回退到旧值
-                void service.apply({ port: next }).then((result) => {
-                  if (result.ok)
-                    setPort(null)
-                })
-              }}
-            />
-          </Field>
-          <div className="col-span-12 flex items-center gap-[8px] text-[12px] leading-[18px] text-tertiary">
-            <span data-testid="access-upstream">
-              {status.localPort === undefined
-                ? t('access.listen.noUpstream')
-                : `${t('access.listen.desktopBackend')} 127.0.0.1:${status.localPort}`}
-            </span>
-          </div>
-        </div>
-      </Block>
-
-      <Block title={t('access.tunnel.title')}>
-        <div className="flex flex-col gap-[12px]">
-          <p className="m-0 text-[12px] leading-[18px] text-tertiary">{t('access.tunnel.intro')}</p>
-          <span className="text-[12px] leading-[18px] text-tertiary" data-testid="access-tunnel-auth-hint">{t('access.tunnel.authForced')}</span>
-          <Field label={t('access.tunnel.mode')}>
-            <SegmentedControl
-              id="dsh-tauri-remote-access-tunnel-mode"
-              label={t('access.tunnel.mode')}
-              value={tunnelMode}
-              options={MODES.map(value => ({ value, label: t(modeKeyOf(value)) }))}
-              onChange={(next) => {
-                const selected = MODES.find(candidate => candidate === next)
-                if (selected !== undefined)
-                  setMode(selected)
-              }}
-            />
-          </Field>
-          {tunnelMode !== 'token'
-            ? null
-            : (
-                <div className="grid grid-cols-[repeat(12,minmax(0,1fr))] gap-[10px_12px] max-[760px]:grid-cols-[repeat(6,minmax(0,1fr))]">
-                  <Field className="col-span-6" label={t('access.tunnel.token')}>
-                    <Input className="box-border w-full" type="password" value={token} data-testid="access-tunnel-token" onChange={event => setToken(event.target.value)} />
-                  </Field>
-                  <Field className="col-span-6" label={t('access.tunnel.hostname')}>
-                    <Input className="box-border w-full" value={tunnelHost} placeholder="dsh.example.com" data-testid="access-tunnel-hostname" onChange={event => setHostname(event.target.value)} />
-                  </Field>
-                </div>
-              )}
-          <div className="flex flex-wrap items-center gap-[8px]">
-            <Button variant="primary" size="sm" disabled={busy} data-testid="access-tunnel-start" onClick={startTunnel}>
-              {t(status.tunnel.state === 'running' || status.tunnel.state === 'starting' ? 'access.tunnel.restart' : 'access.tunnel.start')}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy || status.tunnel.state === 'stopped'}
-              data-testid="access-tunnel-stop"
-              onClick={() => void service.stopTunnel()}
-            >
-              {t('access.tunnel.stop')}
-            </Button>
-            <span className="text-[12px] leading-[18px] text-tertiary" data-testid="access-tunnel-state">{t(tunnelStateKeyOf(status))}</span>
-          </div>
-          {status.tunnel.progress === undefined ? null : <TunnelProgressBar progress={status.tunnel.progress} t={t} />}
-          {status.tunnel.port === undefined ? null : <span className="text-[12px] leading-[18px] text-tertiary">{`${t('access.tunnel.port')} 127.0.0.1:${status.tunnel.port}`}</span>}
-          {status.tunnel.mode === 'token' && status.tunnel.state !== 'stopped' ? <span className="text-[12px] leading-[18px] text-tertiary">{t('access.tunnel.dashboardHint')}</span> : null}
-          {status.tunnel.error === undefined ? null : <p className="m-0 text-[12px] leading-[18px] text-error" role="alert" data-testid="access-tunnel-error">{status.tunnel.error}</p>}
-          {tunnelStateLine === undefined
-            ? null
-            : <span className="break-all text-[12px] leading-[18px] text-secondary" data-testid="access-tunnel-ready">{tunnelStateLine}</span>}
-          {tunnelTail.length === 0
-            ? null
-            : (
-                <div className="flex flex-col gap-[2px]" data-testid="access-tunnel-events">
-                  {tunnelTail.map(event => (
-                    <span key={event.seq} className="break-all text-[12px] leading-[18px] text-tertiary">{`${event.ts} ${event.line}`}</span>
-                  ))}
-                </div>
-              )}
-        </div>
-      </Block>
-
-      {status.events.length === 0
-        ? null
-        : (
-            <Block title={t('access.events.title')}>
-              <div className="flex flex-col gap-[2px]" data-testid="access-events">
-                {status.events.slice(-EVENT_TAIL).map(event => (
-                  <span key={event.seq} className="break-all text-[12px] leading-[18px] text-tertiary">{`${event.ts} ${event.line}`}</span>
-                ))}
-              </div>
-            </Block>
-          )}
-    </div>
-  )
-
-  function startTunnel(): void {
-    void service.startTunnel({
-      mode: tunnelMode,
-      ...tunnelMode === 'token' ? { token, hostname: tunnelHost } : {},
-    })
-    setToken('')
-  }
-
-  async function copyLink(text: string): Promise<void> {
-    if (text === '')
-      return
-    try {
-      await navigator.clipboard.writeText(text)
-      store.access.setNotice(t('access.link.copied'))
-    }
-    catch (error) {
-      store.access.setNotice(messageOf(error))
-    }
-  }
-}
-
-function Block({ title, children }: { title: string, children: ReactNode }): ReactNode {
-  return (
-    <section className="flex flex-col gap-[12px] rounded-[12px] border-[0.5px] border-border-l2 bg-layer-1 px-[16px] py-[14px]">
-      <h3 className="m-0 text-[13px] leading-[20px] font-medium">{title}</h3>
-      {children}
-    </section>
-  )
-}
-
-interface EntryProps {
-  label: string
-  testid: string
-  value: string | undefined
-  testidValue: string
-  qr: string | undefined
-  qrTestid: string
-  copyTestid: string
-  t: (key: RemoteKey) => string
-  placeholder: string
-  action?: { label: string, testid: string, run: () => void }
-  onCopy: (text: string) => void
-}
-
-/** 访问入口一行：来源标签 + 地址 + 复制 + 二维码；没有地址时给占位与直接操作入口。 */
-function Entry({ label, testid, value, testidValue, qr, qrTestid, copyTestid, t, placeholder, action, onCopy }: EntryProps): ReactNode {
-  return (
-    <div className="flex flex-col gap-[10px] rounded-[10px] border-[0.5px] border-border-l2 bg-layer-3 px-[12px] py-[10px]" data-testid={testid}>
-      <div className="flex flex-wrap items-center gap-[8px]">
-        <span className="rounded-[6px] bg-layer-1 px-[8px] py-[2px] text-[11px] leading-[18px] text-secondary">{label}</span>
-        {value === undefined
-          ? <span className="text-[12px] leading-[18px] text-tertiary" data-testid={`${testid}-placeholder`}>{placeholder}</span>
-          : (
-              <>
-                <code className="break-all text-[12px] leading-[18px] text-secondary" data-testid={testidValue}>{value}</code>
-                <Button variant="ghost" size="sm" data-testid={copyTestid} onClick={() => onCopy(value)}>{t('access.link.copy')}</Button>
-              </>
-            )}
-        {value !== undefined || action === undefined
-          ? null
-          : <Button variant="outline" size="sm" data-testid={action.testid} onClick={action.run}>{action.label}</Button>}
-      </div>
-      {qr === undefined ? null : <img className="h-[132px] w-[132px] rounded-[8px] bg-white p-[6px]" src={qr} alt={t('access.link.qr')} data-testid={qrTestid} />}
-    </div>
-  )
-}
-
-/** 只有下载阶段有确定百分比：其余阶段只给阶段文字，不画一条会被误读成「已完成」的满格进度条。 */
-function TunnelProgressBar({ progress, t }: { progress: TunnelProgress, t: (key: RemoteKey) => string }): ReactNode {
-  const percent = progress.total === undefined || progress.total <= 0 ? undefined : Math.min(100, Math.floor((progress.received ?? 0) * 100 / progress.total))
-  return (
-    <div className="flex flex-col gap-[6px]" data-testid="access-tunnel-progress">
-      <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-tunnel-progress-line">
-        {`${t(progressKeyOf(progress))}${percent === undefined ? '' : ` ${percent}%`}`}
-      </span>
-      {percent === undefined
-        ? null
-        : (
-            <div className="h-[6px] w-full overflow-hidden rounded-[3px] bg-layer-3">
-              <div className="h-full rounded-[3px] bg-primary transition-[width] duration-200" style={{ width: `${percent}%` }} data-testid="access-tunnel-progress-bar" />
-            </div>
-          )}
-    </div>
-  )
-}
-
-// --- internal ---
-function progressKeyOf(progress: TunnelProgress): RemoteKey {
-  if (progress.stage === 'download')
-    return 'access.tunnel.progress.download'
-  if (progress.stage === 'extract')
-    return 'access.tunnel.progress.extract'
-  if (progress.stage === 'verify')
-    return 'access.tunnel.progress.verify'
-  if (progress.stage === 'spawn')
-    return 'access.tunnel.progress.spawn'
-  if (progress.stage === 'domain')
-    return 'access.tunnel.progress.domain'
-  if (progress.stage === 'ready')
-    return 'access.tunnel.progress.ready'
-  return 'access.tunnel.progress.check'
-}
-
-function stateKeyOf(status: AccessStatus): RemoteKey {
-  if (status.state === 'error')
+function statusKeyOf(status: AccessStatus): RemoteKey {
+  if (status.state === 'error' || status.error !== undefined)
     return 'access.state.error'
   return status.listening ? 'access.state.listening' : 'access.state.stopped'
 }
 
-function dotStateOf(status: AccessStatus): 'done' | 'ongoing' | 'error' | 'idle' {
-  if (status.state === 'error')
+function statusDotOf(status: AccessStatus): 'done' | 'warning' | 'error' | 'idle' {
+  if (status.state === 'error' || status.error !== undefined)
     return 'error'
-  if (status.listening)
-    return 'done'
-  return status.enabled ? 'ongoing' : 'idle'
+  return status.listening ? 'done' : 'idle'
 }
 
-function tunnelStateKeyOf(status: AccessStatus): RemoteKey {
-  if (status.tunnel.state === 'running')
-    return 'access.tunnel.state.running'
-  if (status.tunnel.state === 'starting')
-    return 'access.tunnel.state.starting'
-  if (status.tunnel.state === 'error')
+function tunnelKeyOf(tunnel: AccessTunnel): RemoteKey {
+  if (tunnel.state === 'error' || tunnel.error !== undefined)
     return 'access.tunnel.state.error'
-  return 'access.tunnel.state.stopped'
+  if (tunnel.state === 'starting')
+    return 'access.tunnel.state.starting'
+  return tunnel.state === 'running' ? 'access.tunnel.state.running' : 'access.tunnel.state.stopped'
+}
+
+function progressKeyOf(progress: TunnelProgress): RemoteKey {
+  return `access.tunnel.progress.${progress.stage}` as RemoteKey
 }
 
 function scopeKeyOf(scope: AccessScope): RemoteKey {
   return scope === 'all' ? 'access.auth.scope.all' : 'access.auth.scope.public_only'
 }
 
-function modeKeyOf(mode: TunnelMode): RemoteKey {
-  return mode === 'token' ? 'access.tunnel.mode.token' : 'access.tunnel.mode.quick'
+function progressPercentOf(progress: TunnelProgress): number | null {
+  if (progress.stage !== 'download' || progress.received === undefined || progress.total === undefined || progress.total <= 0)
+    return null
+  return Math.min(100, Math.round((progress.received / progress.total) * 100))
 }
 
-function addressOptionsOf(addresses: readonly AccessAddress[], t: (key: RemoteKey) => string): Array<{ value: string, label: string }> {
-  const options = [{ value: LOOPBACK, label: LOOPBACK }, { value: WILDCARD, label: `${WILDCARD}（${t('access.listen.allInterfaces')}）` }]
-  for (const entry of addresses) {
-    if (entry.address === LOOPBACK || entry.address === WILDCARD)
-      continue
-    options.push({ value: entry.address, label: entry.recommended ? `${entry.address}（${t('access.listen.recommended')}）` : entry.address })
+function tokenOf(link: string | undefined): string | undefined {
+  if (link === undefined || link === '')
+    return undefined
+  try {
+    const value = new URL(link).searchParams.get('auth')
+    return value === null || value === '' ? undefined : value
   }
-  return options
+  catch {
+    return undefined
+  }
+}
+
+function addressOptionsOf(status: AccessStatus, t: (key: RemoteKey) => string): { value: string, label: string }[] {
+  const extra = status.addresses
+    .filter(item => !LOOPBACK_ALIASES.includes(item.address) && item.address !== WILDCARD)
+    .map(item => ({
+      value: item.address,
+      label: `${item.address} · ${item.interface}${item.recommended ? `（${t('access.listen.recommended')}）` : ''}`,
+    }))
+  return [
+    { value: LOOPBACK, label: `${LOOPBACK}（${t('access.lan.loopback')}）` },
+    { value: WILDCARD, label: `${WILDCARD}（${t('access.listen.allInterfaces')}）` },
+    ...extra,
+  ]
+}
+
+function Card({ children }: { children: ReactNode }): ReactElement {
+  return (
+    <section className="rounded-[12px] border-[0.5px] border-border-l2 bg-layer-1 px-[16px]">
+      <div className="flex flex-col">{children}</div>
+    </section>
+  )
+}
+
+function Row({ title, hint, children }: { title: string, hint: string, children: ReactNode }): ReactElement {
+  return (
+    <div className="flex items-center justify-between gap-[24px] py-[16px] border-b-[0.5px] border-border-l2 last:border-b-0">
+      <div className="flex min-w-0 flex-col">
+        <span className="text-[14px] leading-[20px] text-primary">{title}</span>
+        <span className="mt-[4px] text-[12px] leading-[18px] text-secondary">{hint}</span>
+      </div>
+      <div className="flex flex-none flex-wrap items-center justify-end gap-[8px]">{children}</div>
+    </div>
+  )
+}
+
+export function AccessSection({ t }: AccessSectionProps): ReactElement {
+  const state = useStore(store.access)
+  const status = state.snapshot
+  const [now, setNow] = useState(() => Date.now())
+  const [lanDraft, setLanDraft] = useState<{ address: string } | null>(null)
+  const [tunnelDraft, setTunnelDraft] = useState<TunnelDraft | null>(null)
+  const [scopeDraft, setScopeDraft] = useState<AccessScope | null>(null)
+  const [revealed, setRevealed] = useState(false)
+  const [logsOpen, setLogsOpen] = useState(false)
+  const expiredRef = useRef(0)
+  const pairingExpiry = status?.pairing?.expiresAt
+
+  useEffect(() => {
+    void service.load()
+  }, [])
+
+  useEffect(() => {
+    if (pairingExpiry === undefined)
+      return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [pairingExpiry])
+
+  useEffect(() => {
+    if (pairingExpiry === undefined || pairingExpiry > now || expiredRef.current === pairingExpiry)
+      return
+    expiredRef.current = pairingExpiry
+    void service.refresh()
+  }, [pairingExpiry, now])
+
+  if (status === null) {
+    return (
+      <div className="flex flex-col gap-[8px] text-[13px] leading-[20px] text-secondary" data-testid="access-section">
+        <span>{t('access.loading')}</span>
+        {state.error === null
+          ? null
+          : <span className="text-error" role="alert" data-testid="access-error">{state.error}</span>}
+      </div>
+    )
+  }
+
+  const tunnel = status.tunnel
+  const busy = state.busy
+  const scope = scopeDraft ?? status.auth.scope
+  const address = lanDraft?.address ?? status.listen.address
+  const port = status.listen.port === 0 ? status.port : status.listen.port
+  const dirtyLan = lanDirtyOf(lanDraft, status.listen)
+  const tunnelForm = tunnelDraft ?? tunnelDraftOf(tunnel)
+  const tunnelOpen = tunnel.enabled || tunnelDraft !== null
+  const dirtyTunnel = tunnelDirtyOf(tunnelDraft, tunnel)
+  const missing = tunnelMissingOf(tunnelForm)
+  const tunnelLive = tunnel.enabled && (tunnel.state === 'running' || tunnel.state === 'starting')
+  const token = tokenOf(status.link)
+  const pairing = status.pairing
+  const shareLink = pairing?.link ?? (status.link === undefined || status.link === '' ? status.maskLink : status.link)
+  const sharePlain = status.linkSource === 'lan' && status.link !== undefined && status.link !== ''
+  const countdown = pairing === undefined ? '' : countdownOf(pairing.expiresAt, now)
+  const progressPercent = tunnel.progress === undefined ? null : progressPercentOf(tunnel.progress)
+  const tunnelShortLink = pairing?.tunnelLink
+  const tunnelPlainLink = tunnel.link !== undefined && tokenOf(tunnel.link) === undefined ? tunnel.link : undefined
+  const tunnelReadyLink = tunnelShortLink ?? tunnelPlainLink
+  const tunnelReadyQr = tunnelShortLink === undefined ? tunnel.qr : pairing?.tunnelQr
+  const tunnelCode = tokenOf(tunnelReadyLink)
+  const events = status.events.slice(-EVENT_TAIL)
+  const logs = tunnel.events.slice(-PROCESS_TAIL)
+
+  function copy(text: string): void {
+    void navigator.clipboard?.writeText(text)
+    store.access.setNotice(t('access.link.copied'))
+  }
+
+  async function setExposure(next: boolean): Promise<void> {
+    await service.apply({ enabled: next })
+  }
+
+  async function saveLan(): Promise<void> {
+    if (lanDraft === null)
+      return
+    const result = await service.apply({ address: lanDraft.address })
+    if (result.ok)
+      setLanDraft(null)
+  }
+  async function setAuth(next: boolean): Promise<void> {
+    await service.apply({ authEnabled: next })
+  }
+
+  async function pickScope(next: AccessScope): Promise<void> {
+    setScopeDraft(next)
+    await service.apply({ scope: next })
+    setScopeDraft(null)
+  }
+
+  async function setTunnelEnabled(next: boolean): Promise<void> {
+    if (next) {
+      setTunnelDraft(tunnelDraftOf(tunnel))
+      return
+    }
+    setTunnelDraft(null)
+    if (tunnel.enabled)
+      await service.stopTunnel()
+  }
+
+  function editTunnel(patch: Partial<TunnelDraft>): void {
+    setTunnelDraft(previous => ({ ...(previous ?? tunnelDraftOf(tunnel)), ...patch }))
+  }
+
+  async function submitTunnel(draft: TunnelDraft, saved: AccessTunnel): Promise<void> {
+    if (tunnelMissingOf(draft) !== undefined)
+      return
+    const body = tunnelBodyOf(draft)
+    const result = await service.startTunnel({
+      mode: body.mode,
+      token: body.token ?? saved.token,
+      hostname: body.hostname ?? saved.hostname ?? undefined,
+    })
+    if (result.ok)
+      setTunnelDraft(null)
+  }
+
+  function issueToken(): void {
+    setRevealed(false)
+    void service.rotateToken()
+  }
+
+  function revokeToken(): void {
+    setRevealed(false)
+    void service.revokeToken()
+  }
+
+  return (
+    <div className="flex flex-col gap-[16px] text-primary" data-testid="access-section">
+      <div className="flex items-center gap-[8px]">
+        <StateDot state={statusDotOf(status)} size={8} />
+        <span className="text-[14px] leading-[20px]">{t(statusKeyOf(status))}</span>
+        <span className="text-[12px] leading-[18px] text-secondary">{t('access.intro')}</span>
+      </div>
+
+      {state.error === null
+        ? null
+        : <div className="text-[12px] leading-[18px] text-error" role="alert" data-testid="access-error">{state.error}</div>}
+      {state.notice === null
+        ? null
+        : <div className="text-[12px] leading-[18px] text-secondary" data-testid="access-notice">{state.notice}</div>}
+      {status.error === undefined
+        ? null
+        : <div className="text-[12px] leading-[18px] text-error" data-testid="access-state-error">{status.error}</div>}
+      {status.warnings === undefined || status.warnings.length === 0
+        ? null
+        : <ul className="m-0 flex list-none flex-col gap-[4px] p-0 text-[12px] leading-[18px] text-warn" data-testid="access-warning">{status.warnings.map(line => <li key={line}>{line}</li>)}</ul>}
+
+      <Card>
+        <Row title={t('access.lan.title')} hint={t('access.lan.hint')}>
+          <span className="inline-flex" data-testid="access-toggle">
+            <Switch checked={status.enabled} label={t('access.lan.title')} disabled={busy} onChange={(next) => { void setExposure(next) }} />
+          </span>
+        </Row>
+        {status.enabled
+          ? (
+              <>
+                <Row title={t('access.listen.address')} hint={t('access.lan.addressHint')}>
+                  <div data-testid="access-lan-address">
+                    <Select options={addressOptionsOf(status, t)} value={address} label={t('access.listen.address')} disabled={busy} onChange={next => setLanDraft({ address: next })} />
+                  </div>
+                </Row>
+                <Row title={t('access.listen.port')} hint={t('access.lan.portHint')}>
+                  <span className="text-[13px] leading-[20px] text-secondary" data-testid="access-lan-port">{port === 0 ? t('access.lan.portPending') : String(port)}</span>
+                </Row>
+                {dirtyLan
+                  ? (
+                      <div className="flex items-center justify-between gap-[24px] border-b-[0.5px] border-border-l2 py-[12px]" data-testid="access-lan-draft">
+                        <span className="text-[12px] leading-[18px] text-secondary">{t('access.draft.hint')}</span>
+                        <div className="flex flex-none items-center gap-[8px]">
+                          <Button variant="outline" size="sm" data-testid="access-lan-cancel" disabled={busy} onClick={() => setLanDraft(null)}>{t('access.draft.cancel')}</Button>
+                          <Button variant="primary" size="sm" data-testid="access-lan-save" disabled={busy} onClick={() => { void saveLan() }}>{t('access.draft.save')}</Button>
+                        </div>
+                      </div>
+                    )
+                  : null}
+                <Row title={t('access.link.share')} hint={sharePlain ? t('access.link.shareHint') : t('access.link.maskedHint')}>
+                  <div className="flex flex-none items-center gap-[8px]" data-testid="access-share">
+                    {shareLink === undefined
+                      ? <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-mask-link">{t('access.link.none')}</span>
+                      : <span className="max-w-[320px] truncate text-[12px] leading-[18px] text-secondary" data-testid={sharePlain ? 'access-link' : 'access-mask-link'}>{sharePlain ? shareLink : maskAuthOf(shareLink)}</span>}
+                    {sharePlain
+                      ? <Button variant="outline" size="sm" data-testid="access-link-copy" onClick={() => copy(shareLink ?? '')}>{t('access.link.copy')}</Button>
+                      : null}
+                  </div>
+                </Row>
+                {sharePlain
+                  ? null
+                  : <div className="pb-[12px] text-[12px] leading-[18px] text-secondary" data-testid="access-link-hint">{t('access.lan.loopbackHint')}</div>}
+                <div className="pb-[16px] text-[12px] leading-[18px] text-secondary" data-testid="access-upstream">
+                  {status.localPort === undefined ? t('access.listen.noUpstream') : `${t('access.listen.upstream')}${status.localPort}`}
+                </div>
+              </>
+            )
+          : null}
+      </Card>
+
+      <Card>
+        <Row title={t('access.tunnel.title')} hint={t('access.tunnel.intro')}>
+          <span className="inline-flex" data-testid="access-tunnel-toggle">
+            <Switch checked={tunnelOpen} label={t('access.tunnel.title')} disabled={busy} onChange={(next) => { void setTunnelEnabled(next) }} />
+          </span>
+        </Row>
+        {tunnelOpen
+          ? (
+              <>
+                <Row title={t('access.tunnel.mode')} hint={t('access.tunnel.modeHint')}>
+                  <div data-testid="access-tunnel-mode">
+                    <SegmentedControl
+                      id="dsh-tauri-remote-access-tunnel-mode"
+                      label={t('access.tunnel.mode')}
+                      options={[{ value: 'quick', label: t('access.tunnel.mode.quick') }, { value: 'token', label: t('access.tunnel.mode.token') }]}
+                      value={tunnelForm.mode}
+                      disabled={busy}
+                      onChange={(next) => { editTunnel({ mode: next === 'token' ? 'token' : 'quick' }) }}
+                    />
+                  </div>
+                </Row>
+                {tunnelForm.mode === 'token'
+                  ? (
+                      <>
+                        <Row title={t('access.tunnel.token')} hint={t('access.tunnel.tokenHint')}>
+                          <Input
+                            type="password"
+                            name="tunnel-token"
+                            autoComplete="off"
+                            aria-label={t('access.tunnel.token')}
+                            data-testid="access-tunnel-token"
+                            value={tunnelForm.token ?? ''}
+                            disabled={busy}
+                            onChange={event => editTunnel({ token: event.target.value === '' ? (tunnel.token ?? null) : event.target.value })}
+                          />
+                        </Row>
+                        <Row title={t('access.tunnel.hostname')} hint={t('access.tunnel.hostnameHint')}>
+                          <Input
+                            name="tunnel-hostname"
+                            autoComplete="off"
+                            aria-label={t('access.tunnel.hostname')}
+                            data-testid="access-tunnel-hostname"
+                            value={tunnelForm.hostname}
+                            disabled={busy}
+                            onChange={event => editTunnel({ hostname: event.target.value })}
+                          />
+                        </Row>
+                      </>
+                    )
+                  : null}
+                {missing === undefined
+                  ? null
+                  : <div className="pb-[12px] text-[12px] leading-[18px] text-warn" data-testid="access-tunnel-hint">{t(missing === 'token' ? 'access.tunnel.tokenRequired' : 'access.tunnel.hostnameRequired')}</div>}
+                <Row title={t('access.tunnel.state')} hint={tunnel.port === undefined ? t('access.tunnel.authForced') : `${t('access.tunnel.authForced')}${t('access.tunnel.port')}${tunnel.port}`}>
+                  <div className="flex flex-none items-center gap-[8px]" data-testid="access-tunnel-actions">
+                    <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-tunnel-state">{t(tunnelKeyOf(tunnel))}</span>
+                    {dirtyTunnel
+                      ? (
+                          <>
+                            <Button variant="outline" size="sm" data-testid="access-tunnel-cancel" disabled={busy} onClick={() => setTunnelDraft(null)}>{t('access.draft.cancel')}</Button>
+                            <Button variant="primary" size="sm" data-testid="access-tunnel-save" disabled={busy || missing !== undefined} onClick={() => { void submitTunnel(tunnelForm, tunnel) }}>{t('access.draft.save')}</Button>
+                          </>
+                        )
+                      : (
+                          <>
+                            <Button variant="outline" size="sm" data-testid="access-tunnel-start" disabled={busy || tunnelLive || missing !== undefined} onClick={() => { void submitTunnel(tunnelForm, tunnel) }}>{t(tunnel.state === 'error' ? 'access.tunnel.retry' : 'access.tunnel.start')}</Button>
+                            {tunnelLive || tunnel.state === 'error'
+                              ? <Button variant="ghost" size="sm" data-testid="access-tunnel-stop" disabled={busy} onClick={() => { void service.stopTunnel() }}>{t('access.tunnel.stop')}</Button>
+                              : null}
+                          </>
+                        )}
+                  </div>
+                </Row>
+                {tunnel.progress === undefined
+                  ? null
+                  : (
+                      <div className="flex flex-col gap-[6px] pb-[12px]" data-testid="access-tunnel-progress">
+                        <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-tunnel-progress-line">
+                          {progressPercent === null ? t(progressKeyOf(tunnel.progress)) : `${t(progressKeyOf(tunnel.progress))} ${progressPercent}%`}
+                        </span>
+                        <div className="h-[6px] w-full overflow-hidden rounded-[3px] bg-layer-3" data-testid="access-tunnel-progress-bar">
+                          <div className="h-full rounded-[3px] bg-brand transition-[width] duration-200" style={{ width: `${progressPercent ?? 0}%` }} />
+                        </div>
+                      </div>
+                    )}
+                {tunnel.error === undefined
+                  ? null
+                  : <div className="pb-[12px] text-[12px] leading-[18px] text-error" role="alert" data-testid="access-tunnel-error">{tunnel.error}</div>}
+                {tunnelReadyLink === undefined
+                  ? null
+                  : (
+                      <Row title={t('access.tunnel.ready')} hint={t('access.tunnel.readyHint')}>
+                        <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-tunnel-ready">{t('access.tunnel.ready')}</span>
+                        <span className="max-w-[280px] truncate text-[12px] leading-[18px] text-secondary" data-testid="access-tunnel-url">{tunnelReadyLink}</span>
+                        {tunnelCode === undefined
+                          ? null
+                          : <code className="text-[13px] leading-[20px]" aria-label={t('access.tunnel.code')} data-testid="access-tunnel-code">{`${t('access.tunnel.code')} ${tunnelCode}`}</code>}
+                        <Button variant="outline" size="sm" data-testid="access-tunnel-copy" onClick={() => copy(tunnelReadyLink)}>{t('access.link.copy')}</Button>
+                        {tunnelReadyQr === undefined
+                          ? null
+                          : <img className="h-[96px] w-[96px]" src={tunnelReadyQr} alt={t('access.link.qr')} data-testid="access-tunnel-qr" />}
+                      </Row>
+                    )}
+                {logs.length === 0
+                  ? null
+                  : <div className="pb-[12px] text-[12px] leading-[18px] text-tertiary" data-testid="access-tunnel-events">{logs.map(item => <div key={item.seq}>{item.line}</div>)}</div>}
+              </>
+            )
+          : null}
+      </Card>
+
+      <Card>
+        <Row title={t('access.auth.enable')} hint={t('access.auth.intro')}>
+          <span className="inline-flex" data-testid="access-auth-toggle">
+            <Switch checked={status.auth.enabled} label={t('access.auth.enable')} disabled={busy} onChange={(next) => { void setAuth(next) }} />
+          </span>
+        </Row>
+        {status.auth.enabled
+          ? (
+              <Row title={t('access.auth.scope')} hint={t('access.auth.scopeHint')}>
+                <div data-testid="access-auth-scope">
+                  <SegmentedControl
+                    id="dsh-tauri-remote-access-scope"
+                    label={t('access.auth.scope')}
+                    options={SCOPES.map(value => ({ value, label: t(scopeKeyOf(value)) }))}
+                    value={scope}
+                    disabled={busy}
+                    onChange={(next) => { void pickScope(next === 'all' ? 'all' : 'public_only') }}
+                  />
+                </div>
+              </Row>
+            )
+          : null}
+        <Row title={t('access.pairing.title')} hint={t('access.pairing.hint')}>
+          <div className="flex flex-none items-center gap-[8px]" data-testid="access-pairing">
+            {pairing === undefined
+              ? <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-pairing-code">{t('access.pairing.none')}</span>
+              : (
+                  <>
+                    <code className="text-[14px] leading-[20px] tracking-[2px]" data-testid="access-pairing-code">{pairing.code}</code>
+                    <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-pairing-countdown">
+                      {countdown === '' ? t('access.pairing.expired') : `${t('access.pairing.remaining')} ${countdown}`}
+                    </span>
+                    <span className="max-w-[220px] truncate text-[12px] leading-[18px] text-secondary" data-testid="access-pairing-link">{maskAuthOf(pairing.link)}</span>
+                    <Button variant="outline" size="sm" data-testid="access-pairing-copy" onClick={() => copy(pairing.link)}>{t('access.link.copy')}</Button>
+                    <img className="h-[96px] w-[96px]" src={pairing.qr} alt={t('access.link.qr')} data-testid="access-pairing-qr" />
+                  </>
+                )}
+          </div>
+        </Row>
+        <Row title={t('access.token.title')} hint={t('access.token.once')}>
+          <div className="flex flex-none flex-wrap items-center justify-end gap-[8px]" data-testid="access-permanent">
+            <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-permanent-state">
+              {status.auth.hasToken === true ? t('access.auth.hasToken') : t('access.auth.noToken')}
+            </span>
+            <Button variant="outline" size="sm" data-testid="access-token-rotate" disabled={busy} onClick={issueToken}>{t('access.auth.tokenRotate')}</Button>
+            {status.auth.hasToken === true
+              ? <Button variant="ghost" size="sm" data-testid="access-token-revoke" disabled={busy} onClick={revokeToken}>{t('access.auth.tokenRevoke')}</Button>
+              : null}
+            {token === undefined
+              ? null
+              : (
+                  <>
+                    <code className="text-[13px] leading-[20px]" data-testid="access-permanent-value">{revealed ? token : '••••••••••••'}</code>
+                    <Button variant="ghost" size="sm" data-testid="access-permanent-reveal" aria-pressed={revealed} onClick={() => setRevealed(value => !value)}>{t(revealed ? 'access.token.hide' : 'access.token.reveal')}</Button>
+                    <Button variant="outline" size="sm" data-testid="access-permanent-copy" onClick={() => copy(token)}>{t('access.link.copy')}</Button>
+                  </>
+                )}
+          </div>
+        </Row>
+        {state.generatedPassword === null
+          ? null
+          : (
+              <Row title={t('access.generated.title')} hint={t('access.generated.hint')}>
+                <div className="flex flex-none items-center gap-[8px]" data-testid="access-generated-password">
+                  <code className="break-all text-[13px] leading-[20px]" data-testid="access-generated-password-value">{state.generatedPassword}</code>
+                  <Button variant="outline" size="sm" data-testid="access-generated-password-copy" onClick={() => copy(state.generatedPassword ?? '')}>{t('access.generated.copy')}</Button>
+                  <Button variant="ghost" size="sm" data-testid="access-generated-password-dismiss" onClick={() => store.access.dismissGeneratedPassword()}>{t('access.generated.dismiss')}</Button>
+                </div>
+              </Row>
+            )}
+      </Card>
+
+      <div className="flex flex-col gap-[8px] rounded-[12px] border-[0.5px] border-border-l2 bg-layer-1 px-[16px] py-[12px]">
+        <div className="flex items-center justify-between gap-[12px]">
+          <span className="text-[14px] leading-[20px] text-primary">{t('access.events.title')}</span>
+          <Button variant="ghost" size="sm" data-testid="access-logs-toggle" aria-expanded={logsOpen} onClick={() => setLogsOpen(value => !value)}>
+            {t(logsOpen ? 'access.logs.hide' : 'access.logs.show')}
+          </Button>
+        </div>
+        {logsOpen
+          ? (
+              <ul className="m-0 flex list-none flex-col gap-[4px] p-0 text-[12px] leading-[18px] text-secondary" data-testid="access-events">
+                {events.map(item => <li key={item.seq}>{item.line}</li>)}
+              </ul>
+            )
+          : null}
+      </div>
+    </div>
+  )
 }

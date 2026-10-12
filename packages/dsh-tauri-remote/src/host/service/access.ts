@@ -8,6 +8,7 @@ import { createLinkToken, createSessionSecret, generateAccessPassword, hashPassw
 import { isAuthConfigured } from '../utils/source'
 import { addressProblemOf, buildLink, buildTunnelLink, enumerateAddresses, isLoopbackListen, linkHostOf, maskLinkOf, patchAccessDocument, policyOf, readAccessDocument, writeAccessDocument } from './access.utils'
 import { gateway } from './gateway'
+import { pairingCodeOf } from './pairing'
 import { tunnel } from './tunnel'
 
 const ENTRY_ID = 'inbound'
@@ -29,7 +30,7 @@ let events: RemoteAccessEvent[] = []
 export const access = defineService({
   /** 网关每次判定都重新取用：配置与凭据变更立即生效（S2 §7.4）。 */
   policy(): RemoteAuthPolicy {
-    return policyOf(readAccessDocument().document, SESSION_SECRET)
+    return { ...policyOf(readAccessDocument().document, SESSION_SECRET), pairingCode: pairingCodeOf().code }
   },
 
   async status(): Promise<RemoteAccessStatus> {
@@ -73,6 +74,19 @@ export const access = defineService({
     if (link !== undefined) {
       status.qr = await toDataURL(link)
       status.linkSource = isLoopbackListen(document.listen.address) ? 'loopback' : 'lan'
+    }
+    if (host !== undefined && port !== 0) {
+      const pairing = pairingCodeOf()
+      const pairingLink = buildLink(host, port, pairing.code)
+      const pairingTunnelLink = tunnelStatus.url === undefined ? undefined : buildTunnelLink(tunnelStatus.url, pairing.code)
+      status.pairing = {
+        ...pairing,
+        link: pairingLink,
+        qr: await toDataURL(pairingLink),
+        ...pairingTunnelLink === undefined
+          ? {}
+          : { tunnelLink: pairingTunnelLink, tunnelQr: await toDataURL(pairingTunnelLink) },
+      }
     }
     return status
   },

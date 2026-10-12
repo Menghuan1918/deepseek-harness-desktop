@@ -224,6 +224,8 @@ export interface RemoteAuthPolicy {
   password: RemotePasswordRecord | null
   linkToken: string | null
   sessionSecret: string
+  /** 当前临时配对码：与永久凭据并行的额外凭据，5 分钟轮换。 */
+  pairingCode?: string
 }
 
 export interface RemoteAuthFailureRecord {

@@ -146,7 +146,7 @@
       {
         "id": "dsh-tauri-remote",
         "spec": "dsh-tauri-remote",
-        "name": "DSH Tauri SSH",
+        "name": "DSH Tauri Remote",
         "repo": "https://github.com/dsh-tauri-desk/deepseek-harness-desktop/tree/main/packages/dsh-tauri-remote"
       },
       {

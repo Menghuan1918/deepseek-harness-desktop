@@ -65,7 +65,9 @@ export function apply(ctx: RemoteHostContext, config: RemoteConfig): void {
   ctx.effect(() => () => {
     // keep: 清理要串行等待：先让各服务停监听、回收子进程，最后才清运行时依赖
     // （提前清空会让在途 dispose 读不到 deps，清理静默失败）
-    void shutdown()
+    void shutdown().catch((error: unknown) => {
+      ctx.logger?.error?.(`${REMOTE_PLUGIN_NAME}: 关闭清理失败: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }, REMOTE_RUNTIME_EFFECT)
 }
 
