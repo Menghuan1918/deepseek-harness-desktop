@@ -57,6 +57,28 @@ describe('接入面板数据层', () => {
     expect(snapshot?.events).toEqual([{ seq: 2, ts: '', kind: 'state', line: 'ok' }])
   })
 
+  it('配对回包保留合法消费序号，非法序号不覆盖可用凭据', async () => {
+    const pairing = { code: 'AB23CD45', expiresAt: 300000 }
+    const cases: { value: unknown, expected?: number }[] = [
+      { value: 0, expected: 0 },
+      { value: 2, expected: 2 },
+      { value: Number.MAX_SAFE_INTEGER, expected: Number.MAX_SAFE_INTEGER },
+      { value: -1 },
+      { value: 0.5 },
+      { value: '2' },
+      { value: undefined },
+      { value: Number.NaN },
+      { value: Number.POSITIVE_INFINITY },
+      { value: Number.MAX_SAFE_INTEGER + 1 },
+    ]
+    for (const { value, expected } of cases) {
+      route = () => replies.ok({ auth: { token: '01234567' }, pairing: { ...pairing, usedSeq: value } })
+      await service.refresh()
+      expect(store.access.snapshot?.auth.token).toBe('01234567')
+      expect(store.access.snapshot?.pairing).toEqual(expected === undefined ? pairing : { ...pairing, usedSeq: expected })
+    }
+  })
+
   it('变更失败时保留错误文案并复位 busy', async () => {
     once(replies.ok({}), replies.fail('访问密码太短', 400))
     await service.load()

@@ -74,8 +74,8 @@ export function postSyncApply(body: Types.PostApiTauriRemoteSyncApplyBody, optio
 }
 
 /** @method get */
-export function getAccess(options?: FetchOptions) {
-  return ofetch<Types.GetApiTauriRemoteAccessResponse>("/api/tauri/remote/access", { method: "get", ...options });
+export function getAccess(params?: Types.GetApiTauriRemoteAccessQuery, options?: FetchOptions) {
+  return ofetch<Types.GetApiTauriRemoteAccessResponse>("/api/tauri/remote/access", { method: "get", params, ...options });
 }
 
 /** @method post */

@@ -226,6 +226,7 @@ export interface RemoteAuthPolicy {
   sessionSecret: string
   /** 当前临时配对码：与永久凭据并行的额外凭据，5 分钟轮换。 */
   pairingCode?: string
+  consumePairingCode?: (provided: string) => boolean
 }
 
 export interface RemoteAuthFailureRecord {

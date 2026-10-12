@@ -8,7 +8,7 @@ import { createLinkToken, createSessionSecret, generateAccessPassword, hashPassw
 import { isAuthConfigured } from '../utils/source'
 import { addressProblemOf, buildLink, buildTunnelLink, enumerateAddresses, isLoopbackListen, linkHostOf, maskLinkOf, pairingLinksOf, patchAccessDocument, policyOf, readAccessDocument, writeAccessDocument } from './access.utils'
 import { gateway } from './gateway'
-import { pairingCodeOf } from './pairing'
+import { consumePairingCode, pairingCodeOf, resetPairingCode } from './pairing'
 import { tunnel } from './tunnel'
 
 const ENTRY_ID = 'inbound'
@@ -30,7 +30,7 @@ let events: RemoteAccessEvent[] = []
 export const access = defineService({
   /** 网关每次判定都重新取用：配置与凭据变更立即生效（S2 §7.4）。 */
   policy(): RemoteAuthPolicy {
-    return { ...policyOf(readAccessDocument().document, SESSION_SECRET), pairingCode: pairingCodeOf().code }
+    return { ...policyOf(readAccessDocument().document, SESSION_SECRET), pairingCode: pairingCodeOf().code, consumePairingCode }
   },
 
   async status(): Promise<RemoteAccessStatus> {
@@ -60,6 +60,7 @@ export const access = defineService({
         scope: document.auth.scope,
         hasPassword: document.auth.password !== null,
         hasToken: document.auth.token !== null,
+        ...document.auth.token === null ? {} : { token: document.auth.token },
       },
       addresses,
       events: [...events],
@@ -150,6 +151,7 @@ export const access = defineService({
   },
 
   async dispose(): Promise<void> {
+    resetPairingCode()
     await gateway.stop(ENTRY_ID)
     failure = undefined
     events = []

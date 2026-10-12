@@ -163,6 +163,7 @@ export interface TunnelProgress {
 export interface AccessPairing {
   code: string
   expiresAt: number
+  usedSeq?: number
   link?: string
   qr?: string
   tunnelLink?: string
@@ -176,7 +177,7 @@ export interface AccessStatus {
   listening: boolean
   listen: { address: string, port: number }
   port: number
-  auth: { enabled: boolean, scope: AccessScope, hasPassword?: boolean, hasToken?: boolean }
+  auth: { enabled: boolean, scope: AccessScope, hasPassword?: boolean, hasToken?: boolean, token?: string }
   addresses: readonly AccessAddress[]
   recommended?: string
   link?: string

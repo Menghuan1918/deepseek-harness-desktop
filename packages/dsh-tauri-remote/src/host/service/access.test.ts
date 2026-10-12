@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import type { RemoteHostContext } from '../types/index'
+import type { HostWebRoute, RemoteHostContext } from '../types/index'
 import type { RemoteAccessDocument, RemoteAccessStatus } from './access.types'
 import { Buffer } from 'node:buffer'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -8,12 +8,14 @@ import { createServer, request as httpRequest } from 'node:http'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { dirname, join } from 'pathe'
 import { toDataURL } from 'qrcode'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ensureSourceSession, setCurrentHostInstance } from '../config/runtime'
+import { server as remoteServer } from '../server'
 import { verifyPassword } from '../utils/auth'
 import { access } from './access'
 import { defaultAccessDocument, enumerateAddresses, isReachableAddress, readAccessDocument, writeAccessDocument } from './access.utils'
 import { gateway } from './gateway'
+import { consumePairingCode, pairingCodeOf, resetPairingCode } from './pairing'
 
 const homes: string[] = []
 
@@ -40,7 +42,20 @@ interface Upstream {
 /** 最小 DSH 等价上游：`/?token=` 铸造 authority 绑定 cookie，其余请求记录并回 200。 */
 function startUpstream(): Promise<Upstream> {
   const calls: Upstream['calls'] = []
+  const registered: HostWebRoute[] = []
+  const disposeRoutes = remoteServer({
+    webServer: { register: (route: HostWebRoute) => {
+      registered.push(route)
+      return () => {}
+    } },
+    logger: { error: () => {} },
+  } as never)
   const server = createServer((request, response) => {
+    const route = registered.find(entry => entry.path === new URL(request.url ?? '/', 'http://127.0.0.1').pathname)
+    if (route !== undefined) {
+      void route.handler(request, response)
+      return
+    }
     calls.push({ url: request.url ?? '', cookie: request.headers.cookie })
     if (request.url?.startsWith('/?token=')) {
       response.writeHead(303, { 'set-cookie': 'dsh-auth-probe=granted; Path=/', 'location': '/' })
@@ -56,7 +71,10 @@ function startUpstream(): Promise<Upstream> {
       resolve({
         port: address.port,
         calls,
-        close: () => new Promise<void>(done => server.close(() => done())),
+        close: () => new Promise<void>((done) => {
+          disposeRoutes()
+          server.close(() => done())
+        }),
       })
     })
   })
@@ -173,6 +191,7 @@ function ownReachable(): string[] {
 }
 
 beforeEach(async () => {
+  resetPairingCode()
   previousHome = process.env.DSH_HOME
   previousPort = process.env.DSH_WEB_PORT
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-remote-access-service-'))
@@ -207,6 +226,8 @@ afterEach(async () => {
     process.env.DSH_WEB_PORT = previousPort
   for (const home of homes.splice(0))
     rmSync(home, { recursive: true, force: true })
+  resetPairingCode()
+  vi.restoreAllMocks()
 })
 
 function storedDocument(): RemoteAccessDocument {
@@ -420,6 +441,105 @@ describe('access 监听生命周期', () => {
     expect(status.error).toContain('解析失败')
     expect(status.warnings?.[0]).toContain('解析失败')
     expect(readFileSync(documentFile(), 'utf8')).toBe('{ broken')
+  })
+})
+
+describe('access 临时码消费与长轮询（真实路由和网关）', () => {
+  it('宿主策略消费成功后响应新码和 usedSeq，永久凭据及既有会话保持不变', async () => {
+    const status = await enable()
+    const first = status.pairing
+    expect(first).toMatchObject({ usedSeq: 0 })
+    const document = readFileSync(documentFile(), 'utf8')
+    const login = await signIn(status.port, first?.code.toLowerCase() ?? '')
+    expect(login.status).toBe(302)
+    const next = await access.status()
+    expect(next.pairing?.usedSeq).toBe(1)
+    expect(next.pairing?.code).not.toBe(first?.code)
+    expect(readFileSync(documentFile(), 'utf8')).toBe(document)
+    expect((await signIn(status.port, first?.code ?? '')).status).toBe(401)
+    expect((await call(status.port, '/api/probe', { source: 'public', cookie: sessionCookieOf(login.headers) })).status).toBe(200)
+    expect((await access.status()).pairing?.usedSeq).toBe(1)
+  })
+
+  it('回环 GET/access 在临时码消费后立即唤醒，迟到的 cursor 直接返回', async () => {
+    const status = await enable()
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    const path = '/api/tauri/remote/access?sincePairingUseSeq=0'
+    const pending = call(upstream.port, path)
+    await vi.waitFor(() => expect(timers.mock.calls.some(([, delay]) => delay === 8000)).toBe(true))
+    expect((await signIn(status.port, status.pairing?.code.toLowerCase() ?? '')).status).toBe(302)
+    const reply = await pending
+    expect(reply.status).toBe(200)
+    expect(JSON.parse(reply.body).pairing).toMatchObject({ usedSeq: 1 })
+    expect(JSON.parse(reply.body).pairing.code).not.toBe(status.pairing?.code)
+    timers.mockClear()
+    const late = await call(upstream.port, path)
+    expect(late.status).toBe(200)
+    expect(JSON.parse(late.body).pairing.usedSeq).toBe(1)
+    expect(timers.mock.calls.some(([, delay]) => delay === 8000)).toBe(false)
+  })
+
+  it('gET/access 验证安全整数 cursor，非回环及伪造来源不等待并继续脱敏', async () => {
+    await enable()
+    for (const cursor of ['', '-1', '1.5', 'oops', '9007199254740992', 'Infinity', '0&sincePairingUseSeq=0']) {
+      const reply = await call(upstream.port, `/api/tauri/remote/access?sincePairingUseSeq=${cursor}`)
+      expect(reply.status).toBe(400)
+      expect(JSON.parse(reply.body).message).toBe('invalid sincePairingUseSeq')
+    }
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    for (const source of ['public', 'private', 'tunnel']) {
+      const reply = await call(upstream.port, '/api/tauri/remote/access?sincePairingUseSeq=0', { source })
+      expect(reply.status).toBe(200)
+      const body = JSON.parse(reply.body)
+      expect(body).not.toHaveProperty('pairing')
+      expect(body).not.toHaveProperty('link')
+      expect(body).not.toHaveProperty('qr')
+      expect(body.auth).not.toHaveProperty('token')
+    }
+    const forged = await fetch(`http://127.0.0.1:${upstream.port}/api/tauri/remote/access?sincePairingUseSeq=0`, { headers: { 'connection': 'close', 'x-dsh-remote-source': 'loopback', 'x-dsh-remote-session': 'forged' } })
+    expect(forged.status).toBe(200)
+    expect(await forged.json()).not.toHaveProperty('pairing')
+    expect(timers.mock.calls.some(([, delay]) => delay === 8000)).toBe(false)
+  })
+
+  it('gET/access 长轮询客户端取消时清理定时器，dispose 结束残留等待', async () => {
+    await enable()
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    const cleared = vi.spyOn(globalThis, 'clearTimeout')
+    const controller = new AbortController()
+    const pending = fetch(`http://127.0.0.1:${upstream.port}/api/tauri/remote/access?sincePairingUseSeq=0`, { headers: { connection: 'close' }, signal: controller.signal })
+    const cancelled = pending.catch((error: unknown) => error)
+    try {
+      await vi.waitFor(() => expect(timers.mock.calls.some(([, delay]) => delay === 8000)).toBe(true))
+    }
+    finally {
+      controller.abort()
+    }
+    const timer = timers.mock.results[timers.mock.calls.findIndex(([, delay]) => delay === 8000)]?.value
+    expect(await cancelled).toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => expect(cleared.mock.calls.some(([handle]) => handle === timer)).toBe(true))
+    timers.mockClear()
+    const remaining = call(upstream.port, '/api/tauri/remote/access?sincePairingUseSeq=0')
+    await vi.waitFor(() => expect(timers.mock.calls.some(([, delay]) => delay === 8000)).toBe(true))
+    await access.dispose()
+    expect((await remaining).status).toBe(200)
+    expect(pairingCodeOf().usedSeq).toBe(0)
+  })
+
+  it('tTL 自动轮换不记为消费，长轮询八秒超时仍返回最新状态', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+    const status = await enable()
+    expect(status.pairing?.usedSeq).toBe(0)
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    const pending = call(upstream.port, '/api/tauri/remote/access?sincePairingUseSeq=0')
+    await vi.waitFor(() => expect(timers.mock.calls.some(([, delay]) => delay === 8000)).toBe(true))
+    clock.mockReturnValue(status.pairing?.expiresAt ?? 0)
+    const reply = await pending
+    expect(reply.status).toBe(200)
+    expect(JSON.parse(reply.body).pairing.usedSeq).toBe(0)
+    expect(JSON.parse(reply.body).pairing.code).not.toBe(status.pairing?.code)
+    expect(consumePairingCode(JSON.parse(reply.body).pairing.code)).toBe(true)
+    expect(pairingCodeOf().usedSeq).toBe(1)
   })
 })
 

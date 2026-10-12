@@ -15,6 +15,9 @@ const SHELL_API = 'src/apis/remote.ts'
 const PLUGIN_API = 'packages/dsh-tauri-remote/src/client/apis/index.ts'
 const PLUGIN_API_TYPES = 'packages/dsh-tauri-remote/src/client/apis/index.type.ts'
 const EVENTS_ROUTE = 'packages/dsh-tauri-remote/src/host/server/routes/machines/events/get.ts'
+const SHELL_API_TYPES = 'src/apis/remote.types.ts'
+const ACCESS_GET = 'packages/dsh-tauri-remote/src/host/server/routes/access/get.ts'
+const ACCESS_UTILS = 'packages/dsh-tauri-remote/src/host/service/access.utils.ts'
 
 function source(relative: string): string {
   return readFileSync(resolve(ROOT, relative), 'utf8')
@@ -175,14 +178,40 @@ describe('17-endpoint agreement across the four lists', () => {
   })
 
   it('the generated query contracts are the ones the route handlers declare', () => {
-    expect(queryTypeNames()).toEqual(['GetApiTauriRemoteMachinesEventsQuery'])
+    expect(queryTypeNames()).toEqual(['GetApiTauriRemoteMachinesEventsQuery', 'GetApiTauriRemoteAccessQuery'])
     expect(source(EVENTS_ROUTE)).toContain('GetMachinesEventsQuery')
-    expect(source(PLUGIN_API_TYPES)).toContain('export interface GetApiTauriRemoteMachinesEventsQuery {')
+    expect(source(ACCESS_GET)).toContain('getQuery<GetAccessQuery>(event)')
+    for (const file of [SHELL_API_TYPES, PLUGIN_API_TYPES]) {
+      expect(source(file), file).toContain('export interface GetApiTauriRemoteMachinesEventsQuery {')
+      expect(source(file), file).toContain('export interface GetApiTauriRemoteAccessQuery {')
+      expect(source(file), file).toContain('sincePairingUseSeq?: GetApiTauriRemoteAccessQuerySincePairingUseSeq;')
+      expect(source(file), file).toContain('export type GetApiTauriRemoteAccessQuerySincePairingUseSeq = number;')
+      expect(source(file), file).toContain('usedSeq: number')
+    }
   })
 
   it('no stale ssh identifier survives in either generated client', () => {
     expect(source(SHELL_API)).not.toMatch(/ssh/i)
     expect(source(PLUGIN_API)).not.toMatch(/ssh/i)
     expect(source(PLUGIN_API_TYPES)).not.toMatch(/ssh/i)
+  })
+})
+
+describe('loopback credential contract', () => {
+  it('both generated clients type the credential as an optional field', () => {
+    for (const file of [SHELL_API_TYPES, PLUGIN_API_TYPES])
+      expect(source(file), file).toContain('hasToken?: false | true; token?: string')
+  })
+
+  it('the access route serves the full snapshot to loopback callers only', () => {
+    const route = source(ACCESS_GET)
+    expect(route).toContain('isLoopbackSource')
+    expect(route).toContain('redactStatus(status)')
+  })
+
+  it('redaction keeps the presence flag and drops the credential', () => {
+    const redact = source(ACCESS_UTILS).match(/function redactStatus[\s\S]*?\n\}/)?.[0] ?? ''
+    expect(redact).toContain('hasToken')
+    expect(redact).not.toContain('token:')
   })
 })

@@ -78,6 +78,10 @@ export interface RemoteAccessTunnelBody {
   hostname?: string
 }
 
+export interface GetAccessQuery {
+  sincePairingUseSeq?: number
+}
+
 export interface GetMachinesEventsQuery {
   machineId?: string
   sinceSeq?: number

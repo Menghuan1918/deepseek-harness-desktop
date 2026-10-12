@@ -6,6 +6,13 @@ import * as zlib from 'node:zlib'
 import { GATEWAY_SESSION_HEADER, GATEWAY_SOURCE_HEADER } from '../config/constants'
 import { classifyPeer, isIpAddress } from '../utils/source'
 
+declare const __GATEWAY_AUTH_HTML__: string
+
+const AUTH_HTML = typeof __GATEWAY_AUTH_HTML__ === 'string'
+  ? __GATEWAY_AUTH_HTML__
+  // eslint-disable-next-line antfu/no-top-level-await -- 源码测试复用构建期模板；宿主产物通过 define 删除该分支。
+  : await import('./gateway.auth').then(module => module.gatewayAuthHtml())
+
 const HOP_BY_HOP = new Set([
   'connection',
   'keep-alive',
@@ -274,16 +281,7 @@ export function tunnelClientIpOf(headers: IncomingHttpHeaders): string | undefin
 }
 
 export function loginPageHtml(message?: string): string {
-  return [
-    '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">',
-    '<meta name="viewport" content="width=device-width,initial-scale=1">',
-    '<title>需要认证</title></head><body>',
-    '<main><h1>需要认证</h1>',
-    message === undefined ? '' : `<p>${escapeHtml(message)}</p>`,
-    '<form method="post"><input type="password" name="password" autocomplete="current-password" placeholder="访问密码" autofocus>',
-    '<button type="submit">进入</button></form></main>',
-    '</body></html>',
-  ].join('')
+  return AUTH_HTML.replace('__GATEWAY_AUTH_MESSAGE__', () => message === undefined ? '' : `<p role="alert">${escapeHtml(message)}</p>`)
 }
 
 export function deniedHtml(reason: string): string {

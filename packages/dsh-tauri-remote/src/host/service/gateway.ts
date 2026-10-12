@@ -8,7 +8,7 @@ import { defineService } from 'dsh-tauri'
 import { messageOf } from '../../shared/error'
 import { ensureSourceSession } from '../config/runtime'
 import { rateLimitAfterFailure, rateLimitBlockedMs, signSession, tokenMatches, verifyPassword, verifySession } from '../utils/auth'
-import { classifySource, decideSourceAccess, isAuthStorageBroken, rateLimitKeyOf } from '../utils/source'
+import { classifySource, decideSourceAccess, isAuthConfigured, isAuthStorageBroken, rateLimitKeyOf } from '../utils/source'
 import { authorityFor, cookiePairsOf, createCompressor, createDecompressor, deniedHtml, entryUrlOf, forwardHeadersOf, isCrossSiteRequest, isNavigationRequest, isReplayable, isUpgradeOf, loginPageHtml, mergeCookieHeader, parseCookieHeader, parseFormField, responseHeadersOf, responsePlanOf, supportsZstd, tunnelClientIpOf, upstreamPortOf } from './gateway.utils'
 
 const LOOPBACK = '127.0.0.1'
@@ -288,7 +288,9 @@ async function dispatchRequest(entry: GatewayEntry, request: IncomingMessage, re
     writeDenied(request, response, denyReasonOf(policy))
     return
   }
-  if (decision === 'authenticate') {
+  const url = new URL(request.url ?? '/', 'http://gateway.invalid')
+  const exchange = entry.kind !== 'outbound' && source !== 'loopback' && isAuthConfigured(policy) && url.pathname === '/' && ((request.method === 'GET' && url.searchParams.has(AUTH_QUERY)) || isLoginSubmission(request))
+  if (decision === 'authenticate' || exchange) {
     if (policy === undefined || !await admitAuthenticated(entry, request, response, source, policy))
       return
   }
@@ -317,7 +319,7 @@ async function admitAuthenticated(entry: GatewayEntry, request: IncomingMessage,
   const url = new URL(request.url ?? '/', 'http://gateway.invalid')
   if (request.method === 'GET' && url.pathname === '/' && url.searchParams.has(AUTH_QUERY)) {
     const provided = url.searchParams.get(AUTH_QUERY) ?? undefined
-    if (tokenMatches(provided, policy.linkToken) || tokenMatches(provided, policy.pairingCode ?? null)) {
+    if (tokenMatches(provided, policy.linkToken) || (provided !== undefined && (policy.consumePairingCode?.(provided) ?? tokenMatches(provided, policy.pairingCode ?? null)))) {
       authFailures.delete(bucket)
       writeSessionRedirect(response, policy, url.pathname, now)
       return false
@@ -327,12 +329,14 @@ async function admitAuthenticated(entry: GatewayEntry, request: IncomingMessage,
   }
   if (isLoginSubmission(request)) {
     const submitted = parseFormField(await readFormBody(request), LOGIN_FIELD)
-    if (submitted !== undefined && (verifyPassword(submitted, policy.password) || tokenMatches(submitted, policy.pairingCode ?? null))) {
+    const latest = entry.auth?.()
+    const completedAt = Date.now()
+    if (submitted !== undefined && isAuthConfigured(latest) && (verifyPassword(submitted, latest.password) || tokenMatches(submitted, latest.linkToken) || (latest.consumePairingCode?.(submitted) ?? tokenMatches(submitted, latest.pairingCode ?? null)))) {
       authFailures.delete(bucket)
-      writeSessionRedirect(response, policy, `${url.pathname}${url.search}`, now)
+      writeSessionRedirect(response, latest, `${url.pathname}${url.search}`, completedAt)
       return false
     }
-    failAuth(bucket, now, request, response, '密码不正确。')
+    failAuth(bucket, completedAt, request, response, '密码不正确。')
     return false
   }
   writeAuthChallenge(request, response, undefined, 401, 0)

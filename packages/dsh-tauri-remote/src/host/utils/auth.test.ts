@@ -39,6 +39,7 @@ describe('verifyPassword', () => {
     expect(verifyPassword('correct horse', record)).toBe(true)
     expect(verifyPassword('correct hors', record)).toBe(false)
     expect(verifyPassword('correct horse ', record)).toBe(false)
+    expect(verifyPassword('Correct horse', record)).toBe(false)
     expect(verifyPassword('', record)).toBe(false)
   })
 
@@ -103,6 +104,7 @@ describe('signSession / verifySession', () => {
     expect(verifySession(`${version}.${now + 999_999}.${now + 999_999}.${mac}`, SECRET, now)).toBe(false)
     expect(verifySession(`${version}.${now - 1}.${now + SESSION_TTL_MS}.${mac}`, SECRET, now)).toBe(false)
     expect(verifySession(`${ticket.value}x`, SECRET, now)).toBe(false)
+    expect(verifySession(`${version}.${now}.${now + SESSION_TTL_MS}.${mac?.toUpperCase()}`, SECRET, now)).toBe(false)
     expect(verifySession(ticket.value, createSessionSecret(), now)).toBe(false)
   })
 
@@ -115,13 +117,35 @@ describe('signSession / verifySession', () => {
   })
 })
 
+describe('createLinkToken', () => {
+  it('generates eight uppercase letters or digits without ambiguous characters', () => {
+    for (let index = 0; index < 32; index++)
+      expect(createLinkToken()).toMatch(/^[2-9A-HJ-NP-Z]{8}$/u)
+  })
+})
+
 describe('tokenMatches', () => {
-  it('accepts only the exact link token', () => {
-    const token = createLinkToken()
-    expect(token).toHaveLength(43)
-    expect(tokenMatches(token, token)).toBe(true)
-    expect(tokenMatches(`${token}x`, token)).toBe(false)
-    expect(tokenMatches(token.slice(1), token)).toBe(false)
+  it('ignores letter case only for the new eight-character codes', () => {
+    expect(tokenMatches('AB23CD45', 'AB23CD45')).toBe(true)
+    expect(tokenMatches('ab23cd45', 'AB23CD45')).toBe(true)
+    expect(tokenMatches('aB23cD45', 'AB23CD45')).toBe(true)
+    expect(tokenMatches('ab23cd46', 'AB23CD45')).toBe(false)
+    expect(tokenMatches('ab23cd45x', 'AB23CD45')).toBe(false)
+    expect(tokenMatches('b23cd45', 'AB23CD45')).toBe(false)
+    expect(tokenMatches('ab23cd45 ', 'AB23CD45')).toBe(false)
+    expect(tokenMatches('AB2ſCD45', 'AB2SCD45')).toBe(false)
+  })
+
+  it('keeps legacy tokens and other strings case-sensitive', () => {
+    const legacy = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE'
+    expect(legacy).toHaveLength(43)
+    expect(tokenMatches(legacy, legacy)).toBe(true)
+    expect(tokenMatches(legacy.toLowerCase(), legacy)).toBe(false)
+    expect(tokenMatches('ab23cd45', 'ab23cd45')).toBe(true)
+    expect(tokenMatches('AB23CD45', 'ab23cd45')).toBe(false)
+    expect(tokenMatches('LINK-TOKEN', 'link-token')).toBe(false)
+    expect(tokenMatches('abc01234', 'ABC01234')).toBe(false)
+    expect(tokenMatches('01234567', '01234567')).toBe(true)
   })
 
   it('rejects a missing token or a configuration without one', () => {

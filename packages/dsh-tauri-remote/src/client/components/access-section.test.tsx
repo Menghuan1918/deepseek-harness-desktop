@@ -9,27 +9,47 @@ import { store } from '../store/index'
 import { answer, replies, resetWire, sent } from '../test-utils/client-mock'
 import { AccessSection } from './access-section'
 
-vi.mock('dsh-tauri-ui/client', async () => (await import('../test-utils/ui-mock')).uiMock)
+vi.mock('dsh-tauri-ui/client', async () => ({
+  ...(await import('../test-utils/ui-mock')).uiMock,
+  StateDot: ({ state }: { state: string }) => <span data-testid="state-dot" data-state={state} />,
+}))
 vi.mock('dsh-tauri/client', async () => (await import('../test-utils/client-mock')).clientMock)
 
 const t = ((key: string) => (en as Record<string, string>)[key] ?? key) as (key: RemoteKey) => string
 
 const BASE = '/api/tauri/remote/access'
+const TUNNEL = `${BASE}/tunnel`
+const TOKEN = `${BASE}/token`
 const LAN_SWITCH = en['access.lan.title']
 const TUNNEL_SWITCH = en['access.tunnel.title']
+const PERMANENT = '01234567'
+const MASKED = '••••••••'
+const REMOVED = [
+  'access-auth-toggle',
+  'access-auth-scope',
+  'access-permanent-state',
+  'access-permanent-copy',
+  'access-pairing-copy',
+  'access-pairing-link',
+  'access-pairing-qr',
+  'access-generated-password',
+  'access-generated-password-value',
+  'access-generated-password-dismiss',
+  'access-logs-toggle',
+  'access-events',
+  'access-tunnel-events',
+]
+
+function authPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { enabled: true, scope: 'all', hasPassword: false, hasToken: true, ...overrides }
+}
 
 function tunnelPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { enabled: false, mode: 'quick', hostname: null, state: 'stopped', events: [], ...overrides }
+  return { enabled: false, mode: 'quick', hostname: null, state: 'stopped', ...overrides }
 }
 
 function pairingPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    code: 'AB12CD34',
-    expiresAt: Date.now() + 300_000,
-    link: 'http://192.168.1.5:3088/?auth=AB12CD34',
-    qr: 'data:image/png;base64,QUJD',
-    ...overrides,
-  }
+  return { code: 'AB12CD34', expiresAt: Date.now() + 300_000, ...overrides }
 }
 
 function statusPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -40,18 +60,18 @@ function statusPayload(overrides: Record<string, unknown> = {}): Record<string, 
     listening: true,
     listen: { address: '192.168.1.5', port: 3088 },
     port: 3088,
-    auth: { enabled: false, scope: 'public_only', hasPassword: false, hasToken: true },
+    auth: authPayload({ enabled: false, scope: 'public_only' }),
     addresses: [{ address: '192.168.1.5', family: 'ipv4', interface: 'en0', scope: 'private', score: 120, recommended: true }],
     recommended: '192.168.1.5',
-    link: 'http://192.168.1.5:3088/?auth=tok',
-    maskLink: 'http://192.168.1.5:3088/?auth=***',
-    linkSource: 'lan',
-    qr: 'data:image/png;base64,QUJD',
     tunnel: tunnelPayload(),
     localPort: 3080,
-    events: [{ seq: 1, ts: '2026-10-06T00:00:00.000Z', kind: 'state', line: '入站暴露已监听 192.168.1.5:3088' }],
+    events: [],
     ...overrides,
   }
+}
+
+function lanOff(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return statusPayload({ enabled: false, listening: false, state: 'stopped', ...overrides })
 }
 
 let queued: WireReply[] = []
@@ -63,6 +83,10 @@ function once(...next: WireReply[]): void {
 
 function getCalls(url: string, http: string): WireCall[] {
   return sent.filter(call => call.url === url && call.http === http)
+}
+
+function lanSwitch(): HTMLElement {
+  return screen.getByRole('switch', { name: LAN_SWITCH })
 }
 
 beforeEach(() => {
@@ -78,74 +102,75 @@ afterEach(() => {
 })
 
 describe('接入面板', () => {
-  it('局域网卡给出真实地址与端口，且只在回环来源之外给明文链接', async () => {
+  it('首个快照到达前只显示加载态', async () => {
     render(<AccessSection t={t} />)
-    await screen.findByTestId('access-link')
-    expect(screen.getByTestId('access-link').textContent).toBe('http://192.168.1.5:3088/?auth=tok')
-    expect(screen.getByTestId('access-lan-port').textContent).toBe('3088')
-    expect(screen.getByTestId('access-link-copy')).toBeTruthy()
-    expect(screen.queryByTestId('access-mask-link')).toBeNull()
-    expect(screen.queryByTestId('access-link-qr')).toBeNull()
+    expect(screen.getByTestId('access-section').textContent).toBe(en['access.loading'])
+    await screen.findByTestId('access-toggle')
   })
 
-  it('非回环来源只给掩码，链接与二维码都不下发', async () => {
-    route = () => replies.ok(statusPayload({ link: undefined, qr: undefined, linkSource: undefined }))
+  it('拉取失败时显示 store 错误并停留在加载态', async () => {
+    route = () => replies.fail('连接被拒绝')
     render(<AccessSection t={t} />)
-    await screen.findByTestId('access-mask-link')
-    expect(screen.queryByTestId('access-link')).toBeNull()
-    expect(screen.queryByTestId('access-link-copy')).toBeNull()
-    expect(screen.getByTestId('access-mask-link').textContent).toBe('http://192.168.1.5:3088/?auth=••••••')
-    expect(screen.getByTestId('access-link-hint').textContent).toBe(en['access.lan.loopbackHint'])
+    expect((await screen.findByTestId('access-error')).textContent).toContain('连接被拒绝')
+    expect(screen.getByTestId('access-section').textContent).toContain(en['access.loading'])
   })
 
-  it('回环监听即使有链接也只显示掩码与「仅本机」提示', async () => {
-    route = () => replies.ok(statusPayload({ link: 'http://127.0.0.1:3088/?auth=tok', linkSource: 'loopback' }))
+  it('面板顶部渲染 status.error 与 status.warnings', async () => {
+    route = () => replies.ok(statusPayload({ error: '监听端口被占用', warnings: ['地址会随网卡变化', '仅建议在可信网络使用'] }))
     render(<AccessSection t={t} />)
-    await screen.findByTestId('access-mask-link')
-    expect(screen.queryByTestId('access-link')).toBeNull()
-    expect(screen.getByTestId('access-mask-link').textContent).toBe('http://127.0.0.1:3088/?auth=••••••')
-    expect(screen.getByTestId('access-link-hint')).toBeTruthy()
+    expect((await screen.findByTestId('access-state-error')).textContent).toBe('监听端口被占用')
+    const lines = screen.getByTestId('access-warning').querySelectorAll('li')
+    expect(Array.from(lines).map(line => line.textContent)).toEqual(['地址会随网卡变化', '仅建议在可信网络使用'])
+    expect(screen.getByTestId('access-page-hint').textContent).toBe(en['access.page.hint'])
   })
 
   it('局域网关闭时只留开关这一行', async () => {
-    route = () => replies.ok(statusPayload({ enabled: false, listening: false, state: 'stopped' }))
+    route = () => replies.ok(lanOff())
     render(<AccessSection t={t} />)
     await screen.findByTestId('access-toggle')
+    expect(lanSwitch().getAttribute('aria-checked')).toBe('false')
     expect(screen.queryByTestId('access-lan-address')).toBeNull()
-    expect(screen.queryByTestId('access-lan-port')).toBeNull()
     expect(screen.queryByTestId('access-lan-draft')).toBeNull()
-    expect(screen.queryByTestId('access-share')).toBeNull()
   })
 
-  it('开关直接以回包更新面板状态', async () => {
-    once(
-      replies.ok(statusPayload()),
-      replies.ok(statusPayload({ enabled: false, listening: false, state: 'stopped', link: undefined, qr: undefined, maskLink: undefined })),
-    )
+  it('打开局域网开关提交固定认证参数', async () => {
+    once(replies.ok(lanOff()), replies.ok(statusPayload()))
     render(<AccessSection t={t} />)
-    await screen.findByTestId('access-link')
-    fireEvent.click(screen.getByRole('switch', { name: LAN_SWITCH }))
-    await waitFor(() => {
-      expect(sent.at(-1)?.url).toBe(BASE)
-      expect(sent.at(-1)?.body).toEqual({ enabled: false })
-    })
-    await waitFor(() => {
-      expect(store.access.snapshot?.enabled).toBe(false)
-    })
+    await screen.findByTestId('access-toggle')
+    fireEvent.click(lanSwitch())
+    await waitFor(() => expect(sent.at(-1)?.body).toEqual({ enabled: true, authEnabled: true, scope: 'all' }))
+    expect(sent.at(-1)?.http).toBe('POST')
+    expect(sent.at(-1)?.url).toBe(BASE)
+    await screen.findByTestId('access-lan-address')
   })
 
-  it('改地址只落草稿：取消不发请求，保存才提交一次', async () => {
+  it('关闭局域网开关只提交 enabled: false', async () => {
+    once(replies.ok(statusPayload()), replies.ok(lanOff()))
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-lan-address')
+    fireEvent.click(lanSwitch())
+    await waitFor(() => expect(sent.at(-1)?.body).toEqual({ enabled: false }))
+    expect(sent.at(-1)?.http).toBe('POST')
+    await waitFor(() => expect(screen.queryByTestId('access-lan-address')).toBeNull())
+  })
+
+  it('地址下拉给出回环、全网卡与推荐地址，改动只落草稿', async () => {
     once(replies.ok(statusPayload()), replies.ok(statusPayload({ listen: { address: '127.0.0.1', port: 3088 } })))
     render(<AccessSection t={t} />)
     await screen.findByTestId('access-lan-address')
-    const select = screen.getByRole('combobox')
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    expect(Array.from(select.options).map(option => option.value)).toEqual(['127.0.0.1', '0.0.0.0', '192.168.1.5'])
+    expect(select.options[0]?.textContent).toBe(`127.0.0.1（${en['access.lan.loopback']}）`)
+    expect(select.options[1]?.textContent).toBe(`0.0.0.0（${en['access.listen.allInterfaces']}）`)
+    expect(select.options[2]?.textContent).toBe(`192.168.1.5 · en0（${en['access.listen.recommended']}）`)
     fireEvent.change(select, { target: { value: '127.0.0.1' } })
     await screen.findByTestId('access-lan-draft')
     expect(getCalls(BASE, 'POST')).toHaveLength(0)
     fireEvent.click(screen.getByTestId('access-lan-cancel'))
     await waitFor(() => expect(screen.queryByTestId('access-lan-draft')).toBeNull())
     expect(getCalls(BASE, 'POST')).toHaveLength(0)
-    fireEvent.change(select, { target: { value: '127.0.0.1' } })
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('192.168.1.5')
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '127.0.0.1' } })
     fireEvent.click(await screen.findByTestId('access-lan-save'))
     await waitFor(() => expect(getCalls(BASE, 'POST')).toHaveLength(1))
     expect(getCalls(BASE, 'POST')[0]?.body).toEqual({ address: '127.0.0.1' })
@@ -170,44 +195,45 @@ describe('接入面板', () => {
     expect(screen.queryByTestId('access-tunnel-start')).toBeNull()
     fireEvent.click(screen.getByRole('switch', { name: TUNNEL_SWITCH }))
     await screen.findByTestId('access-tunnel-mode')
-    expect(getCalls(`${BASE}/tunnel`, 'POST')).toHaveLength(0)
+    expect(screen.queryByTestId('access-tunnel-token')).toBeNull()
+    expect(screen.queryByTestId('access-tunnel-stop')).toBeNull()
+    expect(getCalls(TUNNEL, 'POST')).toHaveLength(0)
   })
 
-  it('quick 模式启动隧道：请求体只带模式，回包里的公网地址、访问码与二维码进入面板', async () => {
+  it('切到具名模式后按占位与主机名引导，缺 Token 时不提交', async () => {
+    route = () => replies.ok(statusPayload({ tunnel: tunnelPayload() }))
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-tunnel-toggle')
+    fireEvent.click(screen.getByRole('switch', { name: TUNNEL_SWITCH }))
+    await screen.findByTestId('access-tunnel-mode')
+    expect(screen.queryByTestId('access-tunnel-token')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: en['access.tunnel.mode.token'] }))
+    const tokenField = await screen.findByTestId('access-tunnel-token')
+    expect(screen.getByTestId('access-tunnel-hostname')).toBeTruthy()
+    expect(tokenField.getAttribute('placeholder')).toBe(en['access.tunnel.tokenPlaceholder'])
+    expect(screen.queryByTestId('access-tunnel-hint')).toBeNull()
+    expect((screen.getByTestId('access-tunnel-save') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('access-tunnel-save'))
+    expect(getCalls(TUNNEL, 'POST')).toHaveLength(0)
+    fireEvent.change(tokenField, { target: { value: 'cf-new' } })
+    expect(screen.getByTestId('access-tunnel-hint').textContent).toBe(en['access.tunnel.hostnameRequired'])
+    fireEvent.change(screen.getByTestId('access-tunnel-hostname'), { target: { value: 'dsh.example.com' } })
+    expect(screen.queryByTestId('access-tunnel-hint')).toBeNull()
+    expect((screen.getByTestId('access-tunnel-save') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('quick 模式启动隧道：请求体只带模式', async () => {
     once(
-      replies.ok(statusPayload()),
-      replies.ok(statusPayload({
-        pairing: pairingPayload({
-          tunnelLink: 'https://bold-fox-abc.trycloudflare.com/?auth=AB12CD34',
-          tunnelQr: 'data:image/png;base64,QUJD',
-        }),
-        tunnel: tunnelPayload({
-          enabled: true,
-          state: 'running',
-          hostname: 'bold-fox-abc.trycloudflare.com',
-          url: 'https://bold-fox-abc.trycloudflare.com',
-          port: 3089,
-          link: 'https://bold-fox-abc.trycloudflare.com/?auth=tok',
-          qr: 'data:image/png;base64,QUJD',
-          events: [{ seq: 1, ts: '2026-10-06T00:00:01.000Z', kind: 'state', line: '公网隧道已就绪：https://bold-fox-abc.trycloudflare.com' }],
-        }),
-      })),
+      replies.ok(statusPayload({ tunnel: tunnelPayload() })),
+      replies.ok(statusPayload({ tunnel: tunnelPayload({ enabled: true, state: 'running', hostname: 'bold-fox-abc.trycloudflare.com' }) })),
     )
     render(<AccessSection t={t} />)
     await screen.findByTestId('access-tunnel-toggle')
     fireEvent.click(screen.getByRole('switch', { name: TUNNEL_SWITCH }))
-    await screen.findByTestId('access-tunnel-start')
-    fireEvent.click(screen.getByTestId('access-tunnel-start'))
-    await waitFor(() => {
-      expect(sent.at(-1)?.url).toBe(`${BASE}/tunnel`)
-      expect(sent.at(-1)?.body).toEqual({ mode: 'quick' })
-    })
-    await screen.findByTestId('access-tunnel-url')
-    expect(screen.getByTestId('access-tunnel-url').textContent, '隧道就绪行必须用短期凭据链接，而非永久 token').toBe('https://bold-fox-abc.trycloudflare.com/?auth=AB12CD34')
-    expect(screen.getByTestId('access-tunnel-state').textContent).toBe(en['access.tunnel.state.running'])
-    expect(screen.getByTestId('access-tunnel-ready').textContent).toBe(en['access.tunnel.ready'])
-    expect(screen.getByTestId('access-tunnel-code').textContent).toContain('AB12CD34')
-    expect(screen.getByTestId('access-tunnel-qr')).toBeTruthy()
+    fireEvent.click(await screen.findByTestId('access-tunnel-start'))
+    await waitFor(() => expect(getCalls(TUNNEL, 'POST')).toHaveLength(1))
+    expect(getCalls(TUNNEL, 'POST')[0]?.body).toEqual({ mode: 'quick' })
+    await waitFor(() => expect(screen.getByTestId('access-tunnel-state').textContent).toBe(en['access.tunnel.state.running']))
   })
 
   it('具名模式沿用已保存 Token，只提交改动过的主机名', async () => {
@@ -219,33 +245,91 @@ describe('接入面板', () => {
     await screen.findByTestId('access-tunnel-hostname')
     const token = screen.getByTestId('access-tunnel-token') as HTMLInputElement
     expect(token.value).toBe('cf-saved')
+    expect(token.getAttribute('placeholder'), '已有 Token 时占位提示沿用').toBe(en['access.tunnel.tokenSaved'])
     fireEvent.change(token, { target: { value: '' } })
     expect(token.value, '清空 Token 输入必须回落到已保存凭据').toBe('cf-saved')
     fireEvent.change(screen.getByTestId('access-tunnel-hostname'), { target: { value: 'new.example.com' } })
     fireEvent.click(await screen.findByTestId('access-tunnel-save'))
-    await waitFor(() => expect(getCalls(`${BASE}/tunnel`, 'POST')).toHaveLength(1))
-    expect(getCalls(`${BASE}/tunnel`, 'POST')[0]?.body).toEqual({ mode: 'token', token: 'cf-saved', hostname: 'new.example.com' })
+    await waitFor(() => expect(getCalls(TUNNEL, 'POST')).toHaveLength(1))
+    expect(getCalls(TUNNEL, 'POST')[0]?.body).toEqual({ mode: 'token', token: 'cf-saved', hostname: 'new.example.com' })
   })
 
-  it('具名模式缺必填项时给出引导且不提交', async () => {
-    once(replies.ok(statusPayload({ tunnel: tunnelPayload({ enabled: true, mode: 'token' }) })))
+  it('取消隧道草稿不发任何请求', async () => {
+    once(replies.ok(statusPayload({ tunnel: tunnelPayload({ enabled: true, mode: 'token', token: 'cf-saved', hostname: 'dsh.example.com' }) })))
     render(<AccessSection t={t} />)
-    await screen.findByTestId('access-tunnel-hint')
-    expect(screen.getByTestId('access-tunnel-hint').textContent).toBe(en['access.tunnel.tokenRequired'])
-    expect((screen.getByTestId('access-tunnel-start') as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByTestId('access-tunnel-start'))
-    expect(getCalls(`${BASE}/tunnel`, 'POST')).toHaveLength(0)
+    await screen.findByTestId('access-tunnel-hostname')
+    fireEvent.change(screen.getByTestId('access-tunnel-hostname'), { target: { value: 'other.example.com' } })
+    fireEvent.click(await screen.findByTestId('access-tunnel-cancel'))
+    await waitFor(() => expect(screen.queryByTestId('access-tunnel-cancel')).toBeNull())
+    expect(getCalls(TUNNEL, 'POST')).toHaveLength(0)
+    expect(getCalls(TUNNEL, 'DELETE')).toHaveLength(0)
   })
 
-  it('临时配对码显示码、倒计时、短期链接与全页唯一的二维码', async () => {
+  it('运行中的隧道停止走 DELETE', async () => {
+    once(
+      replies.ok(statusPayload({ tunnel: tunnelPayload({ enabled: true, state: 'running', hostname: 'bold-fox-abc.trycloudflare.com' }) })),
+      replies.ok(statusPayload({ tunnel: tunnelPayload({ enabled: true, state: 'stopped' }) })),
+    )
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-tunnel-stop')
+    expect((screen.getByTestId('access-tunnel-start') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('access-tunnel-stop'))
+    await waitFor(() => expect(getCalls(TUNNEL, 'DELETE')).toHaveLength(1))
+    await waitFor(() => expect(screen.getByTestId('access-tunnel-state').textContent).toBe(en['access.tunnel.state.stopped']))
+  })
+
+  it('运行中的隧道只显示带绿点的状态，不再显示已就绪进度', async () => {
+    route = () => replies.ok(statusPayload({
+      tunnel: tunnelPayload({ enabled: true, state: 'running', progress: { stage: 'ready' } }),
+    }))
+    render(<AccessSection t={t} />)
+    const state = await screen.findByTestId('access-tunnel-state')
+    expect(state.textContent).toBe(en['access.tunnel.state.running'])
+    expect(state.firstElementChild?.getAttribute('data-state')).toBe('done')
+    expect(screen.queryByTestId('access-tunnel-progress')).toBeNull()
+    expect(screen.queryByText(en['access.tunnel.progress.ready'])).toBeNull()
+  })
+
+  it('隧道启动期按阶段显示进度：下载阶段带百分比', async () => {
+    route = () => replies.ok(statusPayload({
+      tunnel: tunnelPayload({ enabled: true, state: 'starting', progress: { stage: 'download', url: 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz', received: 3_200_000, total: 6_400_000 } }),
+    }))
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-tunnel-progress')
+    expect(screen.getByTestId('access-tunnel-progress-line').textContent).toBe(`${en['access.tunnel.progress.download']} 50%`)
+    expect(screen.queryByTestId('state-dot')).toBeNull()
+    expect(screen.getByTestId('access-tunnel-progress-bar').querySelector('div')?.getAttribute('style')).toContain('width: 50%')
+  })
+
+  it('隧道失败时错误、重试与停止都可见', async () => {
+    route = () => replies.ok(statusPayload({
+      tunnel: tunnelPayload({ enabled: true, state: 'error', error: 'cloudflared 下载失败（已尝试：https://…）' }),
+    }))
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-tunnel-error')
+    expect(screen.getByTestId('access-tunnel-error').textContent).toContain('cloudflared 下载失败')
+    expect(screen.queryByTestId('state-dot')).toBeNull()
+    expect(screen.getByTestId('access-tunnel-start').textContent).toBe(en['access.tunnel.retry'])
+    expect((screen.getByTestId('access-tunnel-stop') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('没有配对码时提示开启监听，且不显示倒计时', async () => {
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-pairing')
+    expect(screen.getByTestId('access-pairing-code').textContent).toBe(en['access.pairing.none'])
+    expect(screen.queryByTestId('access-pairing-countdown')).toBeNull()
+  })
+
+  it('有配对码时显示码与剩余倒计时', async () => {
     route = () => replies.ok(statusPayload({ pairing: pairingPayload() }))
     render(<AccessSection t={t} />)
-    await screen.findByTestId('access-pairing-code')
+    await screen.findByTestId('access-pairing-countdown')
     expect(screen.getByTestId('access-pairing-code').textContent).toBe('AB12CD34')
-    expect(screen.getByTestId('access-pairing-countdown').textContent).toContain(en['access.pairing.remaining'])
-    expect(screen.getByTestId('access-pairing-link').textContent).toBe('http://192.168.1.5:3088/?auth=••••••')
-    expect(screen.getByTestId('access-pairing-copy')).toBeTruthy()
-    expect(screen.getByTestId('access-pairing-qr')).toBeTruthy()
+    const countdown = screen.getByTestId('access-pairing-countdown').textContent ?? ''
+    expect(countdown.startsWith(`${en['access.pairing.remaining']} `)).toBe(true)
+    expect(countdown).toMatch(/\d:\d{2}$/)
+    expect(Array.from(screen.getByTestId('access-pairing').children, child => child.getAttribute('data-testid'))).toEqual(['access-pairing-countdown', 'access-pairing-code'])
+    expect(screen.getByTestId('access-pairing-code').className).toContain('border-l-[0.5px]')
   })
 
   it('配对码过期后提示已过期并自动刷新一次', async () => {
@@ -258,85 +342,64 @@ describe('接入面板', () => {
     await waitFor(() => expect(getCalls(BASE, 'GET').length).toBeGreaterThanOrEqual(2))
   })
 
-  it('永久码默认掩码、点显示才出明文，签发与作废都走 /access/token', async () => {
+  it('永久码未签发时只给生成按钮，生成后当次明文可见并走 POST /access/token', async () => {
+    once(replies.ok(statusPayload()), replies.ok(statusPayload({ auth: authPayload({ token: PERMANENT }) })))
+    render(<AccessSection t={t} />)
+    await screen.findByTestId('access-token-rotate')
+    expect(screen.getByTestId('access-token-rotate').textContent).toBe(en['access.token.generate'])
+    expect(screen.queryByTestId('access-permanent-value')).toBeNull()
+    expect(screen.queryByTestId('access-permanent-reveal')).toBeNull()
+    expect(screen.queryByTestId('access-token-revoke')).toBeNull()
+    fireEvent.click(screen.getByTestId('access-token-rotate'))
+    await waitFor(() => expect(getCalls(TOKEN, 'POST')).toHaveLength(1))
+    await screen.findByTestId('access-permanent-value')
+    expect(screen.getByTestId('access-permanent-value').textContent).toBe(PERMANENT)
+    fireEvent.click(screen.getByTestId('access-permanent-reveal'))
+    await waitFor(() => expect(screen.getByTestId('access-permanent-value').textContent).toBe(MASKED))
+  })
+
+  it('永久码默认掩码、点显示才出明文，作废走 DELETE', async () => {
     once(
-      replies.ok(statusPayload()),
-      replies.ok(statusPayload({ link: 'http://192.168.1.5:3088/?auth=next' })),
-      replies.ok(statusPayload({ link: undefined, auth: { enabled: false, scope: 'public_only', hasToken: false } })),
+      replies.ok(statusPayload({ auth: authPayload({ token: PERMANENT }) })),
+      replies.ok(statusPayload({ auth: authPayload() })),
     )
     render(<AccessSection t={t} />)
     await screen.findByTestId('access-permanent-value')
-    expect(screen.getByTestId('access-permanent-value').textContent).toBe('••••••••••••')
-    fireEvent.click(screen.getByTestId('access-permanent-reveal'))
-    await waitFor(() => expect(screen.getByTestId('access-permanent-value').textContent).toBe('tok'))
-    fireEvent.click(screen.getByTestId('access-token-rotate'))
-    await waitFor(() => expect(sent.at(-1)?.url).toBe(`${BASE}/token`))
-    expect(sent.at(-1)?.http).toBe('POST')
-    await screen.findByTestId('access-token-revoke')
+    expect(screen.getByTestId('access-permanent-value').textContent).toBe(MASKED)
+    const reveal = screen.getByTestId('access-permanent-reveal')
+    expect(reveal.textContent).toBe(en['access.token.reveal'])
+    expect(reveal.getAttribute('aria-pressed')).toBe('false')
+    expect(Array.from(screen.getByTestId('access-permanent').children, child => child.getAttribute('data-testid'))).toEqual(['access-token-revoke', 'access-permanent-reveal', 'access-permanent-value'])
+    expect(screen.getByTestId('access-permanent-value').className).toContain('border-l-[0.5px]')
+    fireEvent.click(reveal)
+    await waitFor(() => expect(screen.getByTestId('access-permanent-value').textContent).toBe(PERMANENT))
+    const hide = screen.getByTestId('access-permanent-reveal')
+    expect(hide.textContent).toBe(en['access.token.hide'])
+    expect(hide.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(hide)
+    await waitFor(() => expect(screen.getByTestId('access-permanent-value').textContent).toBe(MASKED))
     fireEvent.click(screen.getByTestId('access-token-revoke'))
-    await waitFor(() => expect(sent.at(-1)?.http).toBe('DELETE'))
-    await waitFor(() => expect(screen.queryByTestId('access-token-revoke')).toBeNull())
+    await waitFor(() => expect(getCalls(TOKEN, 'DELETE')).toHaveLength(1))
+    await screen.findByTestId('access-token-rotate')
   })
 
-  it('访问认证与 scope 只保留一处，切换 scope 立即提交', async () => {
-    once(
-      replies.ok(statusPayload({ auth: { enabled: true, scope: 'public_only', hasPassword: false, hasToken: true } })),
-      replies.ok(statusPayload({ auth: { enabled: true, scope: 'all', hasPassword: false, hasToken: true } })),
-      replies.ok(statusPayload({ auth: { enabled: false, scope: 'all', hasPassword: false, hasToken: true } })),
-    )
-    render(<AccessSection t={t} />)
-    await screen.findByTestId('access-auth-scope')
-    expect(screen.getAllByTestId('access-auth-scope')).toHaveLength(1)
-    fireEvent.click(screen.getByRole('tab', { name: en['access.auth.scope.all'] }))
-    await waitFor(() => expect(sent.at(-1)?.body).toEqual({ scope: 'all' }))
-    fireEvent.click(screen.getByRole('switch', { name: en['access.auth.enable'] }))
-    await waitFor(() => {
-      expect(sent.at(-1)?.body).toEqual({ authEnabled: false })
-      expect(screen.queryByTestId('access-auth-scope')).toBeNull()
-    })
-  })
-
-  it('自动生成的访问密码来自响应且只在会话内保留到用户关闭', async () => {
-    once(
-      replies.ok(statusPayload({ auth: { enabled: true, scope: 'public_only', hasPassword: true, hasToken: false }, generatedPassword: 'Kf7Qm2Xr9Tb4Nw8Zs6Ld' })),
-      replies.ok(statusPayload({ auth: { enabled: true, scope: 'public_only', hasPassword: true, hasToken: false } })),
-    )
-    render(<AccessSection t={t} />)
-    await screen.findByTestId('access-generated-password')
-    expect(screen.getByTestId('access-generated-password-value').textContent).toBe('Kf7Qm2Xr9Tb4Nw8Zs6Ld')
-    fireEvent.click(screen.getByTestId('access-generated-password-dismiss'))
-    await waitFor(() => expect(screen.queryByTestId('access-generated-password')).toBeNull())
-    fireEvent.click(screen.getByRole('switch', { name: LAN_SWITCH }))
-    await waitFor(() => expect(screen.queryByTestId('access-generated-password')).toBeNull())
-  })
-
-  it('隧道启动期按阶段显示进度：下载阶段带百分比', async () => {
+  it('面板不再渲染二维码、隧道事件、最近事件与认证配置', async () => {
     route = () => replies.ok(statusPayload({
-      tunnel: tunnelPayload({ enabled: true, state: 'starting', progress: { stage: 'download', url: 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz', received: 3_200_000, total: 6_400_000 } }),
+      qr: 'data:image/png;base64,QUJD',
+      pairing: pairingPayload({ qr: 'data:image/png;base64,QUJD' }),
+      tunnel: tunnelPayload({
+        enabled: true,
+        state: 'running',
+        hostname: 'bold-fox-abc.trycloudflare.com',
+        qr: 'data:image/png;base64,QUJD',
+        events: [{ seq: 1, ts: '2026-10-06T00:00:01.000Z', kind: 'state', line: '公网隧道已就绪' }],
+      }),
+      events: [{ seq: 1, ts: '2026-10-06T00:00:00.000Z', kind: 'state', line: '入站暴露已监听 192.168.1.5:3088' }],
     }))
     render(<AccessSection t={t} />)
-    await screen.findByTestId('access-tunnel-progress')
-    expect(screen.getByTestId('access-tunnel-progress-line').textContent).toBe('Downloading cloudflared 50%')
-    expect(screen.getByTestId('access-tunnel-progress-bar').querySelector('div')?.getAttribute('style')).toContain('width: 50%')
-  })
-
-  it('隧道失败时错误、重试与停止都可见', async () => {
-    route = () => replies.ok(statusPayload({
-      tunnel: tunnelPayload({ enabled: true, state: 'error', error: 'cloudflared 下载失败（已尝试：https://…）' }),
-    }))
-    render(<AccessSection t={t} />)
-    await screen.findByTestId('access-tunnel-error')
-    expect(screen.getByTestId('access-tunnel-error').textContent).toContain('cloudflared 下载失败')
-    expect(screen.getByTestId('access-tunnel-start').textContent).toBe(en['access.tunnel.retry'])
-    expect((screen.getByTestId('access-tunnel-stop') as HTMLButtonElement).disabled).toBe(false)
-  })
-
-  it('日志默认收起，按需展开', async () => {
-    render(<AccessSection t={t} />)
-    await screen.findByTestId('access-logs-toggle')
-    expect(screen.queryByTestId('access-events')).toBeNull()
-    fireEvent.click(screen.getByTestId('access-logs-toggle'))
-    await screen.findByTestId('access-events')
-    expect(screen.getByTestId('access-events').textContent).toContain('入站暴露已监听 192.168.1.5:3088')
+    await screen.findByTestId('access-pairing-code')
+    expect(document.querySelector('img')).toBeNull()
+    for (const id of REMOVED)
+      expect(screen.queryByTestId(id), `不应再渲染 ${id}`).toBeNull()
   })
 })

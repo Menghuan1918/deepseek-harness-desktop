@@ -60,6 +60,7 @@ export interface RemoteAccessEvent {
 export interface RemoteAccessPairing {
   code: string
   expiresAt: number
+  usedSeq: number
   /** 局域网入口的短期链接与二维码；监听未开启时缺省（此时只有隧道入口可用）。 */
   link?: string
   qr?: string
@@ -77,7 +78,7 @@ export interface RemoteAccessStatus {
   listen: RemoteAccessListen
   /** 真实监听端口；未监听时为 0。 */
   port: number
-  auth: { enabled: boolean, scope: RemoteAuthScope, hasPassword?: boolean, hasToken?: boolean }
+  auth: { enabled: boolean, scope: RemoteAuthScope, hasPassword?: boolean, hasToken?: boolean, token?: string }
   addresses: RemoteAccessAddress[]
   recommended?: string
   /** 完整链接（含链接 Token）；仅回环来源可见。 */

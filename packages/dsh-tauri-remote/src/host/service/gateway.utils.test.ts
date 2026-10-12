@@ -387,9 +387,33 @@ describe('loginPageHtml', () => {
     expect(html).not.toContain('action=')
   })
 
+  it('renders the official branding and accessible pairing form without client assets', () => {
+    const html = loginPageHtml()
+    expect(html).toContain('<h1>DeepSeek Harness</h1>')
+    expect(html).toContain('<svg')
+    expect(html).toContain('viewBox="0 0 23.16 17.04"')
+    expect(html).toContain('<label for="password">请输入配对码</label>')
+    expect(html).toMatch(/<input[^>]*id="password"[^>]*name="password"/)
+    expect(html).toMatch(/<button[^>]*type="submit"[^>]*>连接<\/button>/)
+    expect(html).not.toMatch(/<script|<link|\bsrc=|maxlength=|__ModuleLoader__/i)
+  })
+
+  it('inlines the official control styles and theme tokens with matching classes', () => {
+    const html = loginPageHtml()
+    const style = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? ''
+    expect(style).toContain('--ds-')
+    expect(style).toMatch(/prefers-color-scheme:\s*dark/)
+    expect(style).not.toMatch(/@import|url\(/)
+    const classes = [...html.matchAll(/class="([^"]+)"/g)].flatMap(match => match[1]!.split(' '))
+    expect(classes.length).toBeGreaterThanOrEqual(4)
+    for (const className of classes)
+      expect(style).toContain(`.${className}`)
+  })
+
   it('renders and escapes the failure message', () => {
-    const html = loginPageHtml('<script>x</script>')
-    expect(html).toContain('&lt;script&gt;x&lt;/script&gt;')
+    const html = loginPageHtml('<script>x</script>&"')
+    expect(html).toContain('&lt;script&gt;x&lt;/script&gt;&amp;&quot;')
+    expect(html).toContain('role="alert"')
     expect(html).not.toContain('<script>x</script>')
   })
 })

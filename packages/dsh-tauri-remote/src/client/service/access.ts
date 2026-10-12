@@ -114,7 +114,8 @@ function pairingField(value: unknown): { pairing?: AccessPairing } {
   const qr = textOf(raw.qr)
   const tunnelLink = textOf(raw.tunnelLink)
   const tunnelQr = textOf(raw.tunnelQr)
-  return { pairing: { code, expiresAt, ...link === undefined ? {} : { link }, ...qr === undefined ? {} : { qr }, ...tunnelLink === undefined ? {} : { tunnelLink }, ...tunnelQr === undefined ? {} : { tunnelQr } } }
+  const usedSeq = numberOf(raw.usedSeq)
+  return { pairing: { code, expiresAt, ...usedSeq !== undefined && Number.isSafeInteger(usedSeq) && usedSeq >= 0 ? { usedSeq } : {}, ...link === undefined ? {} : { link }, ...qr === undefined ? {} : { qr }, ...tunnelLink === undefined ? {} : { tunnelLink }, ...tunnelQr === undefined ? {} : { tunnelQr } } }
 }
 
 function listenOf(value: unknown): { address: string, port: number } {
@@ -129,6 +130,7 @@ function authOf(value: unknown): AccessStatus['auth'] {
     scope: scopeOf(raw.scope) ?? 'public_only',
     ...booleanField('hasPassword', raw.hasPassword),
     ...booleanField('hasToken', raw.hasToken),
+    ...textField('token', raw.token),
   }
 }
 

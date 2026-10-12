@@ -14,6 +14,7 @@ import { GATEWAY_SESSION_HEADER, GATEWAY_SOURCE_HEADER } from '../config/constan
 import { ensureSourceSession } from '../config/runtime'
 import { createLinkToken, hashPassword, signSession, verifySession } from '../utils/auth'
 import { gateway } from './gateway'
+import { consumePairingCode, PAIRING_TTL_MS, pairingCodeOf, resetPairingCode } from './pairing'
 
 const SESSION = ensureSourceSession()
 
@@ -671,6 +672,8 @@ beforeEach(async () => {
 afterEach(async () => {
   await gateway.dispose()
   await upstream.close()
+  resetPairingCode()
+  vi.restoreAllMocks()
 })
 
 describe('gateway 转发与 DSH 原生 cookie 注入', () => {
@@ -1218,6 +1221,237 @@ describe('gateway 认证要素', () => {
 
     const forwarded = await call(status.port, '/api/ping', { headers: markerHeaders('public', { cookie: `dsh_remote_session=${session}` }) })
     expect(forwarded.status).toBe(200)
+  })
+
+  it.each(['inbound', 'tunnel'] as const)('永久配对码可在 %s 入口的原登录表单手输并签发会话', async (kind) => {
+    const status = await startEntry(kind, upstream, { auth: () => policyOf({ password: null, linkToken: '01234567' }), tokenProvider: upstream.mintUrlFor })
+    const headers = markerHeaders('public', { 'sec-fetch-site': 'same-origin', ...navigation() })
+    const page = await call(status.port, '/api/ping?tab=two', { headers })
+    expect(page.status).toBe(401)
+    expect(page.body.toString()).toContain('<form method="post">')
+    expect(page.body.toString()).toContain('name="password"')
+    const login = await call(status.port, '/api/ping?tab=two', {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=01234567',
+    })
+    expect(login.status).toBe(302)
+    expect(login.headers.location).toBe('/api/ping?tab=two')
+    const cookie = (login.headers['set-cookie'] ?? [])[0] ?? ''
+    expect(cookie).toContain('HttpOnly')
+    const session = cookie.slice('dsh_remote_session='.length).split(';')[0] ?? ''
+    expect(verifySession(session, 'session-secret', Date.now())).toBe(true)
+    expect(upstream.calls).toHaveLength(0)
+    const forwarded = await call(status.port, '/api/ping?tab=two', { headers: { ...headers, cookie: `dsh_remote_session=${session}` } })
+    expect(forwarded.status).toBe(200)
+    expect(forwarded.body.toString()).toBe('{"ok":true}')
+  })
+
+  it('永久配对码撤销后原登录表单拒绝旧码', async () => {
+    let policy = policyOf({ linkToken: '01234567' })
+    const status = await startEntry('inbound', upstream, { auth: () => policy })
+    const submission = {
+      method: 'POST',
+      headers: markerHeaders('public', { 'content-type': 'application/x-www-form-urlencoded', ...navigation() }),
+      body: 'password=01234567',
+    }
+    expect((await call(status.port, '/', submission)).status).toBe(302)
+    policy = policyOf()
+    const revoked = await call(status.port, '/', submission)
+    expect(revoked.status).toBe(401)
+    expect(revoked.headers['set-cookie']).toBeUndefined()
+    expect(upstream.calls).toHaveLength(0)
+  })
+
+  it.each(['linkToken', 'pairingCode'] as const)('%s 配对码的小写 GET 与手输 POST 都签发会话', async (credential) => {
+    const policy = policyOf({ password: null, linkToken: credential === 'linkToken' ? 'AB23CD45' : 'WX67YZ89', ...credential === 'pairingCode' ? { pairingCode: 'AB23CD45' } : {} })
+    const status = await startEntry('tunnel', upstream, { auth: () => policy, tokenProvider: upstream.mintUrlFor })
+    const headers = { 'sec-fetch-site': 'same-origin', ...navigation() }
+    const replies = [
+      await call(status.port, '/?auth=ab23cd45', { headers }),
+      await call(status.port, '/api/ping?tab=two', { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, body: 'password=ab23cd45' }),
+    ]
+    for (const [index, reply] of replies.entries()) {
+      expect(reply.status).toBe(302)
+      expect(reply.headers.location).toBe(index === 0 ? '/' : '/api/ping?tab=two')
+      expect(reply.headers['cache-control']).toBe('no-store')
+      const cookie = (reply.headers['set-cookie'] ?? [])[0] ?? ''
+      expect(cookie).toContain('HttpOnly')
+      const session = cookie.slice('dsh_remote_session='.length).split(';')[0] ?? ''
+      expect(verifySession(session, 'session-secret', Date.now())).toBe(true)
+      const forwarded = await call(status.port, '/api/ping', { headers: { ...headers, cookie: `dsh_remote_session=${session}` } })
+      expect(forwarded.status).toBe(200)
+      expect(forwarded.body.toString()).toBe('{"ok":true}')
+    }
+  })
+
+  it.each(['linkToken', 'pairingCode'] as const)('%s 配对码更换后小写 GET 与手输 POST 均拒绝旧码且已签会话仍有效', async (credential) => {
+    let policy = policyOf({ password: null, linkToken: credential === 'linkToken' ? 'AB23CD45' : 'WX67YZ89', ...credential === 'pairingCode' ? { pairingCode: 'AB23CD45' } : {} })
+    const status = await startEntry('tunnel', upstream, { auth: () => policy, tokenProvider: upstream.mintUrlFor })
+    const headers = { 'sec-fetch-site': 'same-origin', ...navigation() }
+    const hit = await call(status.port, '/?auth=AB23CD45', { headers })
+    expect(hit.status).toBe(302)
+    const cookie = (hit.headers['set-cookie'] ?? [])[0]?.split(';')[0] ?? ''
+    policy = { ...policy, [credential]: 'EF67GH89' }
+    const replies = [
+      await call(status.port, '/?auth=ab23cd45', { headers }),
+      await call(status.port, '/', { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, body: 'password=ab23cd45' }),
+    ]
+    for (const reply of replies) {
+      expect(reply.status).toBe(401)
+      expect(reply.headers['set-cookie']).toBeUndefined()
+    }
+    expect(upstream.calls).toHaveLength(0)
+    expect((await call(status.port, '/api/ping', { headers: { ...headers, cookie } })).status).toBe(200)
+  })
+
+  it('临时配对码在五分钟到期边界拒绝旧码的 GET 与 POST，已签会话仍有效', async () => {
+    resetPairingCode()
+    const now = 1_700_000_000_000
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      const code = pairingCodeOf().code.toLowerCase()
+      const status = await startEntry('tunnel', upstream, { auth: () => policyOf({ password: null, linkToken: 'WX67YZ89', pairingCode: pairingCodeOf().code }), tokenProvider: upstream.mintUrlFor })
+      const headers = { 'sec-fetch-site': 'same-origin', ...navigation() }
+      const hit = await call(status.port, `/?auth=${code}`, { headers })
+      expect(hit.status).toBe(302)
+      const cookie = (hit.headers['set-cookie'] ?? [])[0]?.split(';')[0] ?? ''
+      clock.mockReturnValue(now + 299_999)
+      expect((await call(status.port, `/?auth=${code}`, { headers })).status).toBe(302)
+      clock.mockReturnValue(now + 300_000)
+      const expired = [
+        await call(status.port, `/?auth=${code}`, { headers }),
+        await call(status.port, '/', { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, body: `password=${code}` }),
+      ]
+      expect(expired.map(reply => reply.status)).toEqual([401, 401])
+      for (const reply of expired)
+        expect(reply.headers['set-cookie']).toBeUndefined()
+      expect(upstream.calls).toHaveLength(0)
+      expect((await call(status.port, '/api/ping', { headers: { ...headers, cookie } })).status).toBe(200)
+    }
+    finally {
+      clock.mockRestore()
+      resetPairingCode()
+    }
+  })
+
+  it.each(['GET', 'POST'] as const)('临时配对码经 %s 只成功一次，旧码失效但已签会话仍有效', async (method) => {
+    const first = pairingCodeOf()
+    const policy = policyOf({ password: null, linkToken: 'WX67YZ89', pairingCode: first.code, consumePairingCode })
+    const status = await startEntry('tunnel', upstream, { auth: () => policy, tokenProvider: upstream.mintUrlFor })
+    const headers = { 'sec-fetch-site': 'same-origin', ...navigation() }
+    const path = method === 'GET' ? `/?auth=${first.code.toLowerCase()}` : '/chat/42?tab=two'
+    const options = method === 'GET' ? { headers } : { method, headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, body: `password=${first.code.toLowerCase()}` }
+    const login = await call(status.port, path, options)
+    expect(login.status).toBe(302)
+    expect(login.headers.location).toBe(method === 'GET' ? '/' : '/chat/42?tab=two')
+    expect(pairingCodeOf().usedSeq).toBe(1)
+    expect(pairingCodeOf().code).not.toBe(first.code)
+    const session = (login.headers['set-cookie'] ?? [])[0]?.split(';')[0] ?? ''
+    expect(session).toContain('dsh_remote_session=')
+    const reused = await call(status.port, path, options)
+    expect(reused.status).toBe(401)
+    expect(reused.headers['set-cookie']).toBeUndefined()
+    expect(pairingCodeOf().usedSeq).toBe(1)
+    expect((await call(status.port, '/api/ping', { headers: { ...headers, cookie: session } })).status).toBe(200)
+  })
+
+  it('并发 GET 与 POST 竞争同一码时只签发一份会话', async () => {
+    const first = pairingCodeOf()
+    const policy = policyOf({ password: null, linkToken: 'WX67YZ89', pairingCode: first.code, consumePairingCode })
+    const status = await startEntry('tunnel', upstream, { auth: () => policy })
+    const headers = { 'sec-fetch-site': 'same-origin', ...navigation() }
+    const replies = await Promise.all([
+      call(status.port, `/?auth=${first.code.toLowerCase()}`, { headers }),
+      call(status.port, '/', { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, body: `password=${first.code.toLowerCase()}` }),
+    ])
+    expect(replies.map(reply => reply.status).sort()).toEqual([302, 401])
+    expect(replies.filter(reply => reply.headers['set-cookie'] !== undefined)).toHaveLength(1)
+    expect(pairingCodeOf().usedSeq).toBe(1)
+    expect(upstream.calls).toHaveLength(0)
+  })
+
+  it('永久码、密码、错误码和有效会话均不消费临时码', async () => {
+    const first = pairingCodeOf()
+    const policy = policyOf({ linkToken: first.code, pairingCode: first.code, consumePairingCode })
+    const status = await startEntry('tunnel', upstream, { auth: () => policy, tokenProvider: upstream.mintUrlFor })
+    const headers = { 'sec-fetch-site': 'same-origin', ...navigation() }
+    const permanent = await call(status.port, `/?auth=${first.code.toLowerCase()}`, { headers })
+    expect(permanent.status).toBe(302)
+    expect(pairingCodeOf()).toBe(first)
+    const password = await call(status.port, '/', { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, body: 'password=s3cret' })
+    expect(password.status).toBe(302)
+    expect(pairingCodeOf()).toBe(first)
+    expect((await call(status.port, '/?auth=invalid', { headers })).status).toBe(401)
+    expect(pairingCodeOf()).toBe(first)
+    const cookie = (permanent.headers['set-cookie'] ?? [])[0]?.split(';')[0] ?? ''
+    expect((await call(status.port, `/?auth=${first.code}`, { headers: { ...headers, cookie } })).status).toBe(200)
+    expect(pairingCodeOf()).toBe(first)
+  })
+
+  it('表单 body 读取期间已消费或到期的临时码不接受旧策略快照', async () => {
+    const now = 1_700_000_000_000
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    for (const reason of ['used', 'expired'] as const) {
+      resetPairingCode()
+      clock.mockReturnValue(now)
+      const first = pairingCodeOf()
+      let reads = 0
+      const policy = policyOf({ password: null, linkToken: 'WX67YZ89', pairingCode: first.code, consumePairingCode })
+      const status = await startEntry('tunnel', upstream, { auth: () => {
+        reads += 1
+        return policy
+      } })
+      const body = `password=${first.code.toLowerCase()}`
+      const request = httpRequest({ host: '127.0.0.1', port: status.port, path: '/', method: 'POST', headers: { 'connection': 'close', 'sec-fetch-site': 'same-origin', ...navigation(), 'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(body) } })
+      const pending = new Promise<Coded>((resolve, reject) => {
+        request.on('response', (response) => {
+          const chunks: Buffer[] = []
+          response.on('data', (chunk: Buffer) => chunks.push(chunk))
+          response.on('end', () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) }))
+        })
+        request.on('error', reject)
+      })
+      try {
+        request.write('password=')
+        await vi.waitFor(() => expect(reads).toBeGreaterThan(0))
+        if (reason === 'used')
+          expect(consumePairingCode(first.code)).toBe(true)
+        else
+          clock.mockReturnValue(now + PAIRING_TTL_MS)
+        request.end(first.code.toLowerCase())
+        const reply = await pending
+        expect(reply.status).toBe(401)
+        expect(reply.headers['set-cookie']).toBeUndefined()
+        expect(pairingCodeOf().usedSeq).toBe(reason === 'used' ? 1 : 0)
+      }
+      finally {
+        request.destroy()
+        await pending.catch(() => undefined)
+      }
+    }
+    expect(upstream.calls).toHaveLength(0)
+  })
+
+  it('局域网免密分支仍消费根链接与根登录表单，普通 LAN 请求和回环不消费', async () => {
+    const policy = policyOf({ password: null, linkToken: 'WX67YZ89', pairingCode: pairingCodeOf().code, consumePairingCode })
+    const status = await startEntry('inbound', upstream, { auth: () => policy, tokenProvider: upstream.mintUrlFor })
+    const privateHeaders = markerHeaders('private', navigation())
+    const code = pairingCodeOf().code
+    expect((await call(status.port, '/', { headers: privateHeaders })).status).toBe(200)
+    expect((await call(status.port, `/?auth=${code}`, { headers: markerHeaders('loopback') })).status).toBe(200)
+    expect((await call(status.port, '/api/echo', { method: 'POST', headers: { ...privateHeaders, 'content-type': 'application/x-www-form-urlencoded' }, body: `password=${code}` })).status).toBe(200)
+    expect(pairingCodeOf().usedSeq).toBe(0)
+    const login = await call(status.port, `/?auth=${code.toLowerCase()}`, { headers: privateHeaders })
+    expect(login.status).toBe(302)
+    expect(pairingCodeOf().usedSeq).toBe(1)
+    expect((await call(status.port, `/?auth=${code}`, { headers: privateHeaders })).status).toBe(401)
+    const next = pairingCodeOf().code
+    const form = { method: 'POST', headers: { ...privateHeaders, 'content-type': 'application/x-www-form-urlencoded' }, body: `password=${next.toLowerCase()}` }
+    expect((await call(status.port, '/', form)).status).toBe(302)
+    expect(pairingCodeOf().usedSeq).toBe(2)
+    expect((await call(status.port, '/', form)).status).toBe(401)
+    expect(pairingCodeOf().usedSeq).toBe(2)
   })
 
   it('登录页表单提交到当前 URL：回跳目标不依赖 Referer（登录页声明 no-referrer）', async () => {

@@ -25,14 +25,14 @@ export type GetApiTauriRemoteAccessResponse = {
   listening: false | true;
   listen: { address: string; port: number };
   port: number;
-  auth: { enabled: false | true; scope: "public_only" | "all"; hasPassword?: false | true; hasToken?: false | true };
+  auth: { enabled: false | true; scope: "public_only" | "all"; hasPassword?: false | true; hasToken?: false | true; token?: string };
   addresses: { address: string; family: "ipv4" | "ipv6"; interface: string; scope: "loopback" | "private" | "public" | "link-local"; score: number; recommended: false | true }[];
   recommended?: string;
   link?: string;
   maskLink?: string;
   qr?: string;
   linkSource?: "loopback" | "lan";
-  pairing?: { code: string; expiresAt: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
+  pairing?: { code: string; expiresAt: number; usedSeq: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
   generatedPassword?: string;
   tunnel?: { state: "error" | "starting" | "stopped" | "running"; events: { seq: number; ts: string; kind: "state" | "process" | "progress"; line: string }[]; token?: string; url?: string; port?: number; link?: string; qr?: string; progress?: { stage: "ready" | "spawn" | "download" | "verify" | "check" | "extract" | "domain"; url?: string; received?: number; total?: number }; error?: string; mode: "quick" | "token"; enabled: false | true; hostname: null | string };
   localPort?: number;
@@ -40,6 +40,7 @@ export type GetApiTauriRemoteAccessResponse = {
   warnings?: string[];
   events: { seq: number; ts: string; kind: "auth" | "token" | "state"; line: string }[];
 };
+export type GetApiTauriRemoteAccessQuerySincePairingUseSeq = number;
 export type PostApiTauriRemoteAccessResponse =
   | {
       version: number;
@@ -48,14 +49,14 @@ export type PostApiTauriRemoteAccessResponse =
       listening: false | true;
       listen: { address: string; port: number };
       port: number;
-      auth: { enabled: false | true; scope: "public_only" | "all"; hasPassword?: false | true; hasToken?: false | true };
+      auth: { enabled: false | true; scope: "public_only" | "all"; hasPassword?: false | true; hasToken?: false | true; token?: string };
       addresses: { address: string; family: "ipv4" | "ipv6"; interface: string; scope: "loopback" | "private" | "public" | "link-local"; score: number; recommended: false | true }[];
       recommended?: string;
       link?: string;
       maskLink?: string;
       qr?: string;
       linkSource?: "loopback" | "lan";
-      pairing?: { code: string; expiresAt: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
+      pairing?: { code: string; expiresAt: number; usedSeq: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
       generatedPassword?: string;
       tunnel?: { state: "error" | "starting" | "stopped" | "running"; events: { seq: number; ts: string; kind: "state" | "process" | "progress"; line: string }[]; token?: string; url?: string; port?: number; link?: string; qr?: string; progress?: { stage: "ready" | "spawn" | "download" | "verify" | "check" | "extract" | "domain"; url?: string; received?: number; total?: number }; error?: string; mode: "quick" | "token"; enabled: false | true; hostname: null | string };
       localPort?: number;
@@ -72,14 +73,14 @@ export type PostApiTauriRemoteAccessTunnelResponse =
       listening: false | true;
       listen: { address: string; port: number };
       port: number;
-      auth: { enabled: false | true; scope: "public_only" | "all"; hasPassword?: false | true; hasToken?: false | true };
+      auth: { enabled: false | true; scope: "public_only" | "all"; hasPassword?: false | true; hasToken?: false | true; token?: string };
       addresses: { address: string; family: "ipv4" | "ipv6"; interface: string; scope: "loopback" | "private" | "public" | "link-local"; score: number; recommended: false | true }[];
       recommended?: string;
       link?: string;
       maskLink?: string;
       qr?: string;
       linkSource?: "loopback" | "lan";
-      pairing?: { code: string; expiresAt: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
+      pairing?: { code: string; expiresAt: number; usedSeq: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
       generatedPassword?: string;
       tunnel?: { state: "error" | "starting" | "stopped" | "running"; events: { seq: number; ts: string; kind: "state" | "process" | "progress"; line: string }[]; token?: string; url?: string; port?: number; link?: string; qr?: string; progress?: { stage: "ready" | "spawn" | "download" | "verify" | "check" | "extract" | "domain"; url?: string; received?: number; total?: number }; error?: string; mode: "quick" | "token"; enabled: false | true; hostname: null | string };
       localPort?: number;
@@ -96,14 +97,14 @@ export type DeleteApiTauriRemoteAccessTunnelResponse =
       listening: false | true;
       listen: { address: string; port: number };
       port: number;
-      auth: { enabled: false | true; scope: "public_only" | "all"; hasPassword?: false | true; hasToken?: false | true };
+      auth: { enabled: false | true; scope: "public_only" | "all"; hasPassword?: false | true; hasToken?: false | true; token?: string };
       addresses: { address: string; family: "ipv4" | "ipv6"; interface: string; scope: "loopback" | "private" | "public" | "link-local"; score: number; recommended: false | true }[];
       recommended?: string;
       link?: string;
       maskLink?: string;
       qr?: string;
       linkSource?: "loopback" | "lan";
-      pairing?: { code: string; expiresAt: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
+      pairing?: { code: string; expiresAt: number; usedSeq: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
       generatedPassword?: string;
       tunnel?: { state: "error" | "starting" | "stopped" | "running"; events: { seq: number; ts: string; kind: "state" | "process" | "progress"; line: string }[]; token?: string; url?: string; port?: number; link?: string; qr?: string; progress?: { stage: "ready" | "spawn" | "download" | "verify" | "check" | "extract" | "domain"; url?: string; received?: number; total?: number }; error?: string; mode: "quick" | "token"; enabled: false | true; hostname: null | string };
       localPort?: number;
@@ -157,4 +158,7 @@ export interface PostApiTauriRemoteAccessTunnelBody {
 export interface GetApiTauriRemoteMachinesEventsQuery {
   machineId?: GetApiTauriRemoteMachinesEventsQueryMachineId;
   sinceSeq?: GetApiTauriRemoteMachinesEventsQuerySinceSeq;
+}
+export interface GetApiTauriRemoteAccessQuery {
+  sincePairingUseSeq?: GetApiTauriRemoteAccessQuerySincePairingUseSeq;
 }

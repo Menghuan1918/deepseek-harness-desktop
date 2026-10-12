@@ -1,6 +1,6 @@
 import type { RemoteAuthFailureRecord, RemotePasswordRecord, RemoteSessionTicket } from '../types/index'
 import { Buffer } from 'node:buffer'
-import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHmac, pbkdf2Sync, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -18,6 +18,10 @@ const SALT_BYTES = 16
 const SECRET_BYTES = 32
 
 const PASSWORD_LENGTH = 20
+
+const LINK_TOKEN_LENGTH = 8
+
+const LINK_TOKEN_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
 
 const SESSION_VERSION = 'v1'
 
@@ -60,10 +64,9 @@ export function verifySession(value: string | undefined, secret: string, now: nu
 }
 
 export function createLinkToken(): string {
-  return randomBytes(SECRET_BYTES).toString('base64url')
+  return Array.from({ length: LINK_TOKEN_LENGTH }, () => LINK_TOKEN_ALPHABET[randomInt(LINK_TOKEN_ALPHABET.length)]).join('')
 }
 
-/** 自动访问密码与临时配对码：无易混淆字符（0/O/1/l/I）的随机构造，便于口头或手抄转述。 */
 export function generateAccessPassword(length = PASSWORD_LENGTH): string {
   const alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
   const bytes = randomBytes(length)
@@ -80,7 +83,8 @@ export function createSessionSecret(): string {
 export function tokenMatches(provided: string | undefined, expected: string | null): boolean {
   if (provided === undefined || expected === null || expected === '')
     return false
-  return matches(Buffer.from(provided), Buffer.from(expected))
+  const candidate = /^[2-9A-HJ-NP-Z]{8}$/u.test(expected) && /^[2-9A-HJ-NP-Za-hj-np-z]{8}$/u.test(provided) ? provided.toUpperCase() : provided
+  return matches(Buffer.from(candidate), Buffer.from(expected))
 }
 
 export function rateLimitAfterFailure(

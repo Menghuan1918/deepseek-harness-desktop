@@ -363,9 +363,6 @@ const TAILWINDCSS_GENERATED = `
   .h-\\[60px\\] {
     height: 60px;
   }
-  .h-\\[96px\\] {
-    height: 96px;
-  }
   .h-\\[calc\\(28px\\+var\\(--dsh-content-font-delta\\,0px\\)\\)\\] {
     height: calc(28px + var(--dsh-content-font-delta,0px));
   }
@@ -486,9 +483,6 @@ const TAILWINDCSS_GENERATED = `
   .w-\\[56px\\] {
     width: 56px;
   }
-  .w-\\[96px\\] {
-    width: 96px;
-  }
   .w-\\[200px\\] {
     width: 200px;
   }
@@ -539,9 +533,6 @@ const TAILWINDCSS_GENERATED = `
   }
   .max-w-\\[280px\\] {
     max-width: 280px;
-  }
-  .max-w-\\[320px\\] {
-    max-width: 320px;
   }
   .max-w-\\[460px\\] {
     max-width: 460px;
@@ -1437,6 +1428,9 @@ const TAILWINDCSS_GENERATED = `
   }
   .lowercase {
     text-transform: lowercase;
+  }
+  .uppercase {
+    text-transform: uppercase;
   }
   .tabular-nums {
     --tw-numeric-spacing: tabular-nums;
