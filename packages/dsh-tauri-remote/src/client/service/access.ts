@@ -107,14 +107,14 @@ function accessStatusOf(value: unknown): AccessStatus {
 function pairingField(value: unknown): { pairing?: AccessPairing } {
   const raw = recordOf(value)
   const code = textOf(raw.code)
+  const expiresAt = numberOf(raw.expiresAt)
+  if (code === undefined || expiresAt === undefined)
+    return {}
   const link = textOf(raw.link)
   const qr = textOf(raw.qr)
-  const expiresAt = numberOf(raw.expiresAt)
-  if (code === undefined || link === undefined || qr === undefined || expiresAt === undefined)
-    return {}
   const tunnelLink = textOf(raw.tunnelLink)
   const tunnelQr = textOf(raw.tunnelQr)
-  return { pairing: { code, expiresAt, link, qr, ...tunnelLink === undefined ? {} : { tunnelLink }, ...tunnelQr === undefined ? {} : { tunnelQr } } }
+  return { pairing: { code, expiresAt, ...link === undefined ? {} : { link }, ...qr === undefined ? {} : { qr }, ...tunnelLink === undefined ? {} : { tunnelLink }, ...tunnelQr === undefined ? {} : { tunnelQr } } }
 }
 
 function listenOf(value: unknown): { address: string, port: number } {

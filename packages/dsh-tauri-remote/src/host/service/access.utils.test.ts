@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'pathe'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { verifyPassword } from '../utils/auth'
-import { ACCESS_DOCUMENT_VERSION, addressProblemOf, buildLink, DEFAULT_ACCESS_ADDRESS, DEFAULT_ACCESS_PORT, defaultAccessDocument, enumerateAddresses, isReachableAddress, isSelectableAddress, linkHostOf, maskLinkOf, parseAccessDocument, patchAccessDocument, policyOf, rankAddresses, readAccessDocument, redactStatus, serializeAccessDocument, writeAccessDocument } from './access.utils'
+import { ACCESS_DOCUMENT_VERSION, addressProblemOf, buildLink, DEFAULT_ACCESS_ADDRESS, DEFAULT_ACCESS_PORT, defaultAccessDocument, enumerateAddresses, isReachableAddress, isSelectableAddress, linkHostOf, maskLinkOf, pairingLinksOf, parseAccessDocument, patchAccessDocument, policyOf, rankAddresses, readAccessDocument, redactStatus, serializeAccessDocument, writeAccessDocument } from './access.utils'
 
 const homes: string[] = []
 
@@ -404,6 +404,18 @@ describe('redactStatus', () => {
       url: 'https://x.trycloudflare.com',
       port: 3089,
     })
+  })
+})
+
+describe('pairingLinksOf', () => {
+  it('局域网与隧道两个入口各自独立：只开隧道时也要给出短期公网链接', () => {
+    expect(pairingLinksOf({ code: 'AB12CD34', host: undefined, port: 0, tunnelUrl: 'https://x.trycloudflare.com' }))
+      .toEqual({ tunnelLink: 'https://x.trycloudflare.com/?auth=AB12CD34' })
+    expect(pairingLinksOf({ code: 'AB12CD34', host: '192.168.1.5', port: 3088, tunnelUrl: undefined }))
+      .toEqual({ link: 'http://192.168.1.5:3088/?auth=AB12CD34' })
+    expect(pairingLinksOf({ code: 'AB12CD34', host: '192.168.1.5', port: 3088, tunnelUrl: 'https://x.trycloudflare.com' }))
+      .toEqual({ link: 'http://192.168.1.5:3088/?auth=AB12CD34', tunnelLink: 'https://x.trycloudflare.com/?auth=AB12CD34' })
+    expect(pairingLinksOf({ code: 'AB12CD34', host: undefined, port: 0, tunnelUrl: undefined })).toEqual({})
   })
 })
 

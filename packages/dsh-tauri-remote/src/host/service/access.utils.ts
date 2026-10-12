@@ -228,6 +228,16 @@ export function buildTunnelLink(url: string, token: string | null): string {
   return token === null || token === '' ? `${url}/` : `${url}/?auth=${encodeURIComponent(token)}`
 }
 
+/**
+ * 同一临时配对码可以落成两个入口：局域网（监听中才有真实端口）与公网隧道（隧道就绪才有地址）。
+ * 任一入口可用就给出对应链接，两者互不依赖——只开隧道、不开局域网时也必须能分享短期链接。
+ */
+export function pairingLinksOf(input: { code: string, host: string | undefined, port: number, tunnelUrl: string | undefined }): { link?: string, tunnelLink?: string } {
+  const link = input.host === undefined || input.port === 0 ? undefined : buildLink(input.host, input.port, input.code)
+  const tunnelLink = input.tunnelUrl === undefined ? undefined : buildTunnelLink(input.tunnelUrl, input.code)
+  return { ...link === undefined ? {} : { link }, ...tunnelLink === undefined ? {} : { tunnelLink } }
+}
+
 /** 脱敏（S4 §6）：只保留开关、监听、认证开关/scope 与凭据存在性、地址清单、掩码链接与状态，绝不带 Token / 二维码 / 本机明细。 */
 export function redactStatus(status: RemoteAccessStatus): RemoteAccessStatus {
   return {

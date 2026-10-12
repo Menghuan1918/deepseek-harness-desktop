@@ -60,8 +60,9 @@ export interface RemoteAccessEvent {
 export interface RemoteAccessPairing {
   code: string
   expiresAt: number
-  link: string
-  qr: string
+  /** 局域网入口的短期链接与二维码；监听未开启时缺省（此时只有隧道入口可用）。 */
+  link?: string
+  qr?: string
   /** 隧道就绪时附带的同一临时码公网链接与二维码；隧道未运行则缺省。 */
   tunnelLink?: string
   tunnelQr?: string

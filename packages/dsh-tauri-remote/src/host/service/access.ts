@@ -6,7 +6,7 @@ import { messageOf } from '../../shared/error'
 import { hostServicePort, localUpstream, mintAuthenticatedUrl } from '../config/runtime'
 import { createLinkToken, createSessionSecret, generateAccessPassword, hashPassword } from '../utils/auth'
 import { isAuthConfigured } from '../utils/source'
-import { addressProblemOf, buildLink, buildTunnelLink, enumerateAddresses, isLoopbackListen, linkHostOf, maskLinkOf, patchAccessDocument, policyOf, readAccessDocument, writeAccessDocument } from './access.utils'
+import { addressProblemOf, buildLink, buildTunnelLink, enumerateAddresses, isLoopbackListen, linkHostOf, maskLinkOf, pairingLinksOf, patchAccessDocument, policyOf, readAccessDocument, writeAccessDocument } from './access.utils'
 import { gateway } from './gateway'
 import { pairingCodeOf } from './pairing'
 import { tunnel } from './tunnel'
@@ -75,17 +75,13 @@ export const access = defineService({
       status.qr = await toDataURL(link)
       status.linkSource = isLoopbackListen(document.listen.address) ? 'loopback' : 'lan'
     }
-    if (host !== undefined && port !== 0) {
-      const pairing = pairingCodeOf()
-      const pairingLink = buildLink(host, port, pairing.code)
-      const pairingTunnelLink = tunnelStatus.url === undefined ? undefined : buildTunnelLink(tunnelStatus.url, pairing.code)
+    const pairing = pairingCodeOf()
+    const pairingLinks = pairingLinksOf({ code: pairing.code, host, port, tunnelUrl: tunnelStatus.url })
+    if (pairingLinks.link !== undefined || pairingLinks.tunnelLink !== undefined) {
       status.pairing = {
         ...pairing,
-        link: pairingLink,
-        qr: await toDataURL(pairingLink),
-        ...pairingTunnelLink === undefined
-          ? {}
-          : { tunnelLink: pairingTunnelLink, tunnelQr: await toDataURL(pairingTunnelLink) },
+        ...pairingLinks.link === undefined ? {} : { link: pairingLinks.link, qr: await toDataURL(pairingLinks.link) },
+        ...pairingLinks.tunnelLink === undefined ? {} : { tunnelLink: pairingLinks.tunnelLink, tunnelQr: await toDataURL(pairingLinks.tunnelLink) },
       }
     }
     return status

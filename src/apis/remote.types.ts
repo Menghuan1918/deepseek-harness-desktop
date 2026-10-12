@@ -32,7 +32,7 @@ export type GetApiTauriRemoteAccessResponse = {
   maskLink?: string;
   qr?: string;
   linkSource?: "loopback" | "lan";
-  pairing?: { code: string; expiresAt: number; link: string; qr: string };
+  pairing?: { code: string; expiresAt: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
   generatedPassword?: string;
   tunnel?: { state: "error" | "starting" | "stopped" | "running"; events: { seq: number; ts: string; kind: "state" | "process" | "progress"; line: string }[]; token?: string; url?: string; port?: number; link?: string; qr?: string; progress?: { stage: "ready" | "spawn" | "download" | "verify" | "check" | "extract" | "domain"; url?: string; received?: number; total?: number }; error?: string; mode: "quick" | "token"; enabled: false | true; hostname: null | string };
   localPort?: number;
@@ -55,7 +55,7 @@ export type PostApiTauriRemoteAccessResponse =
       maskLink?: string;
       qr?: string;
       linkSource?: "loopback" | "lan";
-      pairing?: { code: string; expiresAt: number; link: string; qr: string };
+      pairing?: { code: string; expiresAt: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
       generatedPassword?: string;
       tunnel?: { state: "error" | "starting" | "stopped" | "running"; events: { seq: number; ts: string; kind: "state" | "process" | "progress"; line: string }[]; token?: string; url?: string; port?: number; link?: string; qr?: string; progress?: { stage: "ready" | "spawn" | "download" | "verify" | "check" | "extract" | "domain"; url?: string; received?: number; total?: number }; error?: string; mode: "quick" | "token"; enabled: false | true; hostname: null | string };
       localPort?: number;
@@ -79,7 +79,7 @@ export type PostApiTauriRemoteAccessTunnelResponse =
       maskLink?: string;
       qr?: string;
       linkSource?: "loopback" | "lan";
-      pairing?: { code: string; expiresAt: number; link: string; qr: string };
+      pairing?: { code: string; expiresAt: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
       generatedPassword?: string;
       tunnel?: { state: "error" | "starting" | "stopped" | "running"; events: { seq: number; ts: string; kind: "state" | "process" | "progress"; line: string }[]; token?: string; url?: string; port?: number; link?: string; qr?: string; progress?: { stage: "ready" | "spawn" | "download" | "verify" | "check" | "extract" | "domain"; url?: string; received?: number; total?: number }; error?: string; mode: "quick" | "token"; enabled: false | true; hostname: null | string };
       localPort?: number;
@@ -103,7 +103,7 @@ export type DeleteApiTauriRemoteAccessTunnelResponse =
       maskLink?: string;
       qr?: string;
       linkSource?: "loopback" | "lan";
-      pairing?: { code: string; expiresAt: number; link: string; qr: string };
+      pairing?: { code: string; expiresAt: number; link?: string; qr?: string; tunnelLink?: string; tunnelQr?: string };
       generatedPassword?: string;
       tunnel?: { state: "error" | "starting" | "stopped" | "running"; events: { seq: number; ts: string; kind: "state" | "process" | "progress"; line: string }[]; token?: string; url?: string; port?: number; link?: string; qr?: string; progress?: { stage: "ready" | "spawn" | "download" | "verify" | "check" | "extract" | "domain"; url?: string; received?: number; total?: number }; error?: string; mode: "quick" | "token"; enabled: false | true; hostname: null | string };
       localPort?: number;

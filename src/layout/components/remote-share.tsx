@@ -10,8 +10,8 @@ import { writeClipboardText } from '@/utils/clipboard'
 interface AccessPairing {
   code: string
   expiresAt: number
-  link: string
-  qr: string
+  link?: string
+  qr?: string
   tunnelLink?: string
   tunnelQr?: string
 }
@@ -43,6 +43,7 @@ interface AccessStatus {
   error?: string
   warnings?: string[]
   pairing?: AccessPairing
+  generatedPassword?: string
   tunnel?: AccessTunnel
 }
 
@@ -69,11 +70,16 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
   const [status, setStatus] = useState<AccessStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [generatedPassword, setGeneratedPassword] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const requestSeqRef = useRef(0)
+  const mutationSeqRef = useRef(0)
+  const busyRef = useRef(false)
   const refreshedExpiryRef = useRef<number | null>(null)
 
   const load = useCallback(async () => {
+    if (busyRef.current)
+      return
     const seq = ++requestSeqRef.current
     try {
       const raw = await getAccess() as unknown as AccessStatus
@@ -91,6 +97,8 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
 
   const run = useCallback(async (action: () => Promise<unknown>) => {
     const seq = ++requestSeqRef.current
+    const mutation = ++mutationSeqRef.current
+    busyRef.current = true
     setBusy(true)
     setError(null)
     try {
@@ -99,6 +107,8 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
         return
       setStatus(raw)
       setError(raw?.error ?? null)
+      if (typeof raw?.generatedPassword === 'string' && raw.generatedPassword !== '')
+        setGeneratedPassword(raw.generatedPassword)
     }
     catch (err) {
       if (seq !== requestSeqRef.current)
@@ -106,8 +116,10 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
       setError(String(err))
     }
     finally {
-      if (seq === requestSeqRef.current)
+      if (mutation === mutationSeqRef.current) {
+        busyRef.current = false
         setBusy(false)
+      }
     }
   }, [])
 
@@ -173,6 +185,38 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
           )}
     </div>
   )
+
+  const passwordBlock = generatedPassword === null
+    ? null
+    : (
+        <div className="flex flex-col gap-1.5 rounded-lg border border-warning/40 px-2.5 py-2">
+          <span className="text-[11px] text-muted">{t('remote.share.password')}</span>
+          <div className="flex items-center gap-2">
+            <span className="break-all font-mono text-xs text-ink" data-testid="remote-share-password">{generatedPassword}</span>
+            <Button
+              className="ml-auto size-7 shrink-0"
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label={t('remote.share.copy')}
+              data-testid="remote-share-password-copy"
+              onPress={() => copyLink(generatedPassword)}
+            >
+              <Copy className="size-3.5" />
+            </Button>
+            <Button
+              className="h-7 shrink-0 text-[11px]"
+              size="sm"
+              variant="ghost"
+              data-testid="remote-share-password-dismiss"
+              onPress={() => setGeneratedPassword(null)}
+            >
+              {t('remote.share.password_dismiss')}
+            </Button>
+          </div>
+          <span className="text-[11px] leading-4 text-muted">{t('remote.share.password_hint')}</span>
+        </div>
+      )
 
   return (
     <>
@@ -306,6 +350,7 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
                       )}
 
                       {pairingCode}
+                      {passwordBlock}
                     </If>
                   </Tabs.Panel>
 
@@ -413,6 +458,7 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
                       )}
 
                       {pairingCode}
+                      {passwordBlock}
 
                       <Button
                         className="h-8 w-full text-xs"

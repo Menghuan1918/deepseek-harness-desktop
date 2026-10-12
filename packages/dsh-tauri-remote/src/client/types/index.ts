@@ -163,8 +163,8 @@ export interface TunnelProgress {
 export interface AccessPairing {
   code: string
   expiresAt: number
-  link: string
-  qr: string
+  link?: string
+  qr?: string
   tunnelLink?: string
   tunnelQr?: string
 }

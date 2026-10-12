@@ -162,6 +162,8 @@ export function AccessSection({ t }: AccessSectionProps): ReactElement {
   const tunnelLive = tunnel.enabled && (tunnel.state === 'running' || tunnel.state === 'starting')
   const token = tokenOf(status.link)
   const pairing = status.pairing
+  const pairingLink = pairing?.link ?? pairing?.tunnelLink
+  const pairingQr = pairing?.link === undefined ? pairing?.tunnelQr : pairing.qr
   const shareLink = pairing?.link ?? (status.link === undefined || status.link === '' ? status.maskLink : status.link)
   const sharePlain = status.linkSource === 'lan' && status.link !== undefined && status.link !== ''
   const countdown = pairing === undefined ? '' : countdownOf(pairing.expiresAt, now)
@@ -450,9 +452,9 @@ export function AccessSection({ t }: AccessSectionProps): ReactElement {
                     <span className="text-[12px] leading-[18px] text-secondary" data-testid="access-pairing-countdown">
                       {countdown === '' ? t('access.pairing.expired') : `${t('access.pairing.remaining')} ${countdown}`}
                     </span>
-                    <span className="max-w-[220px] truncate text-[12px] leading-[18px] text-secondary" data-testid="access-pairing-link">{maskAuthOf(pairing.link)}</span>
-                    <Button variant="outline" size="sm" data-testid="access-pairing-copy" onClick={() => copy(pairing.link)}>{t('access.link.copy')}</Button>
-                    <img className="h-[96px] w-[96px]" src={pairing.qr} alt={t('access.link.qr')} data-testid="access-pairing-qr" />
+                    {pairingLink === undefined ? null : <span className="max-w-[220px] truncate text-[12px] leading-[18px] text-secondary" data-testid="access-pairing-link">{maskAuthOf(pairingLink)}</span>}
+                    {pairingLink === undefined ? null : <Button variant="outline" size="sm" data-testid="access-pairing-copy" onClick={() => copy(pairingLink)}>{t('access.link.copy')}</Button>}
+                    {pairingQr === undefined ? null : <img className="h-[96px] w-[96px]" src={pairingQr} alt={t('access.link.qr')} data-testid="access-pairing-qr" />}
                   </>
                 )}
           </div>

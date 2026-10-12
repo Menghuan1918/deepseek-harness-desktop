@@ -217,6 +217,72 @@ describe('remoteShare 远程分享弹层', () => {
     expect(getAccessSpy).toHaveBeenCalledTimes(2)
   })
 
+  it('只开隧道、不开局域网：局域网栏给仅本机提示，隧道栏仍给短期链接与二维码', async () => {
+    getAccessSpy.mockResolvedValue(statusOf({
+      pairing: { code: PAIR_CODE, expiresAt: Date.now() + 300_000, tunnelLink: TUNNEL_LINK, tunnelQr: QR },
+      tunnel: { state: 'running', mode: 'quick' },
+    }))
+    render(<RemoteShare onManage={vi.fn()} />)
+    await openShare()
+
+    expect(await screen.findByText('remote.share.lan_off_desc')).toBeTruthy()
+    clickTunnelTab()
+
+    expect(await screen.findByText('remote.share.tunnel_ready')).toBeTruthy()
+    expect(screen.getByText(TUNNEL_LINK)).toBeTruthy()
+    expect(screen.getByRole('img', { name: 'remote.share.qr_alt' }).getAttribute('src')).toBe(QR)
+    expect(screen.getByTestId('remote-share-pairing').textContent).toBe(PAIR_CODE)
+  })
+
+  it('动作返回的访问密码明文只在弹层里保留，可复制可关闭', async () => {
+    postAccessSpy.mockResolvedValue(statusOf({ ...listening, generatedPassword: 'Gen-Pass-1234' }))
+    render(<RemoteShare onManage={vi.fn()} />)
+    await openShare()
+    fireEvent.click(await screen.findByText('remote.share.lan_enable'))
+
+    expect((await screen.findByTestId('remote-share-password')).textContent).toBe('Gen-Pass-1234')
+    fireEvent.click(screen.getByTestId('remote-share-password-copy'))
+    await waitFor(() => expect(clipboardSpy).toHaveBeenCalledWith('Gen-Pass-1234', 'remote.share.copied'))
+
+    fireEvent.click(screen.getByTestId('remote-share-password-dismiss'))
+    expect(screen.queryByTestId('remote-share-password')).toBeNull()
+  })
+
+  it('动作进行中打到轮询：结果不被丢弃，按钮也不会永久锁死', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolveTunnel: ((value: unknown) => void) | undefined
+      postAccessTunnelSpy.mockImplementation(() => new Promise((resolve) => {
+        resolveTunnel = resolve
+      }))
+      getAccessSpy.mockResolvedValue(statusOf({
+        tunnel: { enabled: false, mode: 'quick', state: 'stopped', events: [] },
+      }))
+      render(<RemoteShare onManage={vi.fn()} />)
+      fireEvent.click(screen.getByRole('button', { name: 'remote.share' }))
+      await vi.advanceTimersByTimeAsync(0)
+      fireEvent.click(screen.getByText('remote.share.tab_tunnel'))
+      fireEvent.click(screen.getByText('remote.share.tunnel_enable'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(postAccessTunnelSpy).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(getAccessSpy).toHaveBeenCalledTimes(1)
+
+      resolveTunnel?.(statusOf({
+        pairing: pairingOf({ tunnelLink: TUNNEL_LINK, tunnelQr: QR }),
+        tunnel: { state: 'running', mode: 'quick' },
+      }))
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(screen.getByText(TUNNEL_LINK)).toBeTruthy()
+      expect((screen.getByText('remote.share.tunnel_stop') as HTMLButtonElement).disabled).toBe(false)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('齿轮入口打通设置定位链路，缺席时点击不动作', async () => {
     const manageSpy = vi.fn()
     const { unmount } = render(<RemoteShare onManage={manageSpy} />)
