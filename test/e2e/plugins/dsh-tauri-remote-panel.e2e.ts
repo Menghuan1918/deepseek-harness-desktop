@@ -104,16 +104,11 @@ async function readText(app: DshPage, selector: string): Promise<string> {
   return await app.frame.locator(selector).first().textContent() ?? ''
 }
 
-/** 用例前置：暴露关闭 + 回环监听 + 无凭据与无隧道，乱序执行时不受上一个用例遗留影响。 */
+/** 用例前后：关暴露、关认证、清密码、复位监听地址并撤销隧道与永久码，不依赖 UI，避免把状态留给同宿主里的后续用例。 */
 async function resetExposure(): Promise<void> {
   await apiPost(ACCESS_API, { enabled: false, address: '127.0.0.1', authEnabled: false, password: null })
   await apiDelete(`${ACCESS_API}/tunnel`)
   await apiDelete(`${ACCESS_API}/token`)
-}
-
-/** 收尾：按 API 关闭暴露，不依赖 UI 状态，避免把 LAN 监听与凭据留给后续用例。 */
-async function disableExposure(): Promise<void> {
-  await apiPost(ACCESS_API, { enabled: false, address: '127.0.0.1' })
 }
 
 describe('入站访问面板（真实浏览器）', () => {
@@ -145,7 +140,7 @@ describe('入站访问面板（真实浏览器）', () => {
       await expect.poll(() => app.frame.locator(LAN_ADDRESS).count(), { timeout: 20_000 }).toBe(0)
     }
     finally {
-      await disableExposure()
+      await resetExposure()
       await app.page.close()
     }
   }, 120_000)
@@ -167,7 +162,7 @@ describe('入站访问面板（真实浏览器）', () => {
       await shoot(app, 'access-3-qr')
 
       await app.frame.locator(PERMANENT_REVEAL).click()
-      expect(await readText(app, PERMANENT_VALUE), '点显示才出明文').toMatch(/^[2-9A-HJ-NP-Za-km-z]{20}$/u)
+      expect(await readText(app, PERMANENT_VALUE), '点显示才出明文').toMatch(/^[\w-]{43}$/u)
 
       await authSwitch(app).click()
       await expect.poll(() => authSwitch(app).getAttribute('aria-checked'), { timeout: 20_000 }).toBe('false')
@@ -177,8 +172,7 @@ describe('入站访问面板（真实浏览器）', () => {
       await expect.poll(async () => await readText(app, PERMANENT_STATE), { timeout: 20_000 }).toBe('尚未签发链接')
     }
     finally {
-      await disableExposure()
-      await apiDelete(`${ACCESS_API}/token`)
+      await resetExposure()
       await app.page.close()
     }
   }, 120_000)
@@ -214,8 +208,7 @@ describe('入站访问面板（真实浏览器）', () => {
       expect(await app.frame.locator(TUNNEL_STATE).count(), '停止后隧道卡片收起').toBe(0)
     }
     finally {
-      await disableExposure()
-      await apiDelete(`${ACCESS_API}/tunnel`)
+      await resetExposure()
       await app.page.close()
     }
   }, 300_000)

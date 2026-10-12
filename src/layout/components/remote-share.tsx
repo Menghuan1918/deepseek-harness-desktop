@@ -282,9 +282,11 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
 
                       {shareLink !== null && (
                         <>
-                          <Description className="break-all rounded-md bg-panel2 px-2 py-1.5 font-mono text-[11px]">
-                            {shareLink}
-                          </Description>
+                          <div className="rounded-md bg-panel2 px-2 py-1.5">
+                            <Description className="break-all font-mono text-[11px]">
+                              {shareLink}
+                            </Description>
+                          </div>
                           {pairing?.qr !== undefined && (
                             <div className="flex items-center justify-center rounded-lg bg-panel2 p-2">
                               <img src={pairing.qr} alt={t('remote.share.qr_alt')} className="size-36 rounded-md bg-white p-1" />
@@ -387,9 +389,11 @@ export function RemoteShare({ onManage }: { onManage?: () => void }) {
 
                       {tunnelLink !== null && (
                         <>
-                          <Description className="break-all rounded-md bg-panel2 px-2 py-1.5 font-mono text-[11px]">
-                            {tunnelLink}
-                          </Description>
+                          <div className="rounded-md bg-panel2 px-2 py-1.5">
+                            <Description className="break-all font-mono text-[11px]">
+                              {tunnelLink}
+                            </Description>
+                          </div>
                           <Button
                             className="h-8 w-full gap-1.5 text-xs"
                             variant="secondary"
