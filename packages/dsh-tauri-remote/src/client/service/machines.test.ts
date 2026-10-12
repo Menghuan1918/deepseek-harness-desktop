@@ -44,7 +44,7 @@ function wireList(items: readonly unknown[], discovered: readonly unknown[] = []
   answer((call) => {
     if (call.url === `${API}/machines`)
       return replies.ok({ items, discovered })
-    return replies.ok(call.url === `${API}/session/role` ? { remote: false } : {})
+    return replies.ok(call.url === `${API}/session/role` ? { role: 'local', remote: false } : {})
   })
 }
 
@@ -52,6 +52,39 @@ beforeEach(() => {
   resetWire()
   store.machines.reset()
   store.sync.reset()
+})
+
+describe('loadRole', () => {
+  it.each([
+    { role: 'local', remote: false },
+    { role: 'remote', remote: true, origin: 'ops' },
+  ])('returns and stores the freshly confirmed role: %j', async (value) => {
+    store.machines.setRole({ remote: !value.remote })
+    answer(() => replies.ok(value))
+    const expected = value.remote ? { remote: true, origin: 'ops' } : { remote: false }
+    await expect(service.loadRole()).resolves.toEqual(expected)
+    expect(store.machines.role).toEqual(expected)
+    expect(callsOf('/session/role', 'GET')).toHaveLength(1)
+  })
+
+  it.each([
+    {},
+    { remote: false },
+    { role: 'remote', remote: false },
+    { role: 'local', remote: false, error: 'denied' },
+  ])('returns unknown instead of a cached local role for malformed responses: %j', async (value) => {
+    store.machines.setRole({ remote: false })
+    answer(() => replies.ok(value))
+    await expect(service.loadRole()).resolves.toBeNull()
+    expect(callsOf('/session/role', 'GET')).toHaveLength(1)
+  })
+
+  it('returns unknown instead of a cached local role when the role probe fails', async () => {
+    store.machines.setRole({ remote: false })
+    answer(() => replies.fail('denied', 403))
+    await expect(service.loadRole()).resolves.toBeNull()
+    expect(callsOf('/session/role', 'GET')).toHaveLength(1)
+  })
 })
 
 describe('load', () => {
@@ -149,7 +182,7 @@ describe('load', () => {
 describe('persist', () => {
   it('saves the edited rows, the typed secrets, and removes the vanished machines', async () => {
     let items: readonly unknown[] = [machineA, machineB]
-    answer(call => call.url === `${API}/machines` ? replies.ok({ items, discovered: [] }) : replies.ok({ remote: false }))
+    answer(call => call.url === `${API}/machines` ? replies.ok({ items, discovered: [] }) : replies.ok({ role: 'local', remote: false }))
     await service.load()
     const renamed = { ...machineA, name: 'alpha-2' }
     items = [renamed]
@@ -312,7 +345,7 @@ describe('feature switch', () => {
         return replies.ok({ enabled: call.http === 'POST' })
       if (call.url === `${API}/machines`)
         return replies.ok({ items: [machineA], discovered: [] })
-      return replies.ok({ remote: false })
+      return replies.ok({ role: 'local', remote: false })
     })
     await service.loadSettings()
     await expect(service.setEnabled(true)).resolves.toEqual({ ok: true })

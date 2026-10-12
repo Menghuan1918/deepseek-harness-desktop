@@ -45,7 +45,7 @@ export function upstreamPortOf(upstream: URL): number {
 
 /**
  * 请求头改写与注入：Host 一律改写为转发 authority；Origin 存在时对齐到同一 authority；两枚内部
- * 来源标识头先剥离再按计划写入（出站腿 source/session 缺省，剥离后即不再出现）；非升级请求丢弃
+ * 来源标识头先剥离再按计划写入；非升级请求丢弃
  * 逐跳头；出站腿对上游声明 identity，避免与 SSH 链路压缩叠加。
  *
  * 非升级请求还必须自带分帧：transfer-encoding 属于逐跳头会被剥掉，而 Node 的客户端只为 POST/PUT/PATCH

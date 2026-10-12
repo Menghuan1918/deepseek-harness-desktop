@@ -57,7 +57,9 @@ beforeEach(() => {
   store.machines.reset()
   queued = []
   route = () => replies.ok({ items: [] })
-  answer(call => queued.shift() ?? route(call))
+  answer(call => call.url === `${baseURL}/session/role`
+    ? replies.ok({ role: 'local', remote: false })
+    : queued.shift() ?? route(call))
 })
 
 afterEach(() => {
@@ -77,9 +79,10 @@ function mount(overrides: { value?: unknown, bridge?: RemoteBridge, route?: (cal
 
 describe('machinesSection', () => {
   it('renders the read-only SSH-in-progress banner on a remote target and hides management', async () => {
+    answer(call => route(call))
     mount({
       route: call => call.url === `${baseURL}/session/role`
-        ? replies.ok({ remote: true, origin: 'ops' })
+        ? replies.ok({ role: 'remote', remote: true, origin: 'ops' })
         : replies.ok({ items: [{ ...machineA, state: 'disconnected' }] }),
     })
     await waitFor(() => expect(screen.getByTestId('remote-session-banner')).toBeTruthy())

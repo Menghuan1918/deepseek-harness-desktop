@@ -31,11 +31,16 @@ export async function loadSettings(): Promise<void> {
   }
 }
 
-export async function loadRole(): Promise<void> {
+export async function loadRole(): Promise<ReturnType<typeof sessionRoleOf>> {
   try {
-    store.machines.setRole(sessionRoleOf(await api.getSessionRole()))
+    const role = sessionRoleOf(await api.getSessionRole())
+    if (role !== null)
+      store.machines.setRole(role)
+    return role
   }
-  catch {}
+  catch {
+    return null
+  }
 }
 
 export async function load(): Promise<void> {

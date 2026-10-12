@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GATEWAY_SESSION_HEADER, GATEWAY_SOURCE_HEADER } from '../config/constants'
 import { ensureSourceSession } from '../config/runtime'
 import { createLinkToken, hashPassword, signSession, verifySession } from '../utils/auth'
+import { classifySource } from '../utils/source'
 import { gateway } from './gateway'
 import { consumePairingCode, PAIRING_TTL_MS, pairingCodeOf, resetPairingCode } from './pairing'
 
@@ -760,19 +761,25 @@ describe('gateway 转发与 DSH 原生 cookie 注入', () => {
     expect(cookieOf(upstream.calls.at(-1)?.headers ?? {})).toMatch(new RegExp(`^theme=dark; ${cookieNameOf(`127.0.0.1:${status.port}`)}=mint-`))
   })
 
-  it('对远端的请求声明 accept-encoding identity，且绝不出现内部来源标识', async () => {
+  it.each([false, true])('出站 HTTP 写入非授权标记，远端回环不能取得本机来源或秘密（伪回环=%s）', async (forged) => {
     const status = await startEntry('outbound', upstream, {
       tokenProvider: upstream.mintUrlFor,
       host: '127.0.0.1',
     })
-    await call(status.port, '/api/ping', {
-      headers: { 'accept-encoding': 'zstd, gzip', [GATEWAY_SOURCE_HEADER]: 'loopback', [GATEWAY_SESSION_HEADER]: SESSION },
+    const reply = await call(status.port, '/api/ping', {
+      headers: { 'accept-encoding': 'zstd, gzip', ...(forged ? markerHeaders('loopback') : {}) },
     })
-    const forwarded = upstream.calls.at(-1)
-    expect(forwarded?.headers['accept-encoding']).toBe('identity')
-    expect(forwarded?.headers[GATEWAY_SOURCE_HEADER]).toBeUndefined()
-    expect(forwarded?.headers[GATEWAY_SESSION_HEADER]).toBeUndefined()
-    expect(JSON.stringify(forwarded?.headers)).not.toContain(SESSION)
+    expect(reply.status).toBe(200)
+    const forwarded = upstream.calls.at(-1)?.headers ?? {}
+    expect(forwarded['accept-encoding']).toBe('identity')
+    expect(forwarded[GATEWAY_SOURCE_HEADER]).toBe('public')
+    expect(forwarded[GATEWAY_SESSION_HEADER]).toBe('outbound')
+    expect(JSON.stringify(forwarded)).not.toContain(SESSION)
+    for (const remoteSession of ['', 'remote-session', 'outbound']) {
+      expect(classifySource(forwarded, '127.0.0.1', remoteSession)).toBe('public')
+      expect(classifySource(forwarded, '::1', remoteSession)).toBe('public')
+      expect(classifySource(forwarded, '::ffff:127.0.0.1', remoteSession)).toBe('public')
+    }
   })
 
   it('token provider 失败时透传上游 401、记录可读事件且不缓存失败结果', async () => {
@@ -1158,6 +1165,8 @@ describe('gateway 跨站来源拦截', () => {
 
     const live = await upgraded(status.port, '/api/remote.mux', rewritten)
     expect(live.status).toBe(101)
+    expect(upstream.upgrades.at(-1)?.headers[GATEWAY_SOURCE_HEADER]).toBe('tunnel')
+    expect(upstream.upgrades.at(-1)?.headers[GATEWAY_SESSION_HEADER]).toBe(SESSION)
     const greeting = await once(live.socket, 'data')
     expect((greeting[0] as Buffer).toString()).toBe('echo:hello')
     live.socket.destroy()
@@ -1543,6 +1552,7 @@ describe('gateway 内部来源标识', () => {
     const forwarded = await call(tunnel.port, '/api/ping', { headers: tunnelHeaders(`dsh_remote_session=${session}`) })
     expect(forwarded.status).toBe(200)
     expect(upstream.calls.at(-1)?.headers[GATEWAY_SOURCE_HEADER]).toBe('tunnel')
+    expect(upstream.calls.at(-1)?.headers[GATEWAY_SESSION_HEADER]).toBe(SESSION)
   })
 
   it('注入前先剥离客户端自带的标识头，绝不追加成多值头', async () => {
@@ -1948,23 +1958,27 @@ describe('gateway Upgrade 例外', () => {
     reply.socket.destroy()
   })
 
-  it('出站腿升级照旧改写与注入：上游收到对齐后的 host/origin、铸造 cookie 与 identity，且不带内部标识与会话', async () => {
+  it.each([false, true])('出站 WS 写入非授权标记，远端回环不能取得本机来源或秘密（伪回环=%s）', async (forged) => {
     const status = await startEntry('outbound', upstream, { tokenProvider: upstream.mintUrlFor })
     const reply = await upgraded(status.port, '/api/remote.mux', {
       'origin': `http://127.0.0.1:${status.port}`,
       'accept-encoding': 'zstd, gzip',
-      [GATEWAY_SOURCE_HEADER]: 'loopback',
-      [GATEWAY_SESSION_HEADER]: SESSION,
+      ...(forged ? markerHeaders('loopback') : {}),
     })
     expect(reply.status).toBe(101)
-    const seen = upstream.upgrades.at(-1)
-    expect(seen?.headers.host).toBe(`127.0.0.1:${status.port}`)
-    expect(seen?.headers.origin).toBe(`http://127.0.0.1:${status.port}`)
-    expect(grantedCookieOf(seen?.headers ?? {})).toMatch(/^mint-/)
-    expect(seen?.headers['accept-encoding']).toBe('identity')
-    expect(seen?.headers[GATEWAY_SOURCE_HEADER]).toBeUndefined()
-    expect(seen?.headers[GATEWAY_SESSION_HEADER]).toBeUndefined()
-    expect(JSON.stringify(seen?.headers ?? {})).not.toContain(SESSION)
+    const seen = upstream.upgrades.at(-1)?.headers ?? {}
+    expect(seen.host).toBe(`127.0.0.1:${status.port}`)
+    expect(seen.origin).toBe(`http://127.0.0.1:${status.port}`)
+    expect(grantedCookieOf(seen)).toMatch(/^mint-/)
+    expect(seen['accept-encoding']).toBe('identity')
+    expect(seen[GATEWAY_SOURCE_HEADER]).toBe('public')
+    expect(seen[GATEWAY_SESSION_HEADER]).toBe('outbound')
+    expect(JSON.stringify(seen)).not.toContain(SESSION)
+    for (const remoteSession of ['', 'remote-session', 'outbound']) {
+      expect(classifySource(seen, '127.0.0.1', remoteSession)).toBe('public')
+      expect(classifySource(seen, '::1', remoteSession)).toBe('public')
+      expect(classifySource(seen, '::ffff:127.0.0.1', remoteSession)).toBe('public')
+    }
 
     const greeting = await once(reply.socket, 'data')
     expect((greeting[0] as Buffer).toString()).toBe('echo:hello')

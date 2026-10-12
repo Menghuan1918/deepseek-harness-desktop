@@ -248,11 +248,28 @@ describe('settingsWarningOf', () => {
 })
 
 describe('sessionRoleOf', () => {
-  it('reads the remote flag and the originating host', () => {
+  it('reads matching role and remote fields from the host', () => {
     expect(sessionRoleOf({ role: 'remote', remote: true, origin: 'ops' })).toEqual({ remote: true, origin: 'ops' })
+    expect(sessionRoleOf({ role: 'remote', remote: true })).toEqual({ remote: true })
     expect(sessionRoleOf({ role: 'local', remote: false })).toEqual({ remote: false })
-    expect(sessionRoleOf(undefined)).toEqual({ remote: false })
-    expect(sessionRoleOf({ remote: 'yes', origin: '' })).toEqual({ remote: false })
+  })
+
+  it.each([
+    undefined,
+    null,
+    [[]],
+    'local',
+    {},
+    { remote: false },
+    { role: 'local' },
+    { role: 'local', remote: 'false' },
+    { role: 'local', remote: true },
+    { role: 'remote', remote: false },
+    { role: 'unknown', remote: false },
+    { role: 'local', remote: false, error: 'denied' },
+    { role: 'local', remote: false, origin: 7 },
+  ])('returns unknown for a malformed role response: %j', (value) => {
+    expect(sessionRoleOf(value)).toBeNull()
   })
 })
 

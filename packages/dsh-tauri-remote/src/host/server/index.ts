@@ -1,5 +1,6 @@
 import { defineWebServer } from 'dsh-h3'
 import { guard } from 'dsh-tauri'
+import { remoteSourceGuard } from './panel.utils'
 import accessGet from './routes/access/get'
 import accessPost from './routes/access/post'
 import accessTunnelDelete from './routes/access/tunnel/delete'
@@ -20,6 +21,7 @@ import syncPreview from './routes/sync/preview/get'
 
 export const server = defineWebServer((app) => {
   app.use(guard)
+  app.use(remoteSourceGuard)
   app.get('/api/tauri/remote/settings', settingsGet)
   app.post('/api/tauri/remote/settings', settingsPost)
   app.get('/api/tauri/remote/session/role', sessionRole)

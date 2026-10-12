@@ -203,10 +203,16 @@ describe('loopback credential contract', () => {
       expect(source(file), file).toContain('hasToken?: false | true; token?: string')
   })
 
-  it('the access route serves the full snapshot to loopback callers only', () => {
-    const route = source(ACCESS_GET)
-    expect(route).toContain('isLoopbackSource')
-    expect(route).toContain('redactStatus(status)')
+  it('both routers enforce the same local-only management guard before registering routes', () => {
+    for (const file of [HOST_ROUTES, PANEL_ROUTES]) {
+      const router = source(file)
+      const native = router.indexOf('app.use(guard)')
+      const local = router.indexOf('app.use(remoteSourceGuard)')
+      const firstRoute = router.search(/app\.(?:get|post|delete)\(/u)
+      expect(native, file).toBeGreaterThanOrEqual(0)
+      expect(local, file).toBeGreaterThan(native)
+      expect(firstRoute, file).toBeGreaterThan(local)
+    }
   })
 
   it('redaction keeps the presence flag and drops the credential', () => {

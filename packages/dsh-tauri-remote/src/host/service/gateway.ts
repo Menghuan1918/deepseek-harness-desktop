@@ -426,7 +426,7 @@ async function forward(entry: GatewayEntry, request: IncomingMessage, response: 
   const headers = forwardHeadersOf(request.headers, {
     authority: entry.authority,
     upgrade: isUpgradeOf(request.headers),
-    ...inject ? { source, session } : {},
+    ...inject ? { source, session } : { source: 'public', session: 'outbound' },
     ...entry.kind === 'outbound' ? { identity: true } : {},
   })
   const cookie = await ensureMintedCookie(entry)
@@ -633,7 +633,7 @@ async function dispatchUpgrade(entry: GatewayEntry, request: IncomingMessage, so
   const headers = forwardHeadersOf(request.headers, {
     authority: entry.authority,
     upgrade: true,
-    ...inject ? { source, session } : {},
+    ...inject ? { source, session } : { source: 'public', session: 'outbound' },
     ...entry.kind === 'outbound' ? { identity: true } : {},
   })
   const release = guardUpgradeSocket(socket)

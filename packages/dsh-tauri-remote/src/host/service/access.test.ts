@@ -479,7 +479,7 @@ describe('access 临时码消费与长轮询（真实路由和网关）', () => 
     expect(timers.mock.calls.some(([, delay]) => delay === 8000)).toBe(false)
   })
 
-  it('gET/access 验证安全整数 cursor，非回环及伪造来源不等待并继续脱敏', async () => {
+  it('gET/access 验证安全整数 cursor，非回环及伪造来源拒绝且不等待', async () => {
     await enable()
     for (const cursor of ['', '-1', '1.5', 'oops', '9007199254740992', 'Infinity', '0&sincePairingUseSeq=0']) {
       const reply = await call(upstream.port, `/api/tauri/remote/access?sincePairingUseSeq=${cursor}`)
@@ -489,16 +489,12 @@ describe('access 临时码消费与长轮询（真实路由和网关）', () => 
     const timers = vi.spyOn(globalThis, 'setTimeout')
     for (const source of ['public', 'private', 'tunnel']) {
       const reply = await call(upstream.port, '/api/tauri/remote/access?sincePairingUseSeq=0', { source })
-      expect(reply.status).toBe(200)
-      const body = JSON.parse(reply.body)
-      expect(body).not.toHaveProperty('pairing')
-      expect(body).not.toHaveProperty('link')
-      expect(body).not.toHaveProperty('qr')
-      expect(body.auth).not.toHaveProperty('token')
+      expect(reply.status).toBe(403)
+      expect(JSON.parse(reply.body)).toEqual({ error: '管理接口仅限本机回环来源' })
     }
     const forged = await fetch(`http://127.0.0.1:${upstream.port}/api/tauri/remote/access?sincePairingUseSeq=0`, { headers: { 'connection': 'close', 'x-dsh-remote-source': 'loopback', 'x-dsh-remote-session': 'forged' } })
-    expect(forged.status).toBe(200)
-    expect(await forged.json()).not.toHaveProperty('pairing')
+    expect(forged.status).toBe(403)
+    expect(await forged.json()).toEqual({ error: '管理接口仅限本机回环来源' })
     expect(timers.mock.calls.some(([, delay]) => delay === 8000)).toBe(false)
   })
 

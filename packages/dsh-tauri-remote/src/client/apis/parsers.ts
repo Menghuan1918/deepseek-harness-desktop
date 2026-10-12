@@ -65,11 +65,14 @@ export function settingsWarningOf(value: unknown): string | null {
   return isRecord(value) ? textOf(value.warning) ?? null : null
 }
 
-export function sessionRoleOf(value: unknown): { remote: boolean, origin?: string } {
-  const source = isRecord(value) ? value : {}
-  const origin = textOf(source.origin)
+export function sessionRoleOf(value: unknown): { remote: boolean, origin?: string } | null {
+  if (!isRecord(value) || value.error !== undefined || (value.origin !== undefined && typeof value.origin !== 'string'))
+    return null
+  if (!((value.role === 'local' && value.remote === false) || (value.role === 'remote' && value.remote === true)))
+    return null
+  const origin = textOf(value.origin)
   return {
-    remote: source.remote === true,
+    remote: value.remote,
     ...origin === undefined ? {} : { origin },
   }
 }

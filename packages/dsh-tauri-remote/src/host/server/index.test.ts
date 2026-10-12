@@ -1,13 +1,18 @@
 import type { HostWebRoute, MachineView, RemoteMachineStatus, RemoteTestResult, SyncPreview } from '../types/index'
 import type { RemoteActionResponse, RemoteConnectResponse, RemoteInstallResponse, RemoteMachineEventsResponse, RemoteMachinesResponse, RemoteSessionRoleResponse, RemoteSettingsResponse, RemoteTestResponse, SyncApplyResponse, SyncPreviewResponse } from './routes/index.types'
 import { createServer } from 'node:http'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { GATEWAY_SESSION_HEADER, GATEWAY_SOURCE_HEADER } from '../config/constants'
+import { ensureSourceSession } from '../config/runtime'
+import { access } from '../service/access'
 import { events } from '../service/events'
 import { machine } from '../service/machine'
 import { session } from '../service/session'
 import { sync } from '../service/sync'
+import { tunnel } from '../service/tunnel'
 import { MachineId, RemoteError } from '../types/index'
 import { server } from './index'
+import { LOOPBACK_ONLY_ERROR } from './panel.utils'
 
 const BASE = '/api/tauri/remote'
 
@@ -167,7 +172,13 @@ beforeAll(async () => {
   closeServer = listener.close
 })
 
+beforeEach(() => {
+  vi.stubEnv('DSH_REMOTE_SESSION_ORIGIN', undefined)
+})
+
 afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   Object.assign(events, originalServices.events)
   Object.assign(machine, originalServices.machine)
   Object.assign(session, originalServices.session)
@@ -183,11 +194,13 @@ async function call<T = Record<string, unknown>>(
   method: string,
   path: string,
   body?: unknown,
+  headers: Record<string, string> = {},
 ): Promise<{ status: number, body: T, allow: string | undefined }> {
   const response = await fetch(`${origin}${path}`, {
     method,
     headers: {
       connection: 'close',
+      ...headers,
       ...body === undefined ? {} : { 'content-type': 'application/json' },
     },
     ...body === undefined ? {} : { body: JSON.stringify(body) },
@@ -238,6 +251,94 @@ describe('ssh REST route table', () => {
     const install = await call('GET', `${BASE}/machines/install`)
     expect(install.status).toBe(405)
     expect(install.allow?.split(', ').sort()).toEqual(ALLOW[`${BASE}/machines/install`].split(', ').sort())
+  })
+})
+
+describe('management request boundary', () => {
+  it('rejects every management read and mutation from nonlocal or untrusted sources before service calls', async () => {
+    installHost(fakeHost())
+    const services = [
+      ...Object.keys(machine).map(key => vi.spyOn(machine, key as keyof typeof machine)),
+      vi.spyOn(events, 'since'),
+      vi.spyOn(sync, 'preview'),
+      vi.spyOn(sync, 'apply'),
+      vi.spyOn(access, 'status').mockRejectedValue(new Error('management handler must not run')),
+      vi.spyOn(access, 'apply').mockRejectedValue(new Error('management handler must not run')),
+      vi.spyOn(access, 'ensureAuth').mockRejectedValue(new Error('management handler must not run')),
+      vi.spyOn(tunnel, 'start').mockRejectedValue(new Error('management handler must not run')),
+      vi.spyOn(tunnel, 'stop').mockRejectedValue(new Error('management handler must not run')),
+    ]
+    const session = ensureSourceSession()
+    const sources: Record<string, string>[] = [
+      ...['private', 'public', 'tunnel'].map(source => ({ [GATEWAY_SOURCE_HEADER]: source, [GATEWAY_SESSION_HEADER]: session })),
+      { [GATEWAY_SOURCE_HEADER]: 'loopback', [GATEWAY_SESSION_HEADER]: 'forged' },
+      { [GATEWAY_SOURCE_HEADER]: 'loopback' },
+      { [GATEWAY_SESSION_HEADER]: session },
+      { [GATEWAY_SOURCE_HEADER]: 'loopback, loopback', [GATEWAY_SESSION_HEADER]: session },
+      { [GATEWAY_SOURCE_HEADER]: 'unknown', [GATEWAY_SESSION_HEADER]: session },
+      { [GATEWAY_SOURCE_HEADER]: 'public', [GATEWAY_SESSION_HEADER]: 'outbound' },
+    ]
+    for (const headers of sources) {
+      for (const path of PATHS.filter(path => path !== `${BASE}/session/role`)) {
+        for (const method of ALLOW[path].split(', ')) {
+          const reply = await call(method, path, undefined, headers)
+          expect(reply.status, `${method} ${path} ${JSON.stringify(headers)}`).toBe(403)
+          expect(reply.body, `${method} ${path}`).toEqual(method === 'HEAD' ? {} : { error: LOOPBACK_ONLY_ERROR })
+        }
+      }
+    }
+    for (const service of services)
+      expect(service).not.toHaveBeenCalled()
+  })
+
+  it('reports remote roles per request while keeping the role probe readable', async () => {
+    installHost(fakeHost())
+    for (const source of ['private', 'public', 'tunnel', 'loopback']) {
+      const headers = { [GATEWAY_SOURCE_HEADER]: source, [GATEWAY_SESSION_HEADER]: source === 'loopback' ? 'forged' : ensureSourceSession() }
+      const response = await call('GET', `${BASE}/session/role?query=allowed`, undefined, headers)
+      expect(response.status).toBe(200)
+      expect(response.body).toEqual({ role: 'remote', remote: true })
+      expect((await call('HEAD', `${BASE}/session/role`, undefined, headers)).status).toBe(200)
+      expect((await call('GET', `${BASE}/settings?path=/api/tauri/remote/session/role`, undefined, headers)).status).toBe(403)
+    }
+  })
+
+  it('rejects management in an SSH remote process even on an unmarked loopback request', async () => {
+    vi.stubEnv('DSH_REMOTE_SESSION_ORIGIN', 'ops')
+    const read = vi.spyOn(machine, 'enabled')
+    const response = await call('GET', `${BASE}/settings`)
+    expect(response.status).toBe(403)
+    expect(response.body).toEqual({ error: LOOPBACK_ONLY_ERROR })
+    expect(read).not.toHaveBeenCalled()
+    const role = await call('GET', `${BASE}/session/role`)
+    expect(role.body).toEqual({ role: 'remote', remote: true, origin: 'ops' })
+  })
+
+  it('keeps native authentication ahead of the readable role exception', async () => {
+    const routes: HostWebRoute[] = []
+    const requestRejection = vi.fn(() => 401)
+    const dispose = server({
+      webServer: {
+        register: (route: HostWebRoute) => {
+          routes.push(route)
+          return () => {}
+        },
+      },
+      connection: { requestRejection },
+      logger: { error: () => {} },
+    } as never)
+    registered.push(...routes)
+    const original = registered.splice(0, PATHS.length)
+    try {
+      const role = await call('GET', `${BASE}/session/role`, undefined, { [GATEWAY_SOURCE_HEADER]: 'public' })
+      expect(role.status).toBe(401)
+      expect(role.body).toEqual({ error: 'unauthorized' })
+      expect(requestRejection).toHaveBeenCalledOnce()
+    }
+    finally {
+      registered.splice(0, routes.length, ...original)
+      dispose()
+    }
   })
 })
 

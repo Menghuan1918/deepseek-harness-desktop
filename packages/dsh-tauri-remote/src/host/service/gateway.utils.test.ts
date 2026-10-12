@@ -94,17 +94,17 @@ describe('forwardHeadersOf', () => {
     expect(multi[GATEWAY_SOURCE_HEADER]).toBe('public')
   })
 
-  it('strips both markers when the leg must not inject them', () => {
-    const forged: IncomingHttpHeaders = { ...headers, [GATEWAY_SOURCE_HEADER]: 'loopback', [GATEWAY_SESSION_HEADER]: SESSION }
-    const out = forwardHeadersOf(forged, { authority: '127.0.0.1:3088', identity: true })
-    expect(out[GATEWAY_SOURCE_HEADER]).toBeUndefined()
-    expect(out[GATEWAY_SESSION_HEADER]).toBeUndefined()
+  it.each([false, true])('replaces forged markers with outbound denial markers (upgrade=%s) without the local secret', (upgrade) => {
+    const forged: IncomingHttpHeaders = {
+      ...headers,
+      ...(upgrade ? { connection: 'Upgrade', upgrade: 'websocket' } : {}),
+      [GATEWAY_SOURCE_HEADER]: ['loopback', 'private'],
+      [GATEWAY_SESSION_HEADER]: [SESSION, SESSION],
+    }
+    const out = forwardHeadersOf(forged, { authority: '127.0.0.1:3088', source: 'public', session: 'outbound', upgrade, identity: true })
+    expect(out[GATEWAY_SOURCE_HEADER]).toBe('public')
+    expect(out[GATEWAY_SESSION_HEADER]).toBe('outbound')
     expect(out['accept-encoding']).toBe('identity')
-  })
-
-  it('keeps the session out of an upgrade forwarded on the outbound leg', () => {
-    const out = forwardHeadersOf({ ...headers, upgrade: 'websocket' }, { authority: '127.0.0.1:3088', upgrade: true, identity: true })
-    expect(Object.keys(out)).not.toContain(GATEWAY_SESSION_HEADER)
     expect(JSON.stringify(out)).not.toContain(SESSION)
   })
 

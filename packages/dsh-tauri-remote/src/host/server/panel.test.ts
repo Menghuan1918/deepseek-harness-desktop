@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { GATEWAY_SOURCE_HEADER } from '../config/constants'
-import { setHostConfig } from '../config/runtime'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { GATEWAY_SESSION_HEADER, GATEWAY_SOURCE_HEADER } from '../config/constants'
+import { ensureSourceSession, setHostConfig } from '../config/runtime'
+import { access } from '../service/access'
 import { server } from './index'
 import { panel } from './panel'
 import { LOOPBACK_ONLY_ERROR } from './panel.utils'
@@ -22,6 +23,7 @@ let origin = ''
 let disposeRoutes: () => void
 let closeServer: () => Promise<void>
 let home = ''
+let previousHome: string | undefined
 
 function serveRoutes(): Promise<{ origin: string, close: () => Promise<void> }> {
   const server = createServer((request, response) => {
@@ -47,6 +49,7 @@ function serveRoutes(): Promise<{ origin: string, close: () => Promise<void> }> 
 
 beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), 'dsh-remote-panel-'))
+  previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
   setHostConfig({
     connectTimeoutMs: 15_000,
@@ -82,10 +85,22 @@ beforeAll(async () => {
   closeServer = listener.close
 })
 
+beforeEach(() => {
+  vi.stubEnv('DSH_REMOTE_SESSION_ORIGIN', undefined)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+})
+
 afterAll(async () => {
   disposeRoutes()
   await closeServer()
-  delete process.env.DSH_HOME
+  if (previousHome === undefined)
+    delete process.env.DSH_HOME
+  else
+    process.env.DSH_HOME = previousHome
   rmSync(home, { recursive: true, force: true })
 })
 
@@ -128,12 +143,12 @@ describe('远端路由（真实注册 + HTTP）', () => {
     expect(response.body).toHaveProperty('state')
   })
 
-  it('非回环来源可读但拿不到凭据与链接', async () => {
+  it('非回环来源禁止读取状态且不进入凭据管理服务', async () => {
+    const status = vi.spyOn(access, 'status')
     const response = await call('GET', `${BASE}/access`, PUBLIC_SOURCE)
-    expect(response.status).toBe(200)
-    expect(response.body).not.toHaveProperty('link')
-    expect(response.body).not.toHaveProperty('qr')
-    expect(response.body.auth).toMatchObject({ hasPassword: false, hasToken: false })
+    expect(response.status).toBe(403)
+    expect(response.body).toEqual({ error: LOOPBACK_ONLY_ERROR })
+    expect(status).not.toHaveBeenCalled()
   })
 
   it('公网来源的写操作一律 403，且不进入 handler', async () => {
@@ -142,6 +157,30 @@ describe('远端路由（真实注册 + HTTP）', () => {
       expect(response.status, `${method} ${path}`).toBe(403)
       expect(response.body, `${method} ${path}`).toEqual({ error: LOOPBACK_ONLY_ERROR })
     }
+  })
+
+  it('永久码管理拒绝可信远程、伪造回环与远程进程标记且不轮换凭据', async () => {
+    const rotate = vi.spyOn(access, 'rotate')
+    const revoke = vi.spyOn(access, 'revoke')
+    const sources: Record<string, string>[] = [
+      ...['private', 'public', 'tunnel'].map(source => ({ [GATEWAY_SOURCE_HEADER]: source, [GATEWAY_SESSION_HEADER]: ensureSourceSession() })),
+      { [GATEWAY_SOURCE_HEADER]: 'loopback', [GATEWAY_SESSION_HEADER]: 'forged' },
+      { [GATEWAY_SOURCE_HEADER]: 'loopback' },
+      { [GATEWAY_SESSION_HEADER]: ensureSourceSession() },
+      { [GATEWAY_SOURCE_HEADER]: 'public', [GATEWAY_SESSION_HEADER]: 'outbound' },
+    ]
+    for (const headers of sources) {
+      for (const method of ['POST', 'DELETE']) {
+        const response = await call(method, `${BASE}/access/token`, headers)
+        expect(response.status).toBe(403)
+        expect(response.body).toEqual({ error: LOOPBACK_ONLY_ERROR })
+      }
+    }
+    vi.stubEnv('DSH_REMOTE_SESSION_ORIGIN', 'ops')
+    expect((await call('POST', `${BASE}/access/token`)).status).toBe(403)
+    expect((await call('DELETE', `${BASE}/access/token`)).status).toBe(403)
+    expect(rotate).not.toHaveBeenCalled()
+    expect(revoke).not.toHaveBeenCalled()
   })
 
   it('回环来源的写操作进入 handler 并按 DTO 校验报 400', async () => {

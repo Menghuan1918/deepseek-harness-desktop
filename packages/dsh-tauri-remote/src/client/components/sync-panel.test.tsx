@@ -225,7 +225,7 @@ describe('syncPanel', () => {
   })
 
   it('points a remote-session instance back at the initiating machine', async () => {
-    routeWire({ [`${baseURL}/machines`]: { items: [] }, [`${baseURL}/session/role`]: { remote: true, origin: 'ops' } })
+    routeWire({ [`${baseURL}/machines`]: { items: [] }, [`${baseURL}/session/role`]: { role: 'remote', remote: true, origin: 'ops' } })
     render(<SyncPanel t={t} />)
     await waitFor(() => expect(screen.getByTestId('sync-remote-note')).toBeTruthy())
     expect(screen.getByTestId('sync-remote-note').textContent).toContain('Sync to remote')

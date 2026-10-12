@@ -5,14 +5,10 @@ import type { RemoteAccessTunnelBody } from '../../index.types'
 import { defineEventHandler, readBody } from 'h3'
 import { access } from '../../../../service/access'
 import { tunnel } from '../../../../service/tunnel'
-import { mutationDenied } from '../../../panel.utils'
 import { guarded } from '../../index.utils'
 
 export default defineEventHandler<EventHandlerRequest, Promise<RemoteAccessStatus | { error: string }>>(async (event) => {
   const body = (await readBody<RemoteAccessTunnelBody>(event)) ?? {}
-  const denied = mutationDenied(event)
-  if (denied !== undefined)
-    return denied
   return await guarded(event, async () => {
     const mode = modeOf(body.mode)
     const credential = textOf(body.token, 'token')
@@ -25,7 +21,6 @@ export default defineEventHandler<EventHandlerRequest, Promise<RemoteAccessStatu
   })
 })
 
-// --- internal ---
 function modeOf(value: unknown): RemoteTunnelMode {
   if (value === 'quick' || value === 'token')
     return value
